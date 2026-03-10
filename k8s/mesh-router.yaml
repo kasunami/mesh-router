@@ -37,7 +37,7 @@ spec:
         kubernetes.io/hostname: packserv
       initContainers:
         - name: migrate-db
-          image: docker.io/library/mesh-router:202603101610
+          image: 10.0.0.2:5000/mesh-router:202603101610
           imagePullPolicy: Never
           envFrom:
             - secretRef:
@@ -50,7 +50,7 @@ spec:
               init_db()
       containers:
         - name: mesh-router
-          image: docker.io/library/mesh-router:202603101610
+          image: 10.0.0.2:5000/mesh-router:202603101610
           imagePullPolicy: Never
           envFrom:
             - secretRef:

@@ -1,0 +1,12 @@
+[Unit]
+Description=Auto-build and deploy mesh-router to private registry and ArgoCD
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=kasunami
+Group=kasunami
+WorkingDirectory=/home/kasunami
+ExecStart=/usr/local/bin/mesh-router-autodeploy.sh
+

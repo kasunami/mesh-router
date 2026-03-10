@@ -28,7 +28,7 @@ if [[ -z "${TAG}" ]]; then
   exit 2
 fi
 
-IMAGE="${IMAGE:-docker.io/library/mesh-router:${TAG}}"
+IMAGE="${IMAGE:-10.0.0.2:5000/mesh-router:${TAG}}"
 
 echo "building mesh-router image"
 echo "  repo_root: ${ROOT}"
@@ -38,4 +38,3 @@ cd "${ROOT}"
 docker build -t "${IMAGE}" .
 
 echo "done"
-
