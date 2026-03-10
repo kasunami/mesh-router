@@ -10,6 +10,7 @@ RUN pip install --no-cache-dir --upgrade pip
 
 COPY pyproject.toml /app/pyproject.toml
 COPY mesh_router /app/mesh_router
+COPY sql /app/sql
 
 RUN pip install --no-cache-dir .
 

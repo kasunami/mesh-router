@@ -42,3 +42,19 @@ rm -f /tmp/mesh-router-secret.yaml
 scripts/build_image.sh <tag>
 ```
 
+## Local Model Inventory
+
+To scan a local model root and output a structured inventory for ingestion:
+
+```bash
+pip install . psutil  # If not already installed
+mesh-router inventory /path/to/models
+```
+
+This will output a JSON payload containing identified models (`.gguf`, `.safetensors`, MLX directories) and basic host facts.
+
+To scan an archive model root:
+
+```bash
+mesh-router archive-inventory /path/to/archive archive-id --provider packhub
+```
