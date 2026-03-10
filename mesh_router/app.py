@@ -862,9 +862,16 @@ def v1_chat_completions(
 
 class SwapModelRequest(BaseModel):
     model_name: str
+    allow_unverified: bool = False
 
 
-def _swap_preflight(cur, lane_ref: str, model_name: str) -> tuple[dict[str, Any], SwapPreflightResponse]:
+def _swap_preflight(
+    cur,
+    lane_ref: str,
+    model_name: str,
+    *,
+    allow_unverified: bool = False,
+) -> tuple[dict[str, Any], SwapPreflightResponse]:
     state, capabilities = _build_lane_capability_payload(cur, lane_ref)
     for candidate in capabilities.local_viable_models + capabilities.remote_viable_models:
         if candidate.model_name == model_name:
@@ -886,6 +893,21 @@ def _swap_preflight(cur, lane_ref: str, model_name: str) -> tuple[dict[str, Any]
             )
     for candidate in capabilities.unverified_models:
         if candidate.model_name == model_name:
+            if allow_unverified:
+                source_mode = "local" if candidate.artifact_host == capabilities.metadata.get("host_name") else "remote_copy_then_load"
+                return state, SwapPreflightResponse(
+                    lane_id=capabilities.lane_id,
+                    model_name=model_name,
+                    ok=True,
+                    source_mode=source_mode,
+                    artifact_path=candidate.artifact_path,
+                    artifact_host=candidate.artifact_host,
+                    artifact_provider=candidate.artifact_provider or None,
+                    estimated_swap_ms=candidate.estimated_swap_ms,
+                    swap_strategy=candidate.swap_strategy,
+                    reason="allow_unverified override applied",
+                    metadata={"override": "allow_unverified"},
+                )
             return state, SwapPreflightResponse(
                 lane_id=capabilities.lane_id,
                 model_name=model_name,
@@ -909,7 +931,7 @@ def _swap_preflight(cur, lane_ref: str, model_name: str) -> tuple[dict[str, Any]
 def api_lane_swap_preflight(lane_id: str, req: SwapModelRequest) -> SwapPreflightResponse:
     with db.connect() as conn:
         with conn.cursor() as cur:
-            _, response = _swap_preflight(cur, lane_id, req.model_name)
+            _, response = _swap_preflight(cur, lane_id, req.model_name, allow_unverified=req.allow_unverified)
         conn.commit()
     return response
 
@@ -928,7 +950,12 @@ def api_lane_swap_model(lane_id: str, req: SwapModelRequest) -> dict[str, Any]:
     preflight: SwapPreflightResponse | None = None
     with db.connect() as conn:
         with conn.cursor() as cur:
-            lane_state, preflight = _swap_preflight(cur, lane_id, req.model_name)
+            lane_state, preflight = _swap_preflight(
+                cur,
+                lane_id,
+                req.model_name,
+                allow_unverified=req.allow_unverified,
+            )
             if not preflight.ok:
                 conn.commit()
                 raise HTTPException(status_code=409, detail=preflight.reason or "swap preflight failed")
