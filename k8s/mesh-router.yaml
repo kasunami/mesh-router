@@ -35,9 +35,22 @@ spec:
       # Prefer packserv for control-plane services.
       nodeSelector:
         kubernetes.io/hostname: packserv
+      initContainers:
+        - name: migrate-db
+          image: docker.io/library/mesh-router:202603101610
+          imagePullPolicy: Never
+          envFrom:
+            - secretRef:
+                name: mesh-router-secret
+          command:
+            - python
+            - -c
+            - |
+              from mesh_router.db import init_db
+              init_db()
       containers:
         - name: mesh-router
-          image: docker.io/library/mesh-router:202603101440
+          image: docker.io/library/mesh-router:202603101610
           imagePullPolicy: Never
           envFrom:
             - secretRef:

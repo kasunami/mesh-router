@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .db import db, q
+from .config import settings
 
 
 @dataclass(frozen=True)
@@ -72,7 +73,7 @@ def pick_lane_for_model(
                         SELECT 1 FROM router_leases rl
                         WHERE rl.lane_id = l.lane_id
                           AND rl.state = 'active'
-                          AND rl.expires_at > now()
+                          AND COALESCE(rl.last_heartbeat_at, rl.acquired_at) > now() - make_interval(secs => %s)
                       )
                       AND (%s::text IS NULL OR l.lane_type::text = %s::text)
                     ORDER BY
@@ -81,7 +82,7 @@ def pick_lane_for_model(
                       l.base_url ASC
                     LIMIT 1
                     """,
-                    (pin_worker, pin_lane_type, pin_lane_type, model),
+                    (pin_worker, settings.default_lease_stale_seconds, pin_lane_type, pin_lane_type, model),
                 )
         if not rows:
             raise RuntimeError("no READY lanes for pinned worker")
@@ -107,7 +108,7 @@ def pick_lane_for_model(
                         SELECT 1 FROM router_leases rl
                         WHERE rl.lane_id = l.lane_id
                           AND rl.state = 'active'
-                          AND rl.expires_at > now()
+                          AND COALESCE(rl.last_heartbeat_at, rl.acquired_at) > now() - make_interval(secs => %s)
                       )
                       AND (%s OR h.host_name IN ('Static-Deskix','Static-Mobile-2','pupix1','tiffs-macbook'))
                       AND h.host_name NOT IN ('litellm-router')
@@ -130,6 +131,7 @@ def pick_lane_for_model(
                     """,
                     (
                         allow_fallback_hosts,
+                        settings.default_lease_stale_seconds,
                         pin_lane_type,
                         pin_lane_type,
                         model,

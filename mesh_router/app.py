@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+import threading
 from typing import Any
 
 from datetime import UTC, datetime, timedelta
@@ -583,7 +584,13 @@ def _bearer_token(req: Request) -> str:
 
 def _cleanup_expired_router_leases(cur) -> None:
     cur.execute(
-        "UPDATE router_leases SET state='expired' WHERE state='active' AND expires_at < now()"
+        """
+        UPDATE router_leases
+        SET state='expired'
+        WHERE state='active'
+          AND COALESCE(last_heartbeat_at, acquired_at) < now() - make_interval(secs => %s)
+        """,
+        (settings.default_lease_stale_seconds,),
     )
 
 
@@ -596,7 +603,8 @@ def _acquire_router_lease(
     ttl_seconds: int,
     details: dict[str, Any],
 ) -> tuple[str, datetime]:
-    expires_at = datetime.now(UTC) + timedelta(seconds=max(30, int(ttl_seconds)))
+    now = datetime.now(UTC)
+    expires_at = now + timedelta(seconds=max(30, int(ttl_seconds)))
     with db.connect() as conn:
         with conn.cursor() as cur:
             _cleanup_expired_router_leases(cur)
@@ -613,15 +621,31 @@ def _acquire_router_lease(
                 raise RuntimeError("lane busy")
             cur.execute(
                 """
-                INSERT INTO router_leases (lane_id, model_id, owner, job_type, state, expires_at, details)
-                VALUES (%s, %s, %s, %s, 'active', %s, %s::jsonb)
+                INSERT INTO router_leases (lane_id, model_id, owner, job_type, state, acquired_at, last_heartbeat_at, expires_at, details)
+                VALUES (%s, %s, %s, %s, 'active', %s, %s, %s, %s::jsonb)
                 RETURNING lease_id
                 """,
-                (lane_id, model_id, owner, job_type, expires_at, Jsonb(details)),
+                (lane_id, model_id, owner, job_type, now, now, expires_at, Jsonb(details)),
             )
             lease_id = str(cur.fetchone()["lease_id"])
         conn.commit()
     return lease_id, expires_at
+
+
+def _heartbeat_router_lease(*, lease_id: str) -> None:
+    now = datetime.now(UTC)
+    expires_at = now + timedelta(seconds=max(30, int(settings.default_lease_stale_seconds)))
+    with db.connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE router_leases
+                SET last_heartbeat_at=%s, expires_at=%s
+                WHERE lease_id=%s AND state='active'
+                """,
+                (now, expires_at, lease_id),
+            )
+        conn.commit()
 
 
 def _release_router_lease(*, lease_id: str, ok: bool) -> None:
@@ -681,6 +705,10 @@ def api_router_lease_validate(
         raise HTTPException(status_code=401, detail="lease not found")
     if str(row["state"]) != "active":
         raise HTTPException(status_code=401, detail="lease not active")
+    try:
+        _heartbeat_router_lease(lease_id=lease_id)
+    except Exception:
+        pass
     return {"ok": True, **claims}
 
 
@@ -779,18 +807,38 @@ def v1_chat_completions(
         # Apply downstream model alias if needed (must match leased model for worker gateway validation).
         payload["model"] = downstream_model
         # Proxy directly to the worker gateway (11434/11435). Backends are bound to localhost.
-        with httpx.Client(timeout=600.0) as client:
-            r = client.post(
-                f"{choice.base_url.rstrip('/')}/v1/chat/completions",
-                json=payload,
-                headers={"Authorization": f"Bearer {token}"},
-            )
-            try:
-                resp_data = r.json()
-            except Exception:
-                resp_data = {"raw": r.text}
-            if r.status_code >= 400:
-                raise RuntimeError(f"worker proxy http_{r.status_code}: {resp_data}")
+        stop_heartbeat = threading.Event()
+        heartbeat_error: dict[str, str] = {}
+
+        def _heartbeat_loop() -> None:
+            interval = max(5, int(settings.default_lease_heartbeat_interval_seconds))
+            while not stop_heartbeat.wait(interval):
+                try:
+                    _heartbeat_router_lease(lease_id=lease_id)
+                except Exception as exc:
+                    heartbeat_error["error"] = str(exc)
+                    break
+
+        heartbeat_thread = threading.Thread(target=_heartbeat_loop, name=f"lease-heartbeat-{lease_id}", daemon=True)
+        heartbeat_thread.start()
+        try:
+            with httpx.Client(timeout=float(max(30, settings.default_lease_ttl_seconds))) as client:
+                r = client.post(
+                    f"{choice.base_url.rstrip('/')}/v1/chat/completions",
+                    json=payload,
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+        finally:
+            stop_heartbeat.set()
+            heartbeat_thread.join(timeout=2)
+        if heartbeat_error:
+            raise RuntimeError(f"lease heartbeat failed: {heartbeat_error['error']}")
+        try:
+            resp_data = r.json()
+        except Exception:
+            resp_data = {"raw": r.text}
+        if r.status_code >= 400:
+            raise RuntimeError(f"worker proxy http_{r.status_code}: {resp_data}")
 
         # Best-effort parse of llama.cpp timings/usage when available.
         try:
