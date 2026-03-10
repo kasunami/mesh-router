@@ -37,7 +37,7 @@ spec:
         kubernetes.io/hostname: packserv
       containers:
         - name: mesh-router
-          image: docker.io/library/mesh-router:202603101227
+          image: docker.io/library/mesh-router:202603101431
           imagePullPolicy: IfNotPresent
           envFrom:
             - secretRef:

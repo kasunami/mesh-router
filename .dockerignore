@@ -6,5 +6,3 @@ __pycache__/
 .venv/
 mesh_router.egg-info/
 tests/
-sql/
-
