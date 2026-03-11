@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import time
 import threading
+from pathlib import Path
 from typing import Any, Literal
 
 from datetime import UTC, datetime, timedelta
@@ -2067,10 +2068,12 @@ def api_lane_swap_model(lane_id: str, req: SwapModelRequest) -> dict[str, Any]:
                 "details": data,
             }
 
+    exact_downstream_model = Path(str(preflight.artifact_path)).name if preflight.artifact_path else preflight.model_name
+
     payload: dict[str, Any] = {
         "model_name": preflight.model_name,
         "model_path": preflight.artifact_path,
-        "model_alias": preflight.model_name,
+        "model_alias": exact_downstream_model,
         "source_mode": source_mode,
     }
     if source_mode == "remote_copy_then_load":
