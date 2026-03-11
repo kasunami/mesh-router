@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     lease_token_secret: str = "replace-with-random-secret"
 
     # Router behavior
-    default_lease_ttl_seconds: int = 120
+    default_lease_ttl_seconds: int = 600
     default_lease_heartbeat_interval_seconds: int = 15
     default_lease_stale_seconds: int = 45
     default_owner: str = "mesh-router"
