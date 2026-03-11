@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import time
 import threading
 from typing import Any, Literal
@@ -49,6 +50,54 @@ def _normalize_model_format(value: str | None) -> str:
     if normalized in {"gguf", "mlx", "safetensors"}:
         return normalized
     return "other"
+
+
+def _model_lookup_keys(model_name: str | None) -> set[str]:
+    raw = (model_name or "").strip()
+    if not raw:
+        return set()
+
+    keys = {raw.lower()}
+    stem = raw.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+    keys.add(stem.lower())
+
+    if "." in stem:
+        stem_no_ext = stem.rsplit(".", 1)[0]
+        keys.add(stem_no_ext.lower())
+    else:
+        stem_no_ext = stem
+
+    normalized = stem_no_ext.lower().replace("_", "-")
+    keys.add(normalized)
+
+    dequantized = re.sub(r"[-_.]q\d+(?:[-_.]k(?:[-_.][a-z0-9]+)?)?$", "", normalized)
+    if dequantized:
+        keys.add(dequantized)
+
+    return {key for key in keys if key}
+
+
+def _resolve_swap_candidate(
+    capabilities: LaneCapabilityResponse,
+    requested_model_name: str,
+) -> tuple[LaneModelCandidate | None, str | None]:
+    requested_keys = _model_lookup_keys(requested_model_name)
+    groups = (
+        ("viable", capabilities.local_viable_models + capabilities.remote_viable_models),
+        ("unverified", capabilities.unverified_models),
+    )
+
+    for group_name, candidates in groups:
+        for candidate in candidates:
+            if candidate.model_name == requested_model_name:
+                return candidate, group_name
+
+    for group_name, candidates in groups:
+        for candidate in candidates:
+            if requested_keys & _model_lookup_keys(candidate.model_name):
+                return candidate, group_name
+
+    return None, None
 
 
 def _resolve_host_id(cur, host_ref: str, *, create: bool = False) -> tuple[str, str]:
@@ -1662,11 +1711,13 @@ def _swap_preflight(
     allow_unverified: bool = False,
 ) -> tuple[dict[str, Any], SwapPreflightResponse]:
     state, capabilities = _build_lane_capability_payload(cur, lane_ref)
+    resolved_candidate, candidate_group = _resolve_swap_candidate(capabilities, model_name)
+    resolved_model_name = resolved_candidate.model_name if resolved_candidate is not None else model_name
     tuning_profile = _load_swap_tuning_profile(
         cur,
         host_id=str(state["host"]["host_id"]),
         lane_id=str(state["lane"]["lane_id"]),
-        model_name=model_name,
+        model_name=resolved_model_name,
     )
     sibling_lanes = (
         _list_host_sibling_lanes(
@@ -1679,77 +1730,88 @@ def _swap_preflight(
     )
     affected_lane_ids = [str(state["lane"]["lane_id"])] + [str(row["lane_id"]) for row in sibling_lanes]
     active_leases = _list_active_router_leases(cur, affected_lane_ids)
-    for candidate in capabilities.local_viable_models + capabilities.remote_viable_models:
-        if candidate.model_name == model_name:
-            source_mode = "local" if candidate.locality == "local" else "remote_copy_then_load"
-            metadata: dict[str, Any] = {"capability_source": candidate.locality}
-            if candidate.locality == "remote":
-                metadata["local_model_root"] = state["local_model_root"]
-            metadata["swap_cost"] = _swap_cost_metadata(
-                lane_state=state,
-                model_name=model_name,
-                tuning_profile=tuning_profile,
-                sibling_lanes=sibling_lanes,
-                active_leases=active_leases,
-            )
+    if resolved_candidate is not None and candidate_group == "viable":
+        source_mode = "local" if resolved_candidate.locality == "local" else "remote_copy_then_load"
+        metadata: dict[str, Any] = {
+            "capability_source": resolved_candidate.locality,
+            "requested_model_name": model_name,
+        }
+        if resolved_candidate.model_name != model_name:
+            metadata["resolved_model_name"] = resolved_candidate.model_name
+        if resolved_candidate.locality == "remote":
+            metadata["local_model_root"] = state["local_model_root"]
+        metadata["swap_cost"] = _swap_cost_metadata(
+            lane_state=state,
+            model_name=resolved_model_name,
+            tuning_profile=tuning_profile,
+            sibling_lanes=sibling_lanes,
+            active_leases=active_leases,
+        )
+        return state, SwapPreflightResponse(
+            lane_id=capabilities.lane_id,
+            model_name=resolved_model_name,
+            ok=True,
+            source_mode=source_mode,
+            artifact_path=resolved_candidate.artifact_path,
+            artifact_host=resolved_candidate.artifact_host,
+            artifact_provider=resolved_candidate.artifact_provider or None,
+            estimated_swap_ms=resolved_candidate.estimated_swap_ms,
+            swap_strategy=resolved_candidate.swap_strategy,
+            metadata=_strip_nones(metadata),
+        )
+    if resolved_candidate is not None and candidate_group == "unverified":
+        if allow_unverified:
+            source_mode = "local" if resolved_candidate.artifact_host == capabilities.metadata.get("host_name") else "remote_copy_then_load"
             return state, SwapPreflightResponse(
                 lane_id=capabilities.lane_id,
-                model_name=model_name,
+                model_name=resolved_model_name,
                 ok=True,
                 source_mode=source_mode,
-                artifact_path=candidate.artifact_path,
-                artifact_host=candidate.artifact_host,
-                artifact_provider=candidate.artifact_provider or None,
-                estimated_swap_ms=candidate.estimated_swap_ms,
-                swap_strategy=candidate.swap_strategy,
-                metadata=_strip_nones(metadata),
-            )
-    for candidate in capabilities.unverified_models:
-        if candidate.model_name == model_name:
-            if allow_unverified:
-                source_mode = "local" if candidate.artifact_host == capabilities.metadata.get("host_name") else "remote_copy_then_load"
-                return state, SwapPreflightResponse(
-                    lane_id=capabilities.lane_id,
-                    model_name=model_name,
-                    ok=True,
-                    source_mode=source_mode,
-                    artifact_path=candidate.artifact_path,
-                    artifact_host=candidate.artifact_host,
-                    artifact_provider=candidate.artifact_provider or None,
-                    estimated_swap_ms=candidate.estimated_swap_ms,
-                    swap_strategy=candidate.swap_strategy,
-                    reason="allow_unverified override applied",
-                    metadata={
+                artifact_path=resolved_candidate.artifact_path,
+                artifact_host=resolved_candidate.artifact_host,
+                artifact_provider=resolved_candidate.artifact_provider or None,
+                estimated_swap_ms=resolved_candidate.estimated_swap_ms,
+                swap_strategy=resolved_candidate.swap_strategy,
+                reason="allow_unverified override applied",
+                metadata=_strip_nones(
+                    {
                         "override": "allow_unverified",
+                        "requested_model_name": model_name,
+                        "resolved_model_name": resolved_model_name if resolved_model_name != model_name else None,
                         "swap_cost": _swap_cost_metadata(
                             lane_state=state,
-                            model_name=model_name,
+                            model_name=resolved_model_name,
                             tuning_profile=tuning_profile,
                             sibling_lanes=sibling_lanes,
                             active_leases=active_leases,
                         ),
-                    },
-                )
-            return state, SwapPreflightResponse(
-                lane_id=capabilities.lane_id,
-                model_name=model_name,
-                ok=False,
-                artifact_path=candidate.artifact_path,
-                artifact_host=candidate.artifact_host,
-                artifact_provider=candidate.artifact_provider or None,
-                estimated_swap_ms=candidate.estimated_swap_ms,
-                swap_strategy=candidate.swap_strategy,
-                reason=candidate.reason or "model is unverified for this lane",
-                metadata={
+                    }
+                ),
+            )
+        return state, SwapPreflightResponse(
+            lane_id=capabilities.lane_id,
+            model_name=resolved_model_name,
+            ok=False,
+            artifact_path=resolved_candidate.artifact_path,
+            artifact_host=resolved_candidate.artifact_host,
+            artifact_provider=resolved_candidate.artifact_provider or None,
+            estimated_swap_ms=resolved_candidate.estimated_swap_ms,
+            swap_strategy=resolved_candidate.swap_strategy,
+            reason=resolved_candidate.reason or "model is unverified for this lane",
+            metadata=_strip_nones(
+                {
+                    "requested_model_name": model_name,
+                    "resolved_model_name": resolved_model_name if resolved_model_name != model_name else None,
                     "swap_cost": _swap_cost_metadata(
                         lane_state=state,
-                        model_name=model_name,
+                        model_name=resolved_model_name,
                         tuning_profile=tuning_profile,
                         sibling_lanes=sibling_lanes,
                         active_leases=active_leases,
-                    )
-                },
-            )
+                    ),
+                }
+            ),
+        )
     return state, SwapPreflightResponse(
         lane_id=capabilities.lane_id,
         model_name=model_name,
@@ -1882,7 +1944,7 @@ def api_lane_swap_model(lane_id: str, req: SwapModelRequest) -> dict[str, Any]:
                 WHERE m.model_name=%s AND hma.local_path=%s
                 LIMIT 1
                 """,
-                (req.model_name, preflight.artifact_path),
+                (preflight.model_name, preflight.artifact_path),
             )
             artifact_row = cur.fetchone()
         conn.commit()
@@ -1922,9 +1984,9 @@ def api_lane_swap_model(lane_id: str, req: SwapModelRequest) -> dict[str, Any]:
                 raise
 
     payload: dict[str, Any] = {
-        "model_name": req.model_name,
+        "model_name": preflight.model_name,
         "model_path": preflight.artifact_path,
-        "model_alias": req.model_name,
+        "model_alias": preflight.model_name,
         "source_mode": source_mode,
     }
     if source_mode == "remote_copy_then_load":
@@ -1973,7 +2035,7 @@ def api_lane_swap_model(lane_id: str, req: SwapModelRequest) -> dict[str, Any]:
                     if ok and artifact_row is not None:
                         cur.execute(
                             "UPDATE lanes SET current_model_name=%s, updated_at=now() WHERE lane_id=%s",
-                            (req.model_name, preflight.lane_id),
+                            (preflight.model_name, preflight.lane_id),
                         )
                         _upsert_usage(
                             cur,
@@ -2043,7 +2105,8 @@ def api_lane_swap_model(lane_id: str, req: SwapModelRequest) -> dict[str, Any]:
     return {
         "ok": True,
         "lane_id": preflight.lane_id,
-        "model_name": req.model_name,
+        "model_name": preflight.model_name,
+        "requested_model_name": req.model_name,
         "source_mode": source_mode,
         "swap_urgency": req.swap_urgency,
         "cost_tier": str(tuning_profile.get("cost_tier") or "standard") if tuning_profile else "standard",
