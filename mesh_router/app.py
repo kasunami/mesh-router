@@ -1164,7 +1164,7 @@ def _reroute_displaced_lease(
 
 
 def _call_lane_service_action(*, base_url: str, action: Literal["start", "stop", "restart"]) -> dict[str, Any]:
-    with httpx.Client(timeout=180.0) as client:
+    with httpx.Client(timeout=float(max(180, settings.swap_proxy_timeout_seconds))) as client:
         response = client.post(
             f"{base_url.rstrip('/')}/admin/service-action",
             json={"action": action},
@@ -1907,7 +1907,7 @@ def api_lane_swap_model(lane_id: str, req: SwapModelRequest) -> dict[str, Any]:
                 cur,
                 host_id=str(lane_state["host"]["host_id"]),
                 lane_id=str(lane_state["lane"]["lane_id"]),
-                model_name=req.model_name,
+                model_name=preflight.model_name,
             )
             sibling_lanes = _list_host_sibling_lanes(
                 cur,
@@ -2043,7 +2043,7 @@ def api_lane_swap_model(lane_id: str, req: SwapModelRequest) -> dict[str, Any]:
     err_msg = None
     data: dict[str, Any] | None = None
     try:
-        with httpx.Client(timeout=180.0) as client:
+        with httpx.Client(timeout=float(max(180, settings.swap_proxy_timeout_seconds))) as client:
             r = client.post(
                 f"{base_url.rstrip('/')}/swap-model",
                 json=payload,

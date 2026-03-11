@@ -32,6 +32,8 @@ class Settings(BaseSettings):
 
     # Swap auth token — must match WORKER_STATIC_BEARER_TOKENS on each worker gateway
     swap_auth_token: str = "replace-with-worker-swap-token"
+    # Must exceed worker-side WORKER_SWITCH_TIMEOUT_S so the router does not time out first.
+    swap_proxy_timeout_seconds: int = 240
 
 
 settings = Settings()
