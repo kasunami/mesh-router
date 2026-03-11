@@ -826,6 +826,22 @@ def _resolve_downstream_model_for_lane(
     return requested_model_name
 
 
+def _lane_gateway_healthy(base_url: str) -> bool:
+    health_urls = ("/health", "/healthz", "/readyz", "/livez")
+    try:
+        with httpx.Client(timeout=5.0) as client:
+            for path in health_urls:
+                try:
+                    resp = client.get(f"{base_url.rstrip('/')}{path}")
+                    if resp.status_code == 200:
+                        return True
+                except Exception:
+                    continue
+    except Exception:
+        return False
+    return False
+
+
 @app.get("/healthz")
 def healthz() -> dict[str, Any]:
     return {"ok": True}
@@ -2019,6 +2035,37 @@ def api_lane_swap_model(lane_id: str, req: SwapModelRequest) -> dict[str, Any]:
                     }
                 )
                 raise
+
+    current_model_name = str(lane_state["lane"].get("current_model_name") or "").strip()
+    if current_model_name and _model_request_matches_candidate(preflight.model_name, current_model_name):
+        if _lane_gateway_healthy(base_url):
+            data = {
+                "ok": True,
+                "model_name": preflight.model_name,
+                "model_path": preflight.artifact_path,
+                "model_alias": preflight.model_name,
+                "copy_time_ms": 0,
+                "load_time_ms": 0,
+                "ready_time_ms": 0,
+                "health_path": "/health",
+                "noop": True,
+                "reason": "requested model already loaded and healthy",
+            }
+            ok = True
+            return {
+                "ok": True,
+                "lane_id": preflight.lane_id,
+                "model_name": preflight.model_name,
+                "requested_model_name": req.model_name,
+                "source_mode": source_mode,
+                "swap_urgency": req.swap_urgency,
+                "cost_tier": str(tuning_profile.get("cost_tier") or "standard") if tuning_profile else "standard",
+                "storage_scheme": str(tuning_profile.get("storage_scheme") or "unknown") if tuning_profile else None,
+                "active_leases_handled": _summarize_active_leases(active_before_action),
+                "reroute_results": reroute_results,
+                "sibling_service_actions": sibling_service_actions,
+                "details": data,
+            }
 
     payload: dict[str, Any] = {
         "model_name": preflight.model_name,
