@@ -21,7 +21,8 @@ def _model_lookup_keys(model_name: str | None) -> set[str]:
         return set()
 
     stem = raw.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
-    stem_no_ext = stem.rsplit(".", 1)[0] if "." in stem else stem
+    lowered_stem = stem.lower()
+    stem_no_ext = stem.rsplit(".", 1)[0] if lowered_stem.endswith((".gguf", ".safetensors", ".bin")) else stem
     normalized = stem_no_ext.lower().replace("_", "-").replace(":", "-")
     keys = {raw.lower(), stem.lower(), normalized}
 

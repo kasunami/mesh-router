@@ -61,7 +61,8 @@ def _model_lookup_keys(model_name: str | None) -> set[str]:
     stem = raw.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
     keys.add(stem.lower())
 
-    if "." in stem:
+    lowered_stem = stem.lower()
+    if lowered_stem.endswith((".gguf", ".safetensors", ".bin")):
         stem_no_ext = stem.rsplit(".", 1)[0]
         keys.add(stem_no_ext.lower())
     else:
