@@ -378,6 +378,35 @@ def _historical_swap_ms(cur, lane_id: str, model_id: str, source_mode: str) -> i
     return int(row["avg_ms"]) if row and row.get("avg_ms") is not None else None
 
 
+def _tuning_profile_metrics(
+    cur,
+    *,
+    host_id: str,
+    lane_id: str,
+    model_name: str,
+) -> dict[str, Any] | None:
+    cur.execute(
+        """
+        SELECT
+          tp.prompt_tps,
+          tp.generation_tps,
+          tp.avg_total_latency_s,
+          tp.settings,
+          tp.storage_scheme,
+          tp.updated_at
+        FROM model_tuning_profiles tp
+        JOIN models m ON m.model_id = tp.model_id
+        WHERE tp.host_id = %s
+          AND m.model_name = %s
+          AND (tp.lane_id = %s OR tp.lane_id IS NULL)
+        ORDER BY CASE WHEN tp.lane_id = %s THEN 0 ELSE 1 END, tp.updated_at DESC
+        LIMIT 1
+        """,
+        (host_id, model_name, lane_id, lane_id),
+    )
+    return cur.fetchone()
+
+
 def _resolve_lane(cur, lane_ref: str) -> dict[str, Any]:
     cur.execute(
         """
@@ -504,10 +533,33 @@ def _build_lane_capability_payload(cur, lane_ref: str) -> tuple[dict[str, Any], 
         model_name = str(row["model_name"])
         artifact_id = str(row["artifact_id"])
         size_bytes = int(row["size_bytes"]) if row.get("size_bytes") is not None else None
+        tuning_profile = _tuning_profile_metrics(
+            cur,
+            host_id=resolved_host_id,
+            lane_id=resolved_lane_id,
+            model_name=model_name,
+        )
         required_memory_bytes = int(
             row["required_vram_bytes"] if lane_type == "gpu" else row["required_ram_bytes"]
         ) if (row.get("required_vram_bytes") is not None or row.get("required_ram_bytes") is not None) else None
         tps_estimate = _latest_tps(cur, resolved_lane_id, model_id)
+        if tps_estimate is None and tuning_profile:
+            fallback_tps = tuning_profile.get("generation_tps") or tuning_profile.get("prompt_tps")
+            if fallback_tps is not None:
+                tps_estimate = float(fallback_tps)
+        target_context_tokens = None
+        if tuning_profile and isinstance(tuning_profile.get("settings"), dict):
+            ctx_value = tuning_profile["settings"].get("ctx_size")
+            try:
+                if ctx_value is not None:
+                    target_context_tokens = int(ctx_value)
+            except Exception:
+                target_context_tokens = None
+        model_lane_info = lane_info.model_copy(
+            update={
+                "target_context_tokens": target_context_tokens,
+            }
+        )
         model_info = ViabilityModelInfo(
             model_id=model_id,
             model_name=model_name,
@@ -516,7 +568,7 @@ def _build_lane_capability_payload(cur, lane_ref: str) -> tuple[dict[str, Any], 
             required_vram_bytes=required_memory_bytes if lane_type == "gpu" else None,
             estimated_tps=tps_estimate,
         )
-        viability = check_viability(lane_info, model_info)
+        viability = check_viability(model_lane_info, model_info)
         projected_free_bytes = viability.projected_free_vram_bytes if lane_type == "gpu" else viability.projected_free_ram_bytes
         if projected_free_bytes is not None:
             projected_free_bytes -= runtime_overhead

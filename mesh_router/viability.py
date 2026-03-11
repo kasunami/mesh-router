@@ -18,6 +18,8 @@ class ViabilityLaneInfo(BaseModel):
     # Add host-level info if lane budget is missing
     host_ram_budget_bytes: Optional[int] = None
     host_vram_budget_bytes: Optional[int] = None
+    target_context_tokens: Optional[int] = None
+    kv_cache_bytes_per_token: Optional[int] = None
 
 
 class ViabilityModelInfo(BaseModel):
@@ -64,6 +66,18 @@ def check_viability(lane: ViabilityLaneInfo, model: ViabilityModelInfo) -> Viabi
         else:
             req_ram = model.size_bytes
 
+    kv_bytes = 0
+    if lane.target_context_tokens and lane.target_context_tokens > 0:
+        per_token = lane.kv_cache_bytes_per_token or 0
+        if per_token <= 0 and model.size_bytes:
+            # Coarse heuristic for llama.cpp style KV memory when exact architecture data is unavailable.
+            per_token = max(262144, int(model.size_bytes / 32768))
+        if lane.lane_type == "gpu":
+            req_ram += int(per_token * lane.target_context_tokens * 0.25)
+        else:
+            kv_bytes = int(per_token * lane.target_context_tokens)
+            req_ram += kv_bytes
+
     projected_free_ram = ram_limit - req_ram
     projected_free_vram = vram_limit - req_vram
 
@@ -100,8 +114,8 @@ def check_viability(lane: ViabilityLaneInfo, model: ViabilityModelInfo) -> Viabi
     # 2. TPS rule
     if model.estimated_tps is None:
         return ViabilityResult(
-            is_viable=False,
-            reason="Unknown TPS (not viable by default)",
+            is_viable=True,
+            reason="TPS unknown (memory-fit, unverified until benchmarked)",
             projected_free_ram_bytes=projected_free_ram,
             projected_free_vram_bytes=projected_free_vram,
             estimated_tps=None,
