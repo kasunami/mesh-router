@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 import threading
-from typing import Any
+from typing import Any, Literal
 
 from datetime import UTC, datetime, timedelta
 
@@ -20,6 +20,8 @@ from .schemas import (
     HostInventoryScanRequest,
     LaneModelCandidate,
     LaneCapabilityResponse,
+    ModelTuningProfileResponse,
+    ModelTuningProfileUpsertRequest,
     ModelInfo,
     ModelsResponse,
     SwapPreflightResponse,
@@ -90,6 +92,137 @@ def _ensure_model(cur, *, model_name: str, model_format: str | None, size_bytes:
         (model_name, _normalize_model_format(model_format), size_bytes),
     )
     return str(cur.fetchone()["model_id"])
+
+
+def _resolve_lane_ref(cur, lane_ref: str | None) -> tuple[str | None, str | None, str | None]:
+    if not lane_ref:
+        return None, None, None
+    cur.execute(
+        """
+        SELECT lane_id, lane_name, lane_type
+        FROM lanes
+        WHERE lane_id::text=%s OR lane_name::text=%s OR base_url=%s
+        LIMIT 1
+        """,
+        (lane_ref, lane_ref, lane_ref),
+    )
+    row = cur.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail=f"lane not found: {lane_ref}")
+    return str(row["lane_id"]), str(row.get("lane_name") or ""), str(row.get("lane_type") or "")
+
+
+def _row_to_tuning_profile(row: dict[str, Any]) -> ModelTuningProfileResponse:
+    return ModelTuningProfileResponse(
+        tuning_profile_id=str(row["tuning_profile_id"]),
+        host_id=str(row["host_id"]),
+        host_name=str(row["host_name"]),
+        model_id=str(row["model_id"]),
+        model_name=str(row["model_name"]),
+        lane_id=str(row["lane_id"]) if row.get("lane_id") else None,
+        lane_name=str(row["lane_name"]) if row.get("lane_name") else None,
+        lane_type=str(row["lane_type"]) if row.get("lane_type") else None,
+        storage_scheme=str(row["storage_scheme"]),
+        settings=dict(row.get("settings") or {}),
+        cost_tier=str(row.get("cost_tier") or "standard"),
+        disables_sibling_lanes=bool(row.get("disables_sibling_lanes") or False),
+        exclusive_host_resources=bool(row.get("exclusive_host_resources") or False),
+        prompt_tps=float(row["prompt_tps"]) if row.get("prompt_tps") is not None else None,
+        generation_tps=float(row["generation_tps"]) if row.get("generation_tps") is not None else None,
+        avg_total_latency_s=float(row["avg_total_latency_s"]) if row.get("avg_total_latency_s") is not None else None,
+        score=float(row["score"]) if row.get("score") is not None else None,
+        evaluation_count=int(row.get("evaluation_count") or 1),
+        source_run_tag=str(row["source_run_tag"]) if row.get("source_run_tag") else None,
+        notes=str(row["notes"]) if row.get("notes") else None,
+        created_at=row["created_at"].isoformat(),
+        updated_at=row["updated_at"].isoformat(),
+    )
+
+
+def _upsert_model_tuning_profile(cur, req: ModelTuningProfileUpsertRequest) -> ModelTuningProfileResponse:
+    host_id, _ = _resolve_host_id(cur, req.host_ref, create=False)
+    model_id = _ensure_model(cur, model_name=req.model_name, model_format=None, size_bytes=None)
+    lane_id, _, _ = _resolve_lane_ref(cur, req.lane_ref)
+
+    cur.execute(
+        """
+        INSERT INTO model_tuning_profiles (
+          host_id, model_id, lane_id, storage_scheme, settings,
+          cost_tier, disables_sibling_lanes, exclusive_host_resources,
+          prompt_tps, generation_tps, avg_total_latency_s, score,
+          evaluation_count, source_run_tag, notes, updated_at
+        )
+        VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())
+        ON CONFLICT (host_id, model_id, storage_scheme)
+        DO UPDATE SET
+          lane_id = EXCLUDED.lane_id,
+          settings = EXCLUDED.settings,
+          cost_tier = EXCLUDED.cost_tier,
+          disables_sibling_lanes = EXCLUDED.disables_sibling_lanes,
+          exclusive_host_resources = EXCLUDED.exclusive_host_resources,
+          prompt_tps = EXCLUDED.prompt_tps,
+          generation_tps = EXCLUDED.generation_tps,
+          avg_total_latency_s = EXCLUDED.avg_total_latency_s,
+          score = EXCLUDED.score,
+          evaluation_count = EXCLUDED.evaluation_count,
+          source_run_tag = EXCLUDED.source_run_tag,
+          notes = EXCLUDED.notes,
+          updated_at = now()
+        RETURNING tuning_profile_id
+        """,
+        (
+            host_id,
+            model_id,
+            lane_id,
+            req.storage_scheme,
+            Jsonb(req.settings),
+            req.cost_tier,
+            req.disables_sibling_lanes,
+            req.exclusive_host_resources,
+            req.prompt_tps,
+            req.generation_tps,
+            req.avg_total_latency_s,
+            req.score,
+            req.evaluation_count or 1,
+            req.source_run_tag,
+            req.notes,
+        ),
+    )
+    tuning_profile_id = str(cur.fetchone()["tuning_profile_id"])
+    cur.execute(
+        """
+        SELECT
+          tp.tuning_profile_id,
+          tp.host_id,
+          h.host_name,
+          tp.model_id,
+          m.model_name,
+          tp.lane_id,
+          l.lane_name,
+          l.lane_type,
+          tp.storage_scheme,
+          tp.settings,
+          tp.cost_tier,
+          tp.disables_sibling_lanes,
+          tp.exclusive_host_resources,
+          tp.prompt_tps,
+          tp.generation_tps,
+          tp.avg_total_latency_s,
+          tp.score,
+          tp.evaluation_count,
+          tp.source_run_tag,
+          tp.notes,
+          tp.created_at,
+          tp.updated_at
+        FROM model_tuning_profiles tp
+        JOIN hosts h ON h.host_id = tp.host_id
+        JOIN models m ON m.model_id = tp.model_id
+        LEFT JOIN lanes l ON l.lane_id = tp.lane_id
+        WHERE tp.tuning_profile_id = %s
+        """,
+        (tuning_profile_id,),
+    )
+    return _row_to_tuning_profile(cur.fetchone())
 
 
 def _update_host_inventory_metadata(
@@ -453,11 +586,15 @@ def _build_lane_capability_payload(cur, lane_ref: str) -> tuple[dict[str, Any], 
         )
         previous = candidates_by_model.get(model_name)
         if previous is not None:
+            current_is_local_artifact = str(row["host_id"]) == resolved_host_id
+            previous_is_local_artifact = previous.artifact_host == str(host_row["host_name"]) if host_row else False
             current_score = (
+                0 if current_is_local_artifact else 1,
                 0 if locality == "local" else 1 if locality == "remote" else 2,
                 candidate.estimated_swap_ms or 10**12,
             )
             previous_score = (
+                0 if previous_is_local_artifact else 1,
                 0 if previous.locality == "local" else 1 if previous.locality == "remote" else 2,
                 previous.estimated_swap_ms or 10**12,
             )
@@ -580,6 +717,318 @@ def _bearer_token(req: Request) -> str:
     if auth.lower().startswith("bearer "):
         return auth.split(None, 1)[1].strip()
     return ""
+
+
+def _load_swap_tuning_profile(cur, *, host_id: str, lane_id: str, model_name: str) -> dict[str, Any] | None:
+    cur.execute(
+        """
+        SELECT
+          tp.tuning_profile_id,
+          tp.host_id,
+          tp.model_id,
+          tp.lane_id,
+          tp.storage_scheme,
+          tp.settings,
+          tp.cost_tier,
+          tp.disables_sibling_lanes,
+          tp.exclusive_host_resources,
+          tp.prompt_tps,
+          tp.generation_tps,
+          tp.avg_total_latency_s,
+          tp.score,
+          tp.evaluation_count,
+          tp.source_run_tag,
+          tp.notes
+        FROM model_tuning_profiles tp
+        JOIN models m ON m.model_id = tp.model_id
+        WHERE tp.host_id = %s
+          AND m.model_name = %s
+          AND (tp.lane_id = %s OR tp.lane_id IS NULL)
+        ORDER BY CASE WHEN tp.lane_id = %s THEN 0 ELSE 1 END, tp.updated_at DESC
+        LIMIT 1
+        """,
+        (host_id, model_name, lane_id, lane_id),
+    )
+    return cur.fetchone()
+
+
+def _list_host_sibling_lanes(cur, *, host_id: str, lane_id: str) -> list[dict[str, Any]]:
+    cur.execute(
+        """
+        SELECT lane_id, lane_name, lane_type, base_url, status, suspension_reason, current_model_name
+        FROM lanes
+        WHERE host_id=%s AND lane_id<>%s
+        ORDER BY lane_name
+        """,
+        (host_id, lane_id),
+    )
+    return list(cur.fetchall())
+
+
+def _list_active_router_leases(cur, lane_ids: list[str]) -> list[dict[str, Any]]:
+    if not lane_ids:
+        return []
+    _cleanup_expired_router_leases(cur)
+    cur.execute(
+        """
+        SELECT
+          rl.lease_id,
+          rl.lane_id,
+          rl.model_id,
+          m.model_name,
+          rl.owner,
+          rl.job_type,
+          rl.state,
+          rl.acquired_at,
+          rl.last_heartbeat_at,
+          rl.expires_at,
+          rl.details
+        FROM router_leases rl
+        JOIN models m ON m.model_id = rl.model_id
+        WHERE rl.lane_id = ANY(%s::uuid[])
+          AND rl.state = 'active'
+          AND rl.expires_at > now()
+        ORDER BY rl.acquired_at
+        """,
+        (lane_ids,),
+    )
+    return list(cur.fetchall())
+
+
+def _summarize_active_leases(active_leases: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    summary: list[dict[str, Any]] = []
+    for lease in active_leases:
+        details = dict(lease.get("details") or {})
+        summary.append(
+            {
+                "lease_id": str(lease["lease_id"]),
+                "lane_id": str(lease["lane_id"]),
+                "model_name": str(lease.get("model_name") or ""),
+                "owner": str(lease.get("owner") or ""),
+                "job_type": str(lease.get("job_type") or ""),
+                "route": str(details.get("route") or "chat"),
+                "acquired_at": lease["acquired_at"].isoformat() if lease.get("acquired_at") else None,
+                "expires_at": lease["expires_at"].isoformat() if lease.get("expires_at") else None,
+            }
+        )
+    return summary
+
+
+def _set_lane_suspension(cur, *, lane_id: str, suspended: bool, reason: str) -> None:
+    if suspended:
+        cur.execute(
+            """
+            UPDATE lanes
+            SET status='offline', suspension_reason=%s, updated_at=now()
+            WHERE lane_id=%s
+            """,
+            (reason, lane_id),
+        )
+        return
+    cur.execute(
+        """
+        UPDATE lanes
+        SET status=CASE
+              WHEN status='offline' AND COALESCE(suspension_reason, '')=%s THEN 'ready'
+              ELSE status
+            END,
+            suspension_reason=CASE
+              WHEN COALESCE(suspension_reason, '')=%s THEN NULL
+              ELSE suspension_reason
+            END,
+            updated_at=now()
+        WHERE lane_id=%s
+        """,
+        (reason, reason, lane_id),
+    )
+
+
+def _mark_leases_canceled_for_swap(
+    cur,
+    *,
+    leases: list[dict[str, Any]],
+    reason: str,
+) -> None:
+    for lease in leases:
+        details = dict(lease.get("details") or {})
+        details["swap_canceled"] = True
+        details["swap_cancel_reason"] = reason
+        details["swap_canceled_at"] = datetime.now(UTC).isoformat()
+        cur.execute(
+            """
+            UPDATE router_leases
+            SET state='failed',
+                released_at=now(),
+                details=%s::jsonb
+            WHERE lease_id=%s AND state='active'
+            """,
+            (Jsonb(details), lease["lease_id"]),
+        )
+
+
+def _record_displaced_request(
+    cur,
+    *,
+    lease: dict[str, Any],
+    replacement_lane_id: str | None,
+    status: str,
+    result_payload: dict[str, Any] | None = None,
+    error_message: str | None = None,
+) -> None:
+    details = dict(lease.get("details") or {})
+    cur.execute(
+        """
+        INSERT INTO swap_displaced_requests (
+          original_lease_id,
+          original_lane_id,
+          replacement_lane_id,
+          model_id,
+          route,
+          request_payload,
+          status,
+          handoff_attempted_at,
+          handoff_completed_at,
+          result_payload,
+          error_message,
+          updated_at
+        )
+        VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s, now(), %s, %s::jsonb, %s, now())
+        """,
+        (
+            lease["lease_id"],
+            lease["lane_id"],
+            replacement_lane_id,
+            lease["model_id"],
+            str(details.get("route") or "chat"),
+            Jsonb(dict(details.get("request_payload") or {})),
+            status,
+            datetime.now(UTC) if status in {"rerouted", "reroute_failed", "no_candidate", "unsupported"} else None,
+            Jsonb(result_payload or {}) if result_payload is not None else None,
+            error_message,
+        ),
+    )
+
+
+def _reroute_displaced_lease(
+    *,
+    lease: dict[str, Any],
+    excluded_lane_ids: set[str],
+) -> dict[str, Any]:
+    details = dict(lease.get("details") or {})
+    route = str(details.get("route") or "chat")
+    request_payload = dict(details.get("request_payload") or {})
+    model_name = str(lease.get("model_name") or "").strip()
+    if route not in {"chat", "embeddings"} or not request_payload or not model_name:
+        return {"status": "unsupported", "reason": "lease has no replayable request payload"}
+
+    try:
+        choice = pick_lane_for_model(
+            model=model_name,
+            pin_lane_type=request_payload.get("mesh_pin_lane_type"),
+            exclude_lane_ids=excluded_lane_ids,
+        )
+    except Exception as exc:
+        return {"status": "no_candidate", "reason": str(exc)}
+
+    with db.connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT model_id FROM models WHERE model_name=%s", (model_name,))
+            model_row = cur.fetchone()
+            if not model_row:
+                return {"status": "reroute_failed", "reason": f"model not registered: {model_name}"}
+            model_id = str(model_row["model_id"])
+            downstream_model = model_name
+            cur.execute(
+                """
+                SELECT downstream_model_name
+                FROM lane_model_aliases
+                WHERE lane_id=%s AND model_id=%s
+                """,
+                (choice.lane_id, model_id),
+            )
+            alias_row = cur.fetchone()
+            if alias_row and alias_row.get("downstream_model_name"):
+                downstream_model = str(alias_row["downstream_model_name"])
+        conn.commit()
+
+    lease_id, expires_at = _acquire_router_lease(
+        lane_id=choice.lane_id,
+        model_id=model_id,
+        owner=f"{settings.default_owner}:swap-reroute",
+        job_type=f"{route}-reroute",
+        ttl_seconds=settings.default_lease_ttl_seconds,
+        details={
+            "worker_id": choice.worker_id,
+            "base_url": choice.base_url,
+            "downstream_model": downstream_model,
+            "route": route,
+            "request_payload": request_payload,
+            "rerouted_from_lease_id": str(lease["lease_id"]),
+        },
+    )
+    token = sign_token(
+        {
+            "lease_id": lease_id,
+            "lane_id": choice.lane_id,
+            "worker_id": choice.worker_id,
+            "base_url": choice.base_url,
+            "model": downstream_model,
+            "owner": f"{settings.default_owner}:swap-reroute",
+            "exp": int(expires_at.timestamp()),
+        }
+    )
+    payload = dict(request_payload)
+    payload["model"] = downstream_model
+    try:
+        with httpx.Client(timeout=float(max(30, settings.default_lease_ttl_seconds))) as client:
+            endpoint = "/v1/chat/completions" if route == "chat" else "/v1/embeddings"
+            response = client.post(
+                f"{choice.base_url.rstrip('/')}{endpoint}",
+                json=payload,
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        try:
+            body = response.json()
+        except Exception:
+            body = {"raw": response.text}
+        if response.status_code >= 400:
+            _release_router_lease(lease_id=lease_id, ok=False)
+            return {
+                "status": "reroute_failed",
+                "replacement_lane_id": choice.lane_id,
+                "reason": f"worker proxy http_{response.status_code}",
+                "result_payload": body,
+            }
+        _release_router_lease(lease_id=lease_id, ok=True)
+        return {
+            "status": "rerouted",
+            "replacement_lane_id": choice.lane_id,
+            "replacement_base_url": choice.base_url,
+            "result_payload": body,
+        }
+    except Exception as exc:
+        _release_router_lease(lease_id=lease_id, ok=False)
+        return {
+            "status": "reroute_failed",
+            "replacement_lane_id": choice.lane_id,
+            "reason": str(exc),
+        }
+
+
+def _call_lane_service_action(*, base_url: str, action: Literal["start", "stop", "restart"]) -> dict[str, Any]:
+    with httpx.Client(timeout=180.0) as client:
+        response = client.post(
+            f"{base_url.rstrip('/')}/admin/service-action",
+            json={"action": action},
+            headers={"Authorization": f"Bearer {settings.swap_auth_token}"},
+        )
+    try:
+        body = response.json()
+    except Exception:
+        body = {"raw": response.text}
+    if response.status_code >= 400:
+        raise HTTPException(status_code=response.status_code, detail=body)
+    return body
 
 
 def _cleanup_expired_router_leases(cur) -> None:
@@ -774,6 +1223,8 @@ def v1_chat_completions(
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
     try:
+        payload = _downstream_payload(req)
+        payload["model"] = downstream_model
         # Acquire a router lease (the only source of truth). The worker gateway will
         # call back to /api/router-leases/validate with this token.
         lease_id, expires_at = _acquire_router_lease(
@@ -786,6 +1237,8 @@ def v1_chat_completions(
                 "worker_id": choice.worker_id,
                 "base_url": choice.base_url,
                 "downstream_model": downstream_model,
+                "route": "chat",
+                "request_payload": payload,
             },
         )
         lease = {
@@ -803,9 +1256,7 @@ def v1_chat_completions(
                 "exp": int(expires_at.timestamp()),
             }
         )
-        payload = _downstream_payload(req)
         # Apply downstream model alias if needed (must match leased model for worker gateway validation).
-        payload["model"] = downstream_model
         # Proxy directly to the worker gateway (11434/11435). Backends are bound to localhost.
         stop_heartbeat = threading.Event()
         heartbeat_error: dict[str, str] = {}
@@ -970,6 +1421,11 @@ def v1_embeddings(
     prompt_tokens: int | None = None
     completion_tokens = 0
     try:
+        payload = dict(body or {})
+        payload["model"] = downstream_model
+        for k in list(payload.keys()):
+            if k.startswith("mesh_"):
+                payload.pop(k, None)
         lease_id, expires_at = _acquire_router_lease(
             lane_id=choice.lane_id,
             model_id=str(model_id),
@@ -981,6 +1437,7 @@ def v1_embeddings(
                 "base_url": choice.base_url,
                 "downstream_model": downstream_model,
                 "route": "embeddings",
+                "request_payload": payload,
             },
         )
         lease = {
@@ -998,12 +1455,6 @@ def v1_embeddings(
                 "exp": int(expires_at.timestamp()),
             }
         )
-        payload = dict(body or {})
-        payload["model"] = downstream_model
-        for k in list(payload.keys()):
-            if k.startswith("mesh_"):
-                payload.pop(k, None)
-
         stop_heartbeat = threading.Event()
         heartbeat_error: dict[str, str] = {}
 
@@ -1101,6 +1552,54 @@ def v1_embeddings(
 class SwapModelRequest(BaseModel):
     model_name: str
     allow_unverified: bool = False
+    swap_urgency: Literal["wait", "cancel"] = "wait"
+    wait_timeout_s: int = 1800
+
+
+def _swap_cost_metadata(
+    *,
+    lane_state: dict[str, Any],
+    model_name: str,
+    tuning_profile: dict[str, Any] | None,
+    sibling_lanes: list[dict[str, Any]],
+    active_leases: list[dict[str, Any]],
+) -> dict[str, Any]:
+    return _strip_nones(
+        {
+            "host_id": str(lane_state["host"]["host_id"]) if lane_state.get("host") else None,
+            "host_name": str(lane_state["host"]["host_name"]) if lane_state.get("host") else None,
+            "storage_scheme": str(tuning_profile.get("storage_scheme") or "unknown") if tuning_profile else None,
+            "cost_tier": str(tuning_profile.get("cost_tier") or "standard") if tuning_profile else "standard",
+            "disables_sibling_lanes": bool(tuning_profile.get("disables_sibling_lanes") or False) if tuning_profile else False,
+            "exclusive_host_resources": bool(tuning_profile.get("exclusive_host_resources") or False) if tuning_profile else False,
+            "prompt_tps": float(tuning_profile["prompt_tps"]) if tuning_profile and tuning_profile.get("prompt_tps") is not None else None,
+            "generation_tps": float(tuning_profile["generation_tps"]) if tuning_profile and tuning_profile.get("generation_tps") is not None else None,
+            "avg_total_latency_s": float(tuning_profile["avg_total_latency_s"]) if tuning_profile and tuning_profile.get("avg_total_latency_s") is not None else None,
+            "score": float(tuning_profile["score"]) if tuning_profile and tuning_profile.get("score") is not None else None,
+            "affected_sibling_lanes": [
+                {
+                    "lane_id": str(row["lane_id"]),
+                    "lane_name": str(row.get("lane_name") or ""),
+                    "lane_type": str(row.get("lane_type") or ""),
+                    "base_url": str(row.get("base_url") or ""),
+                }
+                for row in sibling_lanes
+            ],
+            "active_leases": _summarize_active_leases(active_leases),
+            "model_name": model_name,
+        }
+    )
+
+
+def _wait_for_no_active_leases(cur, *, lane_ids: list[str], timeout_s: int) -> list[dict[str, Any]]:
+    deadline = time.monotonic() + max(1, int(timeout_s))
+    while True:
+        active = _list_active_router_leases(cur, lane_ids)
+        if not active:
+            return []
+        if time.monotonic() >= deadline:
+            return active
+        time.sleep(2)
 
 
 def _swap_preflight(
@@ -1111,12 +1610,36 @@ def _swap_preflight(
     allow_unverified: bool = False,
 ) -> tuple[dict[str, Any], SwapPreflightResponse]:
     state, capabilities = _build_lane_capability_payload(cur, lane_ref)
+    tuning_profile = _load_swap_tuning_profile(
+        cur,
+        host_id=str(state["host"]["host_id"]),
+        lane_id=str(state["lane"]["lane_id"]),
+        model_name=model_name,
+    )
+    sibling_lanes = (
+        _list_host_sibling_lanes(
+            cur,
+            host_id=str(state["host"]["host_id"]),
+            lane_id=str(state["lane"]["lane_id"]),
+        )
+        if tuning_profile and bool(tuning_profile.get("disables_sibling_lanes") or tuning_profile.get("exclusive_host_resources"))
+        else []
+    )
+    affected_lane_ids = [str(state["lane"]["lane_id"])] + [str(row["lane_id"]) for row in sibling_lanes]
+    active_leases = _list_active_router_leases(cur, affected_lane_ids)
     for candidate in capabilities.local_viable_models + capabilities.remote_viable_models:
         if candidate.model_name == model_name:
             source_mode = "local" if candidate.locality == "local" else "remote_copy_then_load"
             metadata: dict[str, Any] = {"capability_source": candidate.locality}
             if candidate.locality == "remote":
                 metadata["local_model_root"] = state["local_model_root"]
+            metadata["swap_cost"] = _swap_cost_metadata(
+                lane_state=state,
+                model_name=model_name,
+                tuning_profile=tuning_profile,
+                sibling_lanes=sibling_lanes,
+                active_leases=active_leases,
+            )
             return state, SwapPreflightResponse(
                 lane_id=capabilities.lane_id,
                 model_name=model_name,
@@ -1144,7 +1667,16 @@ def _swap_preflight(
                     estimated_swap_ms=candidate.estimated_swap_ms,
                     swap_strategy=candidate.swap_strategy,
                     reason="allow_unverified override applied",
-                    metadata={"override": "allow_unverified"},
+                    metadata={
+                        "override": "allow_unverified",
+                        "swap_cost": _swap_cost_metadata(
+                            lane_state=state,
+                            model_name=model_name,
+                            tuning_profile=tuning_profile,
+                            sibling_lanes=sibling_lanes,
+                            active_leases=active_leases,
+                        ),
+                    },
                 )
             return state, SwapPreflightResponse(
                 lane_id=capabilities.lane_id,
@@ -1156,12 +1688,30 @@ def _swap_preflight(
                 estimated_swap_ms=candidate.estimated_swap_ms,
                 swap_strategy=candidate.swap_strategy,
                 reason=candidate.reason or "model is unverified for this lane",
+                metadata={
+                    "swap_cost": _swap_cost_metadata(
+                        lane_state=state,
+                        model_name=model_name,
+                        tuning_profile=tuning_profile,
+                        sibling_lanes=sibling_lanes,
+                        active_leases=active_leases,
+                    )
+                },
             )
     return state, SwapPreflightResponse(
         lane_id=capabilities.lane_id,
         model_name=model_name,
         ok=False,
         reason="model is not viable for this lane",
+        metadata={
+            "swap_cost": _swap_cost_metadata(
+                lane_state=state,
+                model_name=model_name,
+                tuning_profile=tuning_profile,
+                sibling_lanes=sibling_lanes,
+                active_leases=active_leases,
+            )
+        },
     )
 
 
@@ -1186,6 +1736,11 @@ def api_lane_swap_model(lane_id: str, req: SwapModelRequest) -> dict[str, Any]:
     lane_state: dict[str, Any] | None = None
     source_mode: str | None = None
     preflight: SwapPreflightResponse | None = None
+    tuning_profile: dict[str, Any] | None = None
+    sibling_lanes: list[dict[str, Any]] = []
+    reroute_results: list[dict[str, Any]] = []
+    active_before_action: list[dict[str, Any]] = []
+    suspension_reason = "exclusive swap profile active"
     with db.connect() as conn:
         with conn.cursor() as cur:
             lane_state, preflight = _swap_preflight(
@@ -1197,6 +1752,74 @@ def api_lane_swap_model(lane_id: str, req: SwapModelRequest) -> dict[str, Any]:
             if not preflight.ok:
                 conn.commit()
                 raise HTTPException(status_code=409, detail=preflight.reason or "swap preflight failed")
+            tuning_profile = _load_swap_tuning_profile(
+                cur,
+                host_id=str(lane_state["host"]["host_id"]),
+                lane_id=str(lane_state["lane"]["lane_id"]),
+                model_name=req.model_name,
+            )
+            sibling_lanes = _list_host_sibling_lanes(
+                cur,
+                host_id=str(lane_state["host"]["host_id"]),
+                lane_id=str(lane_state["lane"]["lane_id"]),
+            )
+            impacted_sibling_lanes = (
+                sibling_lanes
+                if tuning_profile and bool(tuning_profile.get("disables_sibling_lanes") or tuning_profile.get("exclusive_host_resources"))
+                else []
+            )
+            impacted_sibling_lane_ids = {str(row["lane_id"]) for row in impacted_sibling_lanes}
+            affected_lane_ids = [str(preflight.lane_id)] + [str(row["lane_id"]) for row in impacted_sibling_lanes]
+            if req.swap_urgency == "wait":
+                active_before_action = _wait_for_no_active_leases(
+                    cur,
+                    lane_ids=affected_lane_ids,
+                    timeout_s=req.wait_timeout_s,
+                )
+                if active_before_action:
+                    conn.commit()
+                    raise HTTPException(
+                        status_code=409,
+                        detail={
+                            "error": "timed out waiting for active runs to finish before swap",
+                            "active_leases": _summarize_active_leases(active_before_action),
+                            "swap_urgency": req.swap_urgency,
+                        },
+                    )
+            else:
+                active_before_action = _list_active_router_leases(cur, affected_lane_ids)
+                excluded_lane_ids = set(affected_lane_ids)
+                for lease in active_before_action:
+                    reroute = _reroute_displaced_lease(lease=lease, excluded_lane_ids=excluded_lane_ids)
+                    reroute_results.append(
+                        {
+                            "original_lease_id": str(lease["lease_id"]),
+                            "original_lane_id": str(lease["lane_id"]),
+                            **reroute,
+                        }
+                    )
+                    _record_displaced_request(
+                        cur,
+                        lease=lease,
+                        replacement_lane_id=reroute.get("replacement_lane_id"),
+                        status=str(reroute.get("status") or "captured"),
+                        result_payload=reroute.get("result_payload"),
+                        error_message=reroute.get("reason"),
+                    )
+                if active_before_action:
+                    _mark_leases_canceled_for_swap(
+                        cur,
+                        leases=active_before_action,
+                        reason=f"swap canceled active runs for {req.model_name}",
+                    )
+            if impacted_sibling_lanes:
+                for sibling in impacted_sibling_lanes:
+                    _set_lane_suspension(
+                        cur,
+                        lane_id=str(sibling["lane_id"]),
+                        suspended=True,
+                        reason=suspension_reason,
+                    )
             source_mode = preflight.source_mode or "local"
             cur.execute(
                 """
@@ -1215,6 +1838,37 @@ def api_lane_swap_model(lane_id: str, req: SwapModelRequest) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail="artifact not found for swap")
 
     base_url = str(lane_state["lane"]["base_url"])
+    impacted_sibling_lanes = (
+        sibling_lanes
+        if tuning_profile and bool(tuning_profile.get("disables_sibling_lanes") or tuning_profile.get("exclusive_host_resources"))
+        else []
+    )
+    sibling_service_actions: list[dict[str, Any]] = []
+    if impacted_sibling_lanes:
+        for sibling in impacted_sibling_lanes:
+            try:
+                action_result = _call_lane_service_action(base_url=str(sibling["base_url"]), action="stop")
+                sibling_service_actions.append(
+                    {
+                        "lane_id": str(sibling["lane_id"]),
+                        "base_url": str(sibling["base_url"]),
+                        "action": "stop",
+                        "ok": True,
+                        "details": action_result,
+                    }
+                )
+            except Exception as exc:
+                sibling_service_actions.append(
+                    {
+                        "lane_id": str(sibling["lane_id"]),
+                        "base_url": str(sibling["base_url"]),
+                        "action": "stop",
+                        "ok": False,
+                        "error": str(exc),
+                    }
+                )
+                raise
+
     payload: dict[str, Any] = {
         "model_name": req.model_name,
         "model_path": preflight.artifact_path,
@@ -1299,15 +1953,52 @@ def api_lane_swap_model(lane_id: str, req: SwapModelRequest) -> dict[str, Any]:
                                 err_msg,
                             ),
                         )
+                    if sibling_lanes:
+                        for sibling in sibling_lanes:
+                            _set_lane_suspension(
+                                cur,
+                                lane_id=str(sibling["lane_id"]),
+                                suspended=bool(ok and str(sibling["lane_id"]) in impacted_sibling_lane_ids),
+                                reason=suspension_reason,
+                            )
                 conn.commit()
         except Exception:
             pass
+        if ok and sibling_lanes and not impacted_sibling_lanes:
+            for sibling in sibling_lanes:
+                try:
+                    action_result = _call_lane_service_action(base_url=str(sibling["base_url"]), action="start")
+                    sibling_service_actions.append(
+                        {
+                            "lane_id": str(sibling["lane_id"]),
+                            "base_url": str(sibling["base_url"]),
+                            "action": "start",
+                            "ok": True,
+                            "details": action_result,
+                        }
+                    )
+                except Exception as exc:
+                    sibling_service_actions.append(
+                        {
+                            "lane_id": str(sibling["lane_id"]),
+                            "base_url": str(sibling["base_url"]),
+                            "action": "start",
+                            "ok": False,
+                            "error": str(exc),
+                        }
+                    )
 
     return {
         "ok": True,
         "lane_id": preflight.lane_id,
         "model_name": req.model_name,
         "source_mode": source_mode,
+        "swap_urgency": req.swap_urgency,
+        "cost_tier": str(tuning_profile.get("cost_tier") or "standard") if tuning_profile else "standard",
+        "storage_scheme": str(tuning_profile.get("storage_scheme") or "unknown") if tuning_profile else None,
+        "active_leases_handled": _summarize_active_leases(active_before_action),
+        "reroute_results": reroute_results,
+        "sibling_service_actions": sibling_service_actions,
         "details": data,
     }
 
@@ -1451,5 +2142,73 @@ def api_lane_capabilities(lane_id: str) -> LaneCapabilityResponse:
     with db.connect() as conn:
         with conn.cursor() as cur:
             _, response = _build_lane_capability_payload(cur, lane_id)
+        conn.commit()
+    return response
+
+
+@app.get("/api/model-tuning-profiles", response_model=list[ModelTuningProfileResponse])
+def api_model_tuning_profiles(
+    host_ref: str | None = None,
+    model_name: str | None = None,
+    storage_scheme: str | None = None,
+) -> list[ModelTuningProfileResponse]:
+    with db.connect() as conn:
+        with conn.cursor() as cur:
+            clauses = []
+            params: list[Any] = []
+            if host_ref:
+                clauses.append("(h.host_id::text=%s OR h.host_name::text=%s)")
+                params.extend([host_ref, host_ref])
+            if model_name:
+                clauses.append("m.model_name=%s")
+                params.append(model_name)
+            if storage_scheme:
+                clauses.append("tp.storage_scheme=%s")
+                params.append(storage_scheme)
+            where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+            cur.execute(
+                f"""
+                SELECT
+                  tp.tuning_profile_id,
+                  tp.host_id,
+                  h.host_name,
+                  tp.model_id,
+                  m.model_name,
+                  tp.lane_id,
+                  l.lane_name,
+                  l.lane_type,
+                  tp.storage_scheme,
+                  tp.settings,
+                  tp.cost_tier,
+                  tp.disables_sibling_lanes,
+                  tp.exclusive_host_resources,
+                  tp.prompt_tps,
+                  tp.generation_tps,
+                  tp.avg_total_latency_s,
+                  tp.score,
+                  tp.evaluation_count,
+                  tp.source_run_tag,
+                  tp.notes,
+                  tp.created_at,
+                  tp.updated_at
+                FROM model_tuning_profiles tp
+                JOIN hosts h ON h.host_id = tp.host_id
+                JOIN models m ON m.model_id = tp.model_id
+                LEFT JOIN lanes l ON l.lane_id = tp.lane_id
+                {where_sql}
+                ORDER BY tp.updated_at DESC, h.host_name, m.model_name
+                """,
+                tuple(params),
+            )
+            rows = cur.fetchall()
+        conn.commit()
+    return [_row_to_tuning_profile(row) for row in rows]
+
+
+@app.post("/api/model-tuning-profiles", response_model=ModelTuningProfileResponse)
+def api_upsert_model_tuning_profile(req: ModelTuningProfileUpsertRequest) -> ModelTuningProfileResponse:
+    with db.connect() as conn:
+        with conn.cursor() as cur:
+            response = _upsert_model_tuning_profile(cur, req)
         conn.commit()
     return response

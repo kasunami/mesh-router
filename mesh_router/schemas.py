@@ -111,3 +111,46 @@ class ModelInfo(BaseModel):
 class ModelsResponse(BaseModel):
     object: str = "list"
     data: list[ModelInfo]
+
+
+class ModelTuningProfileUpsertRequest(BaseModel):
+    host_ref: str
+    model_name: str
+    storage_scheme: Literal["ram", "vram", "both"]
+    settings: dict[str, Any]
+    cost_tier: Literal["standard", "high", "exclusive"] = "standard"
+    disables_sibling_lanes: bool = False
+    exclusive_host_resources: bool = False
+    prompt_tps: float | None = None
+    generation_tps: float | None = None
+    avg_total_latency_s: float | None = None
+    score: float | None = None
+    evaluation_count: int | None = 1
+    lane_ref: str | None = None
+    source_run_tag: str | None = None
+    notes: str | None = None
+
+
+class ModelTuningProfileResponse(BaseModel):
+    tuning_profile_id: str
+    host_id: str
+    host_name: str
+    model_id: str
+    model_name: str
+    lane_id: str | None = None
+    lane_name: str | None = None
+    lane_type: str | None = None
+    storage_scheme: Literal["ram", "vram", "both"]
+    settings: dict[str, Any]
+    cost_tier: Literal["standard", "high", "exclusive"]
+    disables_sibling_lanes: bool
+    exclusive_host_resources: bool
+    prompt_tps: float | None = None
+    generation_tps: float | None = None
+    avg_total_latency_s: float | None = None
+    score: float | None = None
+    evaluation_count: int
+    source_run_tag: str | None = None
+    notes: str | None = None
+    created_at: str
+    updated_at: str

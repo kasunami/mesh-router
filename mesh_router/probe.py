@@ -137,7 +137,10 @@ def probe_once() -> None:
                 cur.execute(
                     """
                     UPDATE lanes
-                    SET status=%s::lane_status,
+                    SET status=CASE
+                          WHEN COALESCE(suspension_reason, '') <> '' THEN status
+                          ELSE %s::lane_status
+                        END,
                         last_probe_at=now(),
                         last_ok_at=CASE WHEN %s THEN now() ELSE last_ok_at END,
                         last_error=%s,

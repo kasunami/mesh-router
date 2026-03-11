@@ -20,6 +20,7 @@ def pick_lane_for_model(
     pin_worker: str | None = None,
     pin_base_url: str | None = None,
     pin_lane_type: str | None = None,
+    exclude_lane_ids: set[str] | None = None,
 ) -> LaneChoice:
     """
     Minimal placement logic:
@@ -30,6 +31,8 @@ def pick_lane_for_model(
     This will be expanded to account for lane_model_policy, dualboot groups, disk/RAM budgets,
     load times, TPS, and error rates.
     """
+    excluded = {lane_id for lane_id in (exclude_lane_ids or set()) if lane_id}
+
     if pin_worker and pin_base_url:
         with db.connect() as conn:
             with conn.cursor() as cur:
@@ -40,9 +43,10 @@ def pick_lane_for_model(
                     FROM lanes l
                     JOIN hosts h ON h.host_id=l.host_id
                     WHERE h.host_name=%s AND l.base_url=%s
+                      AND (%s::text[] IS NULL OR l.lane_id::text <> ALL(%s::text[]))
                     LIMIT 1
                     """,
-                    (pin_worker, pin_base_url),
+                    (pin_worker, pin_base_url, list(excluded) or None, list(excluded) or None),
                 )
         if not rows:
             raise RuntimeError("pinned lane not found")
@@ -76,13 +80,22 @@ def pick_lane_for_model(
                           AND COALESCE(rl.last_heartbeat_at, rl.acquired_at) > now() - (%s * interval '1 second')
                       )
                       AND (%s::text IS NULL OR l.lane_type::text = %s::text)
+                      AND (%s::text[] IS NULL OR l.lane_id::text <> ALL(%s::text[]))
                     ORDER BY
                       CASE WHEN l.current_model_name = %s THEN 0 ELSE 1 END,
                       CASE l.lane_type WHEN 'gpu' THEN 0 WHEN 'mlx' THEN 1 WHEN 'cpu' THEN 2 ELSE 9 END,
                       l.base_url ASC
                     LIMIT 1
                     """,
-                    (pin_worker, settings.default_lease_stale_seconds, pin_lane_type, pin_lane_type, model),
+                    (
+                        pin_worker,
+                        settings.default_lease_stale_seconds,
+                        pin_lane_type,
+                        pin_lane_type,
+                        list(excluded) or None,
+                        list(excluded) or None,
+                        model,
+                    ),
                 )
         if not rows:
             raise RuntimeError("no READY lanes for pinned worker")
@@ -113,6 +126,7 @@ def pick_lane_for_model(
                       AND (%s OR h.host_name IN ('Static-Deskix','Static-Mobile-2','pupix1','tiffs-macbook'))
                       AND h.host_name NOT IN ('litellm-router')
                       AND (%s::text IS NULL OR l.lane_type::text = %s::text)
+                      AND (%s::text[] IS NULL OR l.lane_id::text <> ALL(%s::text[]))
                     ORDER BY
                       -- Prefer primary worker hosts; 'pupix1' is in a dualboot group. Keep other hosts as last-resort.
                       CASE h.host_name
@@ -134,6 +148,8 @@ def pick_lane_for_model(
                         allow_fallback_hosts,
                         pin_lane_type,
                         pin_lane_type,
+                        list(excluded) or None,
+                        list(excluded) or None,
                         model,
                     ),
                 )
