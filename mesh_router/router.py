@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 
 from .db import db, q
 from .config import settings
@@ -12,6 +13,51 @@ class LaneChoice:
     worker_id: str
     base_url: str
     lane_type: str
+
+
+def _model_lookup_keys(model_name: str | None) -> set[str]:
+    raw = (model_name or "").strip()
+    if not raw:
+        return set()
+
+    stem = raw.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+    stem_no_ext = stem.rsplit(".", 1)[0] if "." in stem else stem
+    normalized = stem_no_ext.lower().replace("_", "-").replace(":", "-")
+    keys = {raw.lower(), stem.lower(), normalized}
+
+    for value in list(keys):
+        dequantized = re.sub(r"[-_.]q\d+(?:[-_.]k(?:[-_.][a-z0-9]+)?)?$", "", value)
+        debitted = re.sub(r"[-_.](?:\d+bit|fp8)$", "", value)
+        keys.add(dequantized)
+        keys.add(debitted)
+        keys.add(re.sub(r"[-_.](?:\d+bit|fp8)$", "", dequantized))
+
+    return {key for key in keys if key}
+
+
+def _is_exact_model_request(model_name: str | None) -> bool:
+    raw = (model_name or "").strip()
+    if not raw:
+        return False
+    lowered = raw.lower()
+    if "/" in raw or "\\" in raw:
+        return True
+    if lowered.endswith((".gguf", ".safetensors", ".bin")):
+        return True
+    if re.search(r"(?:^|[-_.:])q\d+(?:[-_.]k(?:[-_.][a-z0-9]+)?)?(?:$|[-_.])", lowered):
+        return True
+    if re.search(r"(?:^|[-_.:])(?:\d+bit|fp8)(?:$|[-_.])", lowered):
+        return True
+    return False
+
+
+def _model_matches_request(requested_model: str, candidate_model: str | None) -> bool:
+    candidate = (candidate_model or "").strip()
+    if not candidate:
+        return False
+    if _is_exact_model_request(requested_model):
+        return candidate == requested_model
+    return bool(_model_lookup_keys(requested_model) & _model_lookup_keys(candidate))
 
 
 def pick_lane_for_model(
@@ -82,10 +128,9 @@ def pick_lane_for_model(
                       AND (%s::text IS NULL OR l.lane_type::text = %s::text)
                       AND (%s::text[] IS NULL OR l.lane_id::text <> ALL(%s::text[]))
                     ORDER BY
-                      CASE WHEN l.current_model_name = %s THEN 0 ELSE 1 END,
                       CASE l.lane_type WHEN 'gpu' THEN 0 WHEN 'mlx' THEN 1 WHEN 'cpu' THEN 2 ELSE 9 END,
                       l.base_url ASC
-                    LIMIT 1
+                    LIMIT 20
                     """,
                     (
                         pin_worker,
@@ -94,12 +139,12 @@ def pick_lane_for_model(
                         pin_lane_type,
                         list(excluded) or None,
                         list(excluded) or None,
-                        model,
                     ),
                 )
-        if not rows:
-            raise RuntimeError("no READY lanes for pinned worker")
-        r0 = rows[0]
+        matched = [row for row in rows if _model_matches_request(model, row.get("current_model_name"))]
+        if not matched:
+            raise RuntimeError(f"no READY lanes for pinned worker serving requested model: {model}")
+        r0 = matched[0]
         return LaneChoice(
             lane_id=str(r0["lane_id"]),
             worker_id=str(r0["host_name"]),
@@ -136,12 +181,10 @@ def pick_lane_for_model(
                         WHEN 'tiffs-macbook' THEN 3
                         ELSE 999
                       END,
-                      -- Prefer already-loaded model.
-                      CASE WHEN l.current_model_name = %s THEN 0 ELSE 1 END,
                       -- Prefer GPU for generation, then MLX, then CPU.
                       CASE l.lane_type WHEN 'gpu' THEN 0 WHEN 'mlx' THEN 1 WHEN 'cpu' THEN 2 ELSE 9 END,
                       h.host_name ASC
-                    LIMIT 1
+                    LIMIT 50
                     """,
                     (
                         settings.default_lease_stale_seconds,
@@ -150,12 +193,12 @@ def pick_lane_for_model(
                         pin_lane_type,
                         list(excluded) or None,
                         list(excluded) or None,
-                        model,
                     ),
                 )
-        if not rows:
+        matched = [row for row in rows if _model_matches_request(model, row.get("current_model_name"))]
+        if not matched:
             return None
-        r0 = rows[0]
+        r0 = matched[0]
         return LaneChoice(
             lane_id=str(r0["lane_id"]),
             worker_id=str(r0["host_name"]),
@@ -165,5 +208,5 @@ def pick_lane_for_model(
 
     chosen = _pick(allow_fallback_hosts=False) or _pick(allow_fallback_hosts=True)
     if not chosen:
-        raise RuntimeError("no READY lanes available")
+        raise RuntimeError(f"no READY lanes available serving requested model: {model}")
     return chosen

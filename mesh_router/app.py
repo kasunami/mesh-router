@@ -67,21 +67,49 @@ def _model_lookup_keys(model_name: str | None) -> set[str]:
     else:
         stem_no_ext = stem
 
-    normalized = stem_no_ext.lower().replace("_", "-")
+    normalized = stem_no_ext.lower().replace("_", "-").replace(":", "-")
     keys.add(normalized)
 
     dequantized = re.sub(r"[-_.]q\d+(?:[-_.]k(?:[-_.][a-z0-9]+)?)?$", "", normalized)
     if dequantized:
         keys.add(dequantized)
+    debitted = re.sub(r"[-_.](?:\d+bit|fp8)$", "", normalized)
+    if debitted:
+        keys.add(debitted)
+    if dequantized:
+        dequantized_debitted = re.sub(r"[-_.](?:\d+bit|fp8)$", "", dequantized)
+        if dequantized_debitted:
+            keys.add(dequantized_debitted)
 
     return {key for key in keys if key}
+
+
+def _is_exact_model_request(model_name: str | None) -> bool:
+    raw = (model_name or "").strip()
+    if not raw:
+        return False
+    lowered = raw.lower()
+    if "/" in raw or "\\" in raw:
+        return True
+    if lowered.endswith((".gguf", ".safetensors", ".bin")):
+        return True
+    if re.search(r"(?:^|[-_.:])q\d+(?:[-_.]k(?:[-_.][a-z0-9]+)?)?(?:$|[-_.])", lowered):
+        return True
+    if re.search(r"(?:^|[-_.:])(?:\d+bit|fp8)(?:$|[-_.])", lowered):
+        return True
+    return False
+
+
+def _model_request_matches_candidate(requested_model_name: str, candidate_model_name: str) -> bool:
+    if _is_exact_model_request(requested_model_name):
+        return candidate_model_name == requested_model_name
+    return bool(_model_lookup_keys(requested_model_name) & _model_lookup_keys(candidate_model_name))
 
 
 def _resolve_swap_candidate(
     capabilities: LaneCapabilityResponse,
     requested_model_name: str,
 ) -> tuple[LaneModelCandidate | None, str | None]:
-    requested_keys = _model_lookup_keys(requested_model_name)
     groups = (
         ("viable", capabilities.local_viable_models + capabilities.remote_viable_models),
         ("unverified", capabilities.unverified_models),
@@ -89,12 +117,7 @@ def _resolve_swap_candidate(
 
     for group_name, candidates in groups:
         for candidate in candidates:
-            if candidate.model_name == requested_model_name:
-                return candidate, group_name
-
-    for group_name, candidates in groups:
-        for candidate in candidates:
-            if requested_keys & _model_lookup_keys(candidate.model_name):
+            if _model_request_matches_candidate(requested_model_name, candidate.model_name):
                 return candidate, group_name
 
     return None, None
@@ -773,6 +796,35 @@ def _downstream_payload(req: ChatCompletionRequest) -> dict[str, Any]:
     return _strip_nones(raw)
 
 
+def _resolve_downstream_model_for_lane(
+    cur,
+    *,
+    lane_id: str,
+    requested_model_name: str,
+    model_id: str | None,
+) -> str:
+    cur.execute("SELECT current_model_name FROM lanes WHERE lane_id=%s", (lane_id,))
+    lane_row = cur.fetchone()
+    current_model_name = str((lane_row or {}).get("current_model_name") or "").strip()
+    if current_model_name and _model_request_matches_candidate(requested_model_name, current_model_name):
+        return current_model_name
+
+    if model_id:
+        cur.execute(
+            """
+            SELECT downstream_model_name
+            FROM lane_model_aliases
+            WHERE lane_id=%s AND model_id=%s
+            """,
+            (lane_id, model_id),
+        )
+        alias_row = cur.fetchone()
+        if alias_row and alias_row.get("downstream_model_name"):
+            return str(alias_row["downstream_model_name"])
+
+    return requested_model_name
+
+
 @app.get("/healthz")
 def healthz() -> dict[str, Any]:
     return {"ok": True}
@@ -1038,18 +1090,12 @@ def _reroute_displaced_lease(
             if not model_row:
                 return {"status": "reroute_failed", "reason": f"model not registered: {model_name}"}
             model_id = str(model_row["model_id"])
-            downstream_model = model_name
-            cur.execute(
-                """
-                SELECT downstream_model_name
-                FROM lane_model_aliases
-                WHERE lane_id=%s AND model_id=%s
-                """,
-                (choice.lane_id, model_id),
+            downstream_model = _resolve_downstream_model_for_lane(
+                cur,
+                lane_id=choice.lane_id,
+                requested_model_name=model_name,
+                model_id=model_id,
             )
-            alias_row = cur.fetchone()
-            if alias_row and alias_row.get("downstream_model_name"):
-                downstream_model = str(alias_row["downstream_model_name"])
         conn.commit()
 
     lease_id, expires_at = _acquire_router_lease(
@@ -1303,17 +1349,12 @@ def v1_chat_completions(
             lane_id = choice.lane_id or None
 
             if lane_id is not None:
-                cur.execute(
-                    """
-                    SELECT downstream_model_name
-                    FROM lane_model_aliases
-                    WHERE lane_id=%s AND model_id=%s
-                    """,
-                    (lane_id, model_id),
+                downstream_model = _resolve_downstream_model_for_lane(
+                    cur,
+                    lane_id=str(lane_id),
+                    requested_model_name=req.model,
+                    model_id=str(model_id),
                 )
-                alias_row = cur.fetchone()
-                if alias_row and alias_row.get("downstream_model_name"):
-                    downstream_model = str(alias_row["downstream_model_name"])
         conn.commit()
 
     ok = True
@@ -1501,17 +1542,12 @@ def v1_embeddings(
             model_id = cur.fetchone()["model_id"]
             lane_id = choice.lane_id or None
             if lane_id is not None:
-                cur.execute(
-                    """
-                    SELECT downstream_model_name
-                    FROM lane_model_aliases
-                    WHERE lane_id=%s AND model_id=%s
-                    """,
-                    (lane_id, model_id),
+                downstream_model = _resolve_downstream_model_for_lane(
+                    cur,
+                    lane_id=str(lane_id),
+                    requested_model_name=model_name,
+                    model_id=str(model_id),
                 )
-                alias_row = cur.fetchone()
-                if alias_row and alias_row.get("downstream_model_name"):
-                    downstream_model = str(alias_row["downstream_model_name"])
         conn.commit()
 
     ok = True
