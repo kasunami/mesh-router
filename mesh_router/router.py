@@ -73,7 +73,7 @@ def pick_lane_for_model(
                         SELECT 1 FROM router_leases rl
                         WHERE rl.lane_id = l.lane_id
                           AND rl.state = 'active'
-                          AND COALESCE(rl.last_heartbeat_at, rl.acquired_at) > now() - make_interval(secs => %s)
+                          AND COALESCE(rl.last_heartbeat_at, rl.acquired_at) > now() - (%s * interval '1 second')
                       )
                       AND (%s::text IS NULL OR l.lane_type::text = %s::text)
                     ORDER BY
@@ -108,7 +108,7 @@ def pick_lane_for_model(
                         SELECT 1 FROM router_leases rl
                         WHERE rl.lane_id = l.lane_id
                           AND rl.state = 'active'
-                          AND COALESCE(rl.last_heartbeat_at, rl.acquired_at) > now() - make_interval(secs => %s)
+                          AND COALESCE(rl.last_heartbeat_at, rl.acquired_at) > now() - (%s * interval '1 second')
                       )
                       AND (%s OR h.host_name IN ('Static-Deskix','Static-Mobile-2','pupix1','tiffs-macbook'))
                       AND h.host_name NOT IN ('litellm-router')
@@ -130,8 +130,8 @@ def pick_lane_for_model(
                     LIMIT 1
                     """,
                     (
-                        allow_fallback_hosts,
                         settings.default_lease_stale_seconds,
+                        allow_fallback_hosts,
                         pin_lane_type,
                         pin_lane_type,
                         model,

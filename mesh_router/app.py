@@ -588,7 +588,7 @@ def _cleanup_expired_router_leases(cur) -> None:
         UPDATE router_leases
         SET state='expired'
         WHERE state='active'
-          AND COALESCE(last_heartbeat_at, acquired_at) < now() - make_interval(secs => %s)
+          AND COALESCE(last_heartbeat_at, acquired_at) < now() - (%s * interval '1 second')
         """,
         (settings.default_lease_stale_seconds,),
     )
