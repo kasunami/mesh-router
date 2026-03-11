@@ -908,6 +908,196 @@ def v1_chat_completions(
             pass
 
 
+@app.post("/v1/embeddings")
+def v1_embeddings(
+    req: Request,
+    body: dict[str, Any] = Body(default_factory=dict),
+    x_mesh_pin_worker: str | None = Header(default=None),
+    x_mesh_pin_base_url: str | None = Header(default=None),
+) -> dict[str, Any]:
+    model_name = str((body or {}).get("model") or "").strip()
+    if not model_name:
+        raise HTTPException(status_code=400, detail="model is required")
+    pin_worker = x_mesh_pin_worker or body.get("mesh_pin_worker")
+    pin_base_url = x_mesh_pin_base_url or body.get("mesh_pin_base_url")
+    pin_lane_type = body.get("mesh_pin_lane_type")
+
+    try:
+        choice = pick_lane_for_model(
+            model=model_name,
+            pin_worker=pin_worker,
+            pin_base_url=pin_base_url,
+            pin_lane_type=pin_lane_type,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+    lease = None
+    started = time.time()
+    downstream_model = model_name
+    with db.connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO models (model_name, format)
+                VALUES (%s, 'other'::model_format)
+                ON CONFLICT (model_name) DO UPDATE SET updated_at=now()
+                """,
+                (model_name,),
+            )
+            cur.execute("SELECT model_id FROM models WHERE model_name=%s", (model_name,))
+            model_id = cur.fetchone()["model_id"]
+            lane_id = choice.lane_id or None
+            if lane_id is not None:
+                cur.execute(
+                    """
+                    SELECT downstream_model_name
+                    FROM lane_model_aliases
+                    WHERE lane_id=%s AND model_id=%s
+                    """,
+                    (lane_id, model_id),
+                )
+                alias_row = cur.fetchone()
+                if alias_row and alias_row.get("downstream_model_name"):
+                    downstream_model = str(alias_row["downstream_model_name"])
+        conn.commit()
+
+    ok = True
+    err_kind = None
+    err_msg = None
+    resp_data: dict[str, Any] | None = None
+    tps: float | None = None
+    prompt_tokens: int | None = None
+    completion_tokens = 0
+    try:
+        lease_id, expires_at = _acquire_router_lease(
+            lane_id=choice.lane_id,
+            model_id=str(model_id),
+            owner=settings.default_owner,
+            job_type=settings.default_job_type,
+            ttl_seconds=settings.default_lease_ttl_seconds,
+            details={
+                "worker_id": choice.worker_id,
+                "base_url": choice.base_url,
+                "downstream_model": downstream_model,
+                "route": "embeddings",
+            },
+        )
+        lease = {
+            "lease_id": lease_id,
+            "expires_at": expires_at.isoformat(),
+        }
+        token = sign_token(
+            {
+                "lease_id": lease_id,
+                "lane_id": choice.lane_id,
+                "worker_id": choice.worker_id,
+                "base_url": choice.base_url,
+                "model": downstream_model,
+                "owner": settings.default_owner,
+                "exp": int(expires_at.timestamp()),
+            }
+        )
+        payload = dict(body or {})
+        payload["model"] = downstream_model
+        for k in list(payload.keys()):
+            if k.startswith("mesh_"):
+                payload.pop(k, None)
+
+        stop_heartbeat = threading.Event()
+        heartbeat_error: dict[str, str] = {}
+
+        def _heartbeat_loop() -> None:
+            interval = max(5, int(settings.default_lease_heartbeat_interval_seconds))
+            while not stop_heartbeat.wait(interval):
+                try:
+                    _heartbeat_router_lease(lease_id=lease_id)
+                except Exception as exc:
+                    heartbeat_error["error"] = str(exc)
+                    break
+
+        heartbeat_thread = threading.Thread(target=_heartbeat_loop, name=f"lease-heartbeat-{lease_id}", daemon=True)
+        heartbeat_thread.start()
+        try:
+            with httpx.Client(timeout=float(max(30, settings.default_lease_ttl_seconds))) as client:
+                r = client.post(
+                    f"{choice.base_url.rstrip('/')}/v1/embeddings",
+                    json=payload,
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+        finally:
+            stop_heartbeat.set()
+            heartbeat_thread.join(timeout=2)
+        if heartbeat_error:
+            raise RuntimeError(f"lease heartbeat failed: {heartbeat_error['error']}")
+        try:
+            resp_data = r.json()
+        except Exception:
+            resp_data = {"raw": r.text}
+        if r.status_code >= 400:
+            raise RuntimeError(f"worker proxy http_{r.status_code}: {resp_data}")
+
+        usage = (resp_data or {}).get("usage") or {}
+        if usage.get("prompt_tokens") is not None:
+            prompt_tokens = int(usage["prompt_tokens"])
+        elif usage.get("total_tokens") is not None:
+            prompt_tokens = int(usage["total_tokens"])
+        elapsed_ms = max(1, int((time.time() - started) * 1000))
+        if prompt_tokens:
+            tps = round((float(prompt_tokens) * 1000.0) / float(elapsed_ms), 6)
+        return resp_data
+    except Exception as e:
+        ok = False
+        err_kind = "proxy_error"
+        err_msg = str(e)
+        raise HTTPException(status_code=502, detail=str(e))
+    finally:
+        elapsed_ms = int((time.time() - started) * 1000)
+        try:
+            with db.connect() as conn:
+                with conn.cursor() as cur:
+                    if lane_id is not None:
+                        cur.execute(
+                            """
+                            INSERT INTO lane_model_metrics (
+                              lane_id, model_id,
+                              load_time_ms, request_latency_ms,
+                              tps, prompt_tokens, completion_tokens,
+                              success, error_kind, error_message, run_tag
+                            )
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            """,
+                            (
+                                lane_id,
+                                model_id,
+                                None,
+                                elapsed_ms,
+                                tps,
+                                prompt_tokens,
+                                completion_tokens,
+                                ok,
+                                err_kind,
+                                err_msg,
+                                "mesh-router:embeddings",
+                            ),
+                        )
+                        if ok:
+                            _upsert_usage(
+                                cur,
+                                lane_id=str(lane_id),
+                                model_id=str(model_id),
+                                used_at=datetime.now(UTC),
+                            )
+                conn.commit()
+        except Exception:
+            pass
+        try:
+            if lease is not None:
+                _release_router_lease(lease_id=str(lease["lease_id"]), ok=ok)
+        except Exception:
+            pass
+
+
 class SwapModelRequest(BaseModel):
     model_name: str
     allow_unverified: bool = False
