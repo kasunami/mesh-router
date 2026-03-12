@@ -3,13 +3,14 @@ from __future__ import annotations
 import re
 import time
 import threading
+import uuid
 from pathlib import Path
 from typing import Any, Literal
 
 from datetime import UTC, datetime, timedelta
 
 import httpx
-from fastapi import Body, FastAPI, Header, HTTPException, Request
+from fastapi import Body, FastAPI, Header, HTTPException, Request, Response
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel
 
@@ -1374,9 +1375,68 @@ def api_lane_lease_status(lane_id: str) -> dict[str, Any]:
     }
 
 
+@app.get("/api/router-requests/{request_id}")
+def api_router_request_status(request_id: str) -> dict[str, Any]:
+    """Return router-side status for a specific routed request."""
+    with db.connect() as conn:
+        with conn.cursor() as cur:
+            _cleanup_expired_router_leases(cur)
+            cur.execute(
+                """
+                SELECT
+                  rl.lease_id,
+                  rl.lane_id,
+                  rl.model_id,
+                  m.model_name,
+                  rl.owner,
+                  rl.job_type,
+                  rl.state,
+                  rl.acquired_at,
+                  rl.last_heartbeat_at,
+                  rl.expires_at,
+                  rl.released_at,
+                  rl.details,
+                  l.base_url,
+                  l.lane_type,
+                  l.status as lane_status,
+                  h.host_name
+                FROM router_leases rl
+                JOIN models m ON m.model_id = rl.model_id
+                JOIN lanes l ON l.lane_id = rl.lane_id
+                JOIN hosts h ON h.host_id = l.host_id
+                WHERE rl.details->>'request_id' = %s
+                ORDER BY rl.acquired_at DESC
+                LIMIT 1
+                """,
+                (request_id,),
+            )
+            row = cur.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="request not found")
+    details = dict(row.get("details") or {})
+    return {
+        "request_id": request_id,
+        "lease_id": str(row["lease_id"]),
+        "lane_id": str(row["lane_id"]),
+        "host": str(row.get("host_name") or ""),
+        "lane_type": str(row.get("lane_type") or ""),
+        "base_url": str(row.get("base_url") or ""),
+        "lane_status": str(row.get("lane_status") or ""),
+        "model_name": str(row.get("model_name") or ""),
+        "state": str(row.get("state") or ""),
+        "route": str(details.get("route") or "chat"),
+        "acquired_at": row["acquired_at"].isoformat() if row.get("acquired_at") else None,
+        "last_heartbeat_at": row["last_heartbeat_at"].isoformat() if row.get("last_heartbeat_at") else None,
+        "expires_at": row["expires_at"].isoformat() if row.get("expires_at") else None,
+        "released_at": row["released_at"].isoformat() if row.get("released_at") else None,
+        "downstream_model": details.get("downstream_model"),
+    }
+
+
 @app.post("/v1/chat/completions")
 def v1_chat_completions(
     req: ChatCompletionRequest,
+    response: Response,
     x_mesh_pin_worker: str | None = Header(default=None),
     x_mesh_pin_base_url: str | None = Header(default=None),
 ) -> dict[str, Any]:
@@ -1396,6 +1456,7 @@ def v1_chat_completions(
         raise HTTPException(status_code=503, detail=str(e))
 
     lease = None
+    request_id = str(uuid.uuid4())
     started = time.time()
 
     # Ensure model exists in our DB for metrics and resolve any per-lane downstream alias.
@@ -1446,6 +1507,7 @@ def v1_chat_completions(
                 "base_url": choice.base_url,
                 "downstream_model": downstream_model,
                 "route": "chat",
+                "request_id": request_id,
                 "request_payload": payload,
             },
         )
@@ -1453,6 +1515,9 @@ def v1_chat_completions(
             "lease_id": lease_id,
             "expires_at": expires_at.isoformat(),
         }
+        response.headers["X-Mesh-Request-Id"] = request_id
+        response.headers["X-Mesh-Lane-Id"] = str(choice.lane_id)
+        response.headers["X-Mesh-Worker-Id"] = str(choice.worker_id)
         token = sign_token(
             {
                 "lease_id": lease_id,
@@ -1518,7 +1583,14 @@ def v1_chat_completions(
         ok = False
         err_kind = "proxy_error"
         err_msg = str(e)
-        raise HTTPException(status_code=502, detail=str(e))
+        headers: dict[str, str] = {}
+        if request_id:
+            headers["X-Mesh-Request-Id"] = request_id
+        if choice.lane_id:
+            headers["X-Mesh-Lane-Id"] = str(choice.lane_id)
+        if choice.worker_id:
+            headers["X-Mesh-Worker-Id"] = str(choice.worker_id)
+        raise HTTPException(status_code=502, detail=str(e), headers=headers)
     finally:
         elapsed_ms = int((time.time() - started) * 1000)
         # Metrics: best-effort insert.
