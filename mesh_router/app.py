@@ -983,6 +983,7 @@ def _summarize_active_leases(active_leases: list[dict[str, Any]]) -> list[dict[s
                 "job_type": str(lease.get("job_type") or ""),
                 "route": str(details.get("route") or "chat"),
                 "acquired_at": lease["acquired_at"].isoformat() if lease.get("acquired_at") else None,
+                "last_heartbeat_at": lease["last_heartbeat_at"].isoformat() if lease.get("last_heartbeat_at") else None,
                 "expires_at": lease["expires_at"].isoformat() if lease.get("expires_at") else None,
             }
         )
@@ -1328,6 +1329,49 @@ def api_router_lease_validate(
     except Exception:
         pass
     return {"ok": True, **claims}
+
+
+@app.get("/api/lanes/{lane_id}/lease-status")
+def api_lane_lease_status(lane_id: str) -> dict[str, Any]:
+    """Return current router lease state for a lane.
+
+    This is intended for clients like Mesh Computer that need to wait on the
+    router's source-of-truth lease/heartbeat state instead of applying their
+    own blind retry timing against pinned lanes.
+    """
+    with db.connect() as conn:
+        with conn.cursor() as cur:
+            _cleanup_expired_router_leases(cur)
+            active = _list_active_router_leases(cur, [lane_id])
+            cur.execute(
+                """
+                SELECT lane_id, lane_name, lane_type, base_url, status, suspension_reason, current_model_name
+                FROM lanes
+                WHERE lane_id=%s
+                """,
+                (lane_id,),
+            )
+            lane = cur.fetchone()
+    if not lane:
+        raise HTTPException(status_code=404, detail="lane not found")
+
+    active_summary = _summarize_active_leases(active)
+    latest = active_summary[-1] if active_summary else None
+    return {
+        "lane_id": str(lane["lane_id"]),
+        "lane_name": str(lane.get("lane_name") or ""),
+        "lane_type": str(lane.get("lane_type") or ""),
+        "base_url": str(lane.get("base_url") or ""),
+        "lane_status": str(lane.get("status") or ""),
+        "suspension_reason": lane.get("suspension_reason"),
+        "current_model": lane.get("current_model_name"),
+        "lease_active": bool(active_summary),
+        "active_lease_count": len(active_summary),
+        "active_leases": active_summary,
+        "latest_lease": latest,
+        "heartbeat_interval_seconds": int(settings.default_lease_heartbeat_interval_seconds),
+        "stale_after_seconds": int(settings.default_lease_stale_seconds),
+    }
 
 
 @app.post("/v1/chat/completions")
