@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 import time
 import threading
@@ -27,6 +28,8 @@ from .schemas import (
     ModelTuningProfileUpsertRequest,
     ModelInfo,
     ModelsResponse,
+    RouterRequestCancelRequest,
+    RouterRequestSubmitRequest,
     SwapPreflightResponse,
 )
 from .tokens import sign_token, verify_token
@@ -34,8 +37,10 @@ from .viability import ViabilityLaneInfo, ViabilityModelInfo, check_viability, e
 
 
 app = FastAPI(title="mesh-router", version="0.1.0")
+logger = logging.getLogger(__name__)
 
 ARCHIVE_PROVIDERS = {"packhub", "packhub02"}
+REQUEST_TERMINAL_STATES = {"released", "failed", "expired", "canceled"}
 
 
 def _bytes_from_gib(value: Any) -> int | None:
@@ -895,6 +900,270 @@ def _bearer_token(req: Request) -> str:
     return ""
 
 
+def _cleanup_expired_router_requests(cur) -> None:
+    cur.execute(
+        """
+        UPDATE router_requests
+        SET state='expired',
+            error_kind=COALESCE(error_kind, 'stale'),
+            error_message=COALESCE(error_message, 'request heartbeat expired'),
+            released_at=COALESCE(released_at, now()),
+            updated_at=now()
+        WHERE state IN ('queued', 'acquired', 'running')
+          AND (
+            (expires_at IS NOT NULL AND expires_at <= now())
+            OR COALESCE(last_heartbeat_at, started_at, acquired_at, queued_at) < now() - (%s * interval '1 second')
+          )
+        """,
+        (settings.default_lease_stale_seconds,),
+    )
+
+
+def _create_router_request(
+    *,
+    route: str,
+    request_payload: dict[str, Any],
+    owner: str,
+    job_type: str,
+    requested_model_name: str | None,
+    app_name: str | None = None,
+    client_request_id: str | None = None,
+    pin_worker: str | None = None,
+    pin_base_url: str | None = None,
+    pin_lane_type: str | None = None,
+) -> str:
+    with db.connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO router_requests (
+                  route,
+                  state,
+                  owner,
+                  job_type,
+                  app_name,
+                  client_request_id,
+                  requested_model_name,
+                  request_payload,
+                  pin_worker,
+                  pin_base_url,
+                  pin_lane_type
+                )
+                VALUES (%s, 'queued', %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s)
+                RETURNING request_id
+                """,
+                (
+                    route,
+                    owner,
+                    job_type,
+                    app_name,
+                    client_request_id,
+                    requested_model_name,
+                    Jsonb(request_payload),
+                    pin_worker,
+                    pin_base_url,
+                    pin_lane_type,
+                ),
+            )
+            request_id = str(cur.fetchone()["request_id"])
+        conn.commit()
+    return request_id
+
+
+def _touch_router_request(*, request_id: str, state: str | None = None, **fields: Any) -> None:
+    allowed_fields = {
+        "lease_id",
+        "lane_id",
+        "model_id",
+        "worker_id",
+        "base_url",
+        "requested_model_name",
+        "downstream_model_name",
+        "result_payload",
+        "error_kind",
+        "error_message",
+        "cancel_requested",
+        "cancel_requested_at",
+        "cancel_reason",
+        "expires_at",
+        "released_at",
+        "last_heartbeat_at",
+        "app_name",
+        "client_request_id",
+    }
+    set_parts: list[str] = []
+    params: list[Any] = []
+    if state is not None:
+        set_parts.append("state=%s::request_state")
+        params.append(state)
+        if state == "acquired":
+            set_parts.append("acquired_at=COALESCE(acquired_at, now())")
+        if state == "running":
+            set_parts.append("started_at=COALESCE(started_at, now())")
+        if state in REQUEST_TERMINAL_STATES:
+            set_parts.append("released_at=COALESCE(released_at, now())")
+    for key, value in fields.items():
+        if key not in allowed_fields:
+            continue
+        if key == "result_payload":
+            set_parts.append(f"{key}=%s::jsonb")
+            params.append(Jsonb(value) if value is not None else None)
+            continue
+        set_parts.append(f"{key}=%s")
+        params.append(value)
+    set_parts.append("updated_at=now()")
+    with db.connect() as conn:
+        with conn.cursor() as cur:
+            _cleanup_expired_router_requests(cur)
+            cur.execute(
+                f"""
+                UPDATE router_requests
+                SET {", ".join(set_parts)}
+                WHERE request_id=%s
+                """,
+                tuple(params + [request_id]),
+            )
+        conn.commit()
+
+
+def _request_cancel_requested(request_id: str) -> bool:
+    with db.connect() as conn:
+        with conn.cursor() as cur:
+            _cleanup_expired_router_requests(cur)
+            cur.execute("SELECT cancel_requested FROM router_requests WHERE request_id=%s", (request_id,))
+            row = cur.fetchone()
+    return bool((row or {}).get("cancel_requested"))
+
+
+def _fetch_router_request(request_id: str) -> dict[str, Any] | None:
+    with db.connect() as conn:
+        with conn.cursor() as cur:
+            _cleanup_expired_router_leases(cur)
+            _cleanup_expired_router_requests(cur)
+            cur.execute(
+                """
+                SELECT
+                  rr.request_id,
+                  rr.route,
+                  rr.state,
+                  rr.owner,
+                  rr.job_type,
+                  rr.app_name,
+                  rr.client_request_id,
+                  rr.requested_model_name,
+                  rr.downstream_model_name,
+                  rr.model_id,
+                  rr.lane_id,
+                  rr.lease_id,
+                  rr.worker_id,
+                  rr.base_url,
+                  rr.pin_worker,
+                  rr.pin_base_url,
+                  rr.pin_lane_type,
+                  rr.cancel_requested,
+                  rr.cancel_requested_at,
+                  rr.cancel_reason,
+                  rr.request_payload,
+                  rr.result_payload,
+                  rr.error_kind,
+                  rr.error_message,
+                  rr.queued_at,
+                  rr.acquired_at,
+                  rr.started_at,
+                  rr.last_heartbeat_at,
+                  rr.expires_at,
+                  rr.released_at,
+                  rr.created_at,
+                  rr.updated_at,
+                  m.model_name,
+                  l.lane_name,
+                  l.lane_type,
+                  l.status AS lane_status,
+                  h.host_name,
+                  rl.state AS lease_state
+                FROM router_requests rr
+                LEFT JOIN models m ON m.model_id = rr.model_id
+                LEFT JOIN lanes l ON l.lane_id = rr.lane_id
+                LEFT JOIN hosts h ON h.host_id = l.host_id
+                LEFT JOIN router_leases rl ON rl.lease_id = rr.lease_id
+                WHERE rr.request_id=%s
+                """,
+                (request_id,),
+            )
+            row = cur.fetchone()
+    return row
+
+
+def _serialize_router_request(row: dict[str, Any]) -> dict[str, Any]:
+    state = str(row.get("state") or "").lower()
+    last_progress_at = (
+        row.get("last_heartbeat_at")
+        or row.get("started_at")
+        or row.get("acquired_at")
+        or row.get("queued_at")
+    )
+    return {
+        "request_id": str(row["request_id"]),
+        "route": str(row.get("route") or ""),
+        "state": state,
+        "terminal": state in REQUEST_TERMINAL_STATES,
+        "owner": str(row.get("owner") or ""),
+        "job_type": str(row.get("job_type") or ""),
+        "app_name": row.get("app_name"),
+        "client_request_id": row.get("client_request_id"),
+        "lane_id": str(row["lane_id"]) if row.get("lane_id") else None,
+        "lane_name": str(row.get("lane_name") or "") or None,
+        "lane_type": str(row.get("lane_type") or "") or None,
+        "lane_status": str(row.get("lane_status") or "") or None,
+        "host": str(row.get("host_name") or "") or None,
+        "lease_id": str(row["lease_id"]) if row.get("lease_id") else None,
+        "lease_state": str(row.get("lease_state") or "") or None,
+        "worker_id": row.get("worker_id"),
+        "base_url": row.get("base_url"),
+        "requested_model_name": row.get("requested_model_name"),
+        "downstream_model": row.get("downstream_model_name"),
+        "model_name": row.get("model_name") or row.get("requested_model_name"),
+        "cancel_requested": bool(row.get("cancel_requested")),
+        "cancel_requested_at": row["cancel_requested_at"].isoformat() if row.get("cancel_requested_at") else None,
+        "cancel_reason": row.get("cancel_reason"),
+        "error_kind": row.get("error_kind"),
+        "error_message": row.get("error_message"),
+        "queued_at": row["queued_at"].isoformat() if row.get("queued_at") else None,
+        "acquired_at": row["acquired_at"].isoformat() if row.get("acquired_at") else None,
+        "started_at": row["started_at"].isoformat() if row.get("started_at") else None,
+        "last_heartbeat_at": row["last_heartbeat_at"].isoformat() if row.get("last_heartbeat_at") else None,
+        "expires_at": row["expires_at"].isoformat() if row.get("expires_at") else None,
+        "released_at": row["released_at"].isoformat() if row.get("released_at") else None,
+        "updated_at": row["updated_at"].isoformat() if row.get("updated_at") else None,
+        "last_progress_at": last_progress_at.isoformat() if last_progress_at else None,
+        "result_available": row.get("result_payload") is not None,
+        "result_payload": row.get("result_payload"),
+    }
+
+
+def _router_request_health(row: dict[str, Any]) -> dict[str, Any]:
+    state = str(row.get("state") or "").lower()
+    now = datetime.now(UTC)
+    heartbeat_at = row.get("last_heartbeat_at") or row.get("started_at") or row.get("acquired_at") or row.get("queued_at")
+    age_s = None
+    if heartbeat_at is not None:
+        age_s = max(0.0, (now - heartbeat_at).total_seconds())
+    heartbeat_fresh = age_s is None or age_s <= float(settings.default_lease_stale_seconds)
+    return {
+        "request_id": str(row["request_id"]),
+        "state": state,
+        "terminal": state in REQUEST_TERMINAL_STATES,
+        "healthy": (state == "released") or (state not in REQUEST_TERMINAL_STATES and heartbeat_fresh and not bool(row.get("cancel_requested"))),
+        "lease_active": str(row.get("lease_state") or "").lower() == "active",
+        "heartbeat_fresh": heartbeat_fresh,
+        "heartbeat_age_seconds": age_s,
+        "stale_after_seconds": int(settings.default_lease_stale_seconds),
+        "cancel_requested": bool(row.get("cancel_requested")),
+        "last_progress_at": heartbeat_at.isoformat() if heartbeat_at else None,
+        "expires_at": row["expires_at"].isoformat() if row.get("expires_at") else None,
+    }
+
+
 def _load_swap_tuning_profile(cur, *, host_id: str, lane_id: str, model_name: str) -> dict[str, Any] | None:
     cur.execute(
         """
@@ -1377,59 +1646,421 @@ def api_lane_lease_status(lane_id: str) -> dict[str, Any]:
 
 @app.get("/api/router-requests/{request_id}")
 def api_router_request_status(request_id: str) -> dict[str, Any]:
-    """Return router-side status for a specific routed request."""
-    with db.connect() as conn:
-        with conn.cursor() as cur:
-            _cleanup_expired_router_leases(cur)
-            cur.execute(
-                """
-                SELECT
-                  rl.lease_id,
-                  rl.lane_id,
-                  rl.model_id,
-                  m.model_name,
-                  rl.owner,
-                  rl.job_type,
-                  rl.state,
-                  rl.acquired_at,
-                  rl.last_heartbeat_at,
-                  rl.expires_at,
-                  rl.released_at,
-                  rl.details,
-                  l.base_url,
-                  l.lane_type,
-                  l.status as lane_status,
-                  h.host_name
-                FROM router_leases rl
-                JOIN models m ON m.model_id = rl.model_id
-                JOIN lanes l ON l.lane_id = rl.lane_id
-                JOIN hosts h ON h.host_id = l.host_id
-                WHERE rl.details->>'request_id' = %s
-                ORDER BY rl.acquired_at DESC
-                LIMIT 1
-                """,
-                (request_id,),
-            )
-            row = cur.fetchone()
+    row = _fetch_router_request(request_id)
     if not row:
         raise HTTPException(status_code=404, detail="request not found")
-    details = dict(row.get("details") or {})
+    return _serialize_router_request(row)
+
+
+@app.get("/api/router-requests/{request_id}/health")
+def api_router_request_health(request_id: str) -> dict[str, Any]:
+    row = _fetch_router_request(request_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="request not found")
+    return _router_request_health(row)
+
+
+def _normalize_route_request(*, route: str, raw_payload: dict[str, Any]) -> dict[str, Any]:
+    route_name = str(route or "").strip().lower()
+    if route_name == "chat":
+        try:
+            req = ChatCompletionRequest.model_validate(raw_payload or {})
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        return {
+            "route": "chat",
+            "requested_model_name": req.model,
+            "pin_worker": req.mesh_pin_worker,
+            "pin_base_url": req.mesh_pin_base_url,
+            "pin_lane_type": req.mesh_pin_lane_type,
+            "request_payload": _downstream_payload(req),
+        }
+    if route_name == "embeddings":
+        payload = dict(raw_payload or {})
+        model_name = str(payload.get("model") or "").strip()
+        if not model_name:
+            raise HTTPException(status_code=400, detail="model is required")
+        pin_worker = payload.get("mesh_pin_worker")
+        pin_base_url = payload.get("mesh_pin_base_url")
+        pin_lane_type = payload.get("mesh_pin_lane_type")
+        for key in list(payload.keys()):
+            if key.startswith("mesh_"):
+                payload.pop(key, None)
+        return {
+            "route": "embeddings",
+            "requested_model_name": model_name,
+            "pin_worker": pin_worker,
+            "pin_base_url": pin_base_url,
+            "pin_lane_type": pin_lane_type,
+            "request_payload": _strip_nones(payload),
+        }
+    raise HTTPException(status_code=400, detail=f"unsupported route: {route}")
+
+
+def _execute_router_request(
+    *,
+    request_id: str,
+    route: str,
+    raw_payload: dict[str, Any],
+    owner: str,
+    job_type: str,
+) -> dict[str, Any]:
+    normalized = _normalize_route_request(route=route, raw_payload=raw_payload)
+    model_name = str(normalized["requested_model_name"])
+    pin_worker = normalized.get("pin_worker")
+    pin_base_url = normalized.get("pin_base_url")
+    pin_lane_type = normalized.get("pin_lane_type")
+    request_payload = dict(normalized["request_payload"])
+
+    _touch_router_request(
+        request_id=request_id,
+        requested_model_name=model_name,
+    )
+    if _request_cancel_requested(request_id):
+        _touch_router_request(
+            request_id=request_id,
+            state="canceled",
+            error_kind="canceled",
+            error_message="request canceled before acquisition",
+        )
+        return {}
+
+    lease_id: str | None = None
+    lane_id: str | None = None
+    model_id: str | None = None
+    choice = None
+    resp_data: dict[str, Any] | None = None
+    ok = False
+    final_state = "failed"
+    err_kind: str | None = None
+    err_msg: str | None = None
+    tps: float | None = None
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None if route == "chat" else 0
+    started = time.time()
+
+    try:
+        try:
+            choice = pick_lane_for_model(
+                model=model_name,
+                pin_worker=pin_worker,
+                pin_base_url=pin_base_url,
+                pin_lane_type=pin_lane_type,
+            )
+        except Exception as exc:
+            err_kind = "routing_error"
+            err_msg = str(exc)
+            raise
+
+        downstream_model = model_name
+        with db.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO models (model_name, format)
+                    VALUES (%s, 'other'::model_format)
+                    ON CONFLICT (model_name) DO UPDATE SET updated_at=now()
+                    """,
+                    (model_name,),
+                )
+                cur.execute("SELECT model_id FROM models WHERE model_name=%s", (model_name,))
+                model_id = str(cur.fetchone()["model_id"])
+                lane_id = choice.lane_id or None
+                if lane_id is not None:
+                    downstream_model = _resolve_downstream_model_for_lane(
+                        cur,
+                        lane_id=str(lane_id),
+                        requested_model_name=model_name,
+                        model_id=str(model_id),
+                    )
+            conn.commit()
+
+        request_payload["model"] = downstream_model
+        lease_id, expires_at = _acquire_router_lease(
+            lane_id=choice.lane_id,
+            model_id=str(model_id),
+            owner=owner,
+            job_type=job_type,
+            ttl_seconds=settings.default_lease_ttl_seconds,
+            details={
+                "worker_id": choice.worker_id,
+                "base_url": choice.base_url,
+                "downstream_model": downstream_model,
+                "route": route,
+                "request_id": request_id,
+                "request_payload": request_payload,
+            },
+        )
+        _touch_router_request(
+            request_id=request_id,
+            state="acquired",
+            lease_id=lease_id,
+            lane_id=choice.lane_id,
+            model_id=model_id,
+            worker_id=choice.worker_id,
+            base_url=choice.base_url,
+            downstream_model_name=downstream_model,
+            expires_at=expires_at,
+            last_heartbeat_at=datetime.now(UTC),
+        )
+
+        if _request_cancel_requested(request_id):
+            final_state = "canceled"
+            err_kind = "canceled"
+            err_msg = "request canceled after acquisition"
+            return {}
+
+        token = sign_token(
+            {
+                "lease_id": lease_id,
+                "lane_id": choice.lane_id,
+                "worker_id": choice.worker_id,
+                "base_url": choice.base_url,
+                "model": downstream_model,
+                "owner": owner,
+                "exp": int(expires_at.timestamp()),
+            }
+        )
+        _touch_router_request(
+            request_id=request_id,
+            state="running",
+            last_heartbeat_at=datetime.now(UTC),
+            expires_at=expires_at,
+        )
+
+        stop_heartbeat = threading.Event()
+        heartbeat_error: dict[str, str] = {}
+
+        def _heartbeat_loop() -> None:
+            interval = max(5, int(settings.default_lease_heartbeat_interval_seconds))
+            while not stop_heartbeat.wait(interval):
+                try:
+                    _heartbeat_router_lease(lease_id=lease_id)
+                    _touch_router_request(
+                        request_id=request_id,
+                        last_heartbeat_at=datetime.now(UTC),
+                        expires_at=datetime.now(UTC) + timedelta(seconds=max(30, int(settings.default_lease_stale_seconds))),
+                    )
+                except Exception as exc:
+                    heartbeat_error["error"] = str(exc)
+                    break
+
+        heartbeat_thread = threading.Thread(target=_heartbeat_loop, name=f"request-heartbeat-{request_id}", daemon=True)
+        heartbeat_thread.start()
+        try:
+            endpoint = "/v1/chat/completions" if route == "chat" else "/v1/embeddings"
+            with httpx.Client(timeout=float(max(30, settings.default_lease_ttl_seconds))) as client:
+                downstream_response = client.post(
+                    f"{choice.base_url.rstrip('/')}{endpoint}",
+                    json=request_payload,
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+        finally:
+            stop_heartbeat.set()
+            heartbeat_thread.join(timeout=2)
+        if heartbeat_error:
+            err_kind = "heartbeat_error"
+            err_msg = heartbeat_error["error"]
+            raise RuntimeError(f"request heartbeat failed: {heartbeat_error['error']}")
+
+        try:
+            resp_data = downstream_response.json()
+        except Exception:
+            resp_data = {"raw": downstream_response.text}
+        if downstream_response.status_code >= 400:
+            err_kind = "proxy_error"
+            err_msg = f"worker proxy http_{downstream_response.status_code}: {resp_data}"
+            raise RuntimeError(err_msg)
+
+        try:
+            usage = (resp_data or {}).get("usage") or {}
+            if usage.get("prompt_tokens") is not None:
+                prompt_tokens = int(usage.get("prompt_tokens"))
+            elif route == "embeddings" and usage.get("total_tokens") is not None:
+                prompt_tokens = int(usage.get("total_tokens"))
+            if usage.get("completion_tokens") is not None:
+                completion_tokens = int(usage.get("completion_tokens"))
+        except Exception:
+            pass
+        try:
+            timings = (((resp_data or {}).get("timings") or {}) if isinstance(resp_data, dict) else {})
+            if timings.get("predicted_per_second") is not None:
+                tps = float(timings["predicted_per_second"])
+        except Exception:
+            pass
+        if route == "embeddings" and prompt_tokens:
+            elapsed_ms = max(1, int((time.time() - started) * 1000))
+            tps = round((float(prompt_tokens) * 1000.0) / float(elapsed_ms), 6)
+
+        ok = True
+        final_state = "released"
+        return resp_data or {}
+    except Exception as exc:
+        if final_state != "canceled":
+            final_state = "failed"
+        if err_kind is None:
+            err_kind = "request_error"
+        if err_msg is None:
+            err_msg = str(exc)
+        raise
+    finally:
+        elapsed_ms = int((time.time() - started) * 1000)
+        try:
+            with db.connect() as conn:
+                with conn.cursor() as cur:
+                    if lane_id is not None and model_id is not None:
+                        cur.execute(
+                            """
+                            INSERT INTO lane_model_metrics (
+                              lane_id, model_id,
+                              load_time_ms, request_latency_ms,
+                              tps, prompt_tokens, completion_tokens,
+                              success, error_kind, error_message, run_tag
+                            )
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            """,
+                            (
+                                lane_id,
+                                model_id,
+                                None,
+                                elapsed_ms,
+                                tps,
+                                prompt_tokens,
+                                completion_tokens,
+                                ok,
+                                err_kind,
+                                err_msg,
+                                f"mesh-router:{route}",
+                            ),
+                        )
+                        if ok:
+                            _upsert_usage(
+                                cur,
+                                lane_id=str(lane_id),
+                                model_id=str(model_id),
+                                used_at=datetime.now(UTC),
+                            )
+                conn.commit()
+        except Exception:
+            logger.exception("Failed to record request metrics", extra={"request_id": request_id})
+        try:
+            if lease_id is not None:
+                _release_router_lease(lease_id=lease_id, ok=ok)
+        except Exception:
+            logger.exception("Failed to release request lease", extra={"request_id": request_id, "lease_id": lease_id})
+        try:
+            _touch_router_request(
+                request_id=request_id,
+                state=final_state,
+                lease_id=lease_id,
+                lane_id=lane_id,
+                model_id=model_id,
+                result_payload=resp_data if ok else None,
+                error_kind=None if ok else err_kind,
+                error_message=None if ok else err_msg,
+                last_heartbeat_at=datetime.now(UTC),
+                released_at=datetime.now(UTC),
+            )
+        except Exception:
+            logger.exception("Failed to finalize router request state", extra={"request_id": request_id})
+
+
+def _execute_router_request_async(*, request_id: str, route: str, raw_payload: dict[str, Any], owner: str, job_type: str) -> None:
+    try:
+        _execute_router_request(
+            request_id=request_id,
+            route=route,
+            raw_payload=raw_payload,
+            owner=owner,
+            job_type=job_type,
+        )
+    except Exception:
+        logger.exception("Asynchronous router request failed", extra={"request_id": request_id, "route": route})
+
+
+@app.post("/api/router-requests")
+def api_router_request_submit(req: RouterRequestSubmitRequest, response: Response) -> dict[str, Any]:
+    normalized = _normalize_route_request(route=req.route, raw_payload=req.payload)
+    request_id = _create_router_request(
+        route=str(normalized["route"]),
+        request_payload=dict(normalized["request_payload"]),
+        owner=req.owner or settings.default_owner,
+        job_type=req.job_type or settings.default_job_type,
+        app_name=req.app_name,
+        client_request_id=req.client_request_id,
+        requested_model_name=str(normalized["requested_model_name"]),
+        pin_worker=normalized.get("pin_worker"),
+        pin_base_url=normalized.get("pin_base_url"),
+        pin_lane_type=normalized.get("pin_lane_type"),
+    )
+    response.headers["X-Mesh-Request-Id"] = request_id
+    if req.wait:
+        try:
+            result = _execute_router_request(
+                request_id=request_id,
+                route=str(normalized["route"]),
+                raw_payload=dict(req.payload),
+                owner=req.owner or settings.default_owner,
+                job_type=req.job_type or settings.default_job_type,
+            )
+        except Exception:
+            result = None
+        row = _fetch_router_request(request_id)
+        if not row:
+            raise HTTPException(status_code=500, detail="request disappeared")
+        return {"request": _serialize_router_request(row), "result": result}
+
+    threading.Thread(
+        target=_execute_router_request_async,
+        kwargs={
+            "request_id": request_id,
+            "route": str(normalized["route"]),
+            "raw_payload": dict(req.payload),
+            "owner": req.owner or settings.default_owner,
+            "job_type": req.job_type or settings.default_job_type,
+        },
+        name=f"router-request-{request_id}",
+        daemon=True,
+    ).start()
+    response.status_code = 202
+    row = _fetch_router_request(request_id)
+    if not row:
+        raise HTTPException(status_code=500, detail="request not created")
+    return _serialize_router_request(row)
+
+
+@app.post("/api/router-requests/{request_id}/cancel")
+def api_router_request_cancel(request_id: str, body: RouterRequestCancelRequest) -> dict[str, Any]:
+    row = _fetch_router_request(request_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="request not found")
+    state = str(row.get("state") or "").lower()
+    cancel_reason = body.reason or "cancel requested"
+    now = datetime.now(UTC)
+    if state == "queued":
+        _touch_router_request(
+            request_id=request_id,
+            state="canceled",
+            cancel_requested=True,
+            cancel_requested_at=now,
+            cancel_reason=cancel_reason,
+            error_kind="canceled",
+            error_message=cancel_reason,
+        )
+    elif state not in REQUEST_TERMINAL_STATES:
+        _touch_router_request(
+            request_id=request_id,
+            cancel_requested=True,
+            cancel_requested_at=now,
+            cancel_reason=cancel_reason,
+        )
+    row = _fetch_router_request(request_id)
+    if not row:
+        raise HTTPException(status_code=500, detail="request disappeared")
     return {
-        "request_id": request_id,
-        "lease_id": str(row["lease_id"]),
-        "lane_id": str(row["lane_id"]),
-        "host": str(row.get("host_name") or ""),
-        "lane_type": str(row.get("lane_type") or ""),
-        "base_url": str(row.get("base_url") or ""),
-        "lane_status": str(row.get("lane_status") or ""),
-        "model_name": str(row.get("model_name") or ""),
-        "state": str(row.get("state") or ""),
-        "route": str(details.get("route") or "chat"),
-        "acquired_at": row["acquired_at"].isoformat() if row.get("acquired_at") else None,
-        "last_heartbeat_at": row["last_heartbeat_at"].isoformat() if row.get("last_heartbeat_at") else None,
-        "expires_at": row["expires_at"].isoformat() if row.get("expires_at") else None,
-        "released_at": row["released_at"].isoformat() if row.get("released_at") else None,
-        "downstream_model": details.get("downstream_model"),
+        "accepted": str(row.get("state") or "").lower() not in REQUEST_TERMINAL_STATES or str(row.get("state") or "").lower() == "canceled",
+        "request": _serialize_router_request(row),
+        "health": _router_request_health(row),
     }
 
 
@@ -1440,388 +2071,96 @@ def v1_chat_completions(
     x_mesh_pin_worker: str | None = Header(default=None),
     x_mesh_pin_base_url: str | None = Header(default=None),
 ) -> dict[str, Any]:
-    # Pins: header overrides body.
-    pin_worker = x_mesh_pin_worker or req.mesh_pin_worker
-    pin_base_url = x_mesh_pin_base_url or req.mesh_pin_base_url
-    pin_lane_type = req.mesh_pin_lane_type
-
+    raw_payload = req.model_dump(by_alias=True)
+    if x_mesh_pin_worker is not None:
+        raw_payload["mesh_pin_worker"] = x_mesh_pin_worker
+    if x_mesh_pin_base_url is not None:
+        raw_payload["mesh_pin_base_url"] = x_mesh_pin_base_url
+    normalized = _normalize_route_request(route="chat", raw_payload=raw_payload)
+    request_id = _create_router_request(
+        route="chat",
+        request_payload=dict(normalized["request_payload"]),
+        owner=settings.default_owner,
+        job_type=settings.default_job_type,
+        requested_model_name=str(normalized["requested_model_name"]),
+        pin_worker=normalized.get("pin_worker"),
+        pin_base_url=normalized.get("pin_base_url"),
+        pin_lane_type=normalized.get("pin_lane_type"),
+    )
+    response.headers["X-Mesh-Request-Id"] = request_id
     try:
-        choice = pick_lane_for_model(
-            model=req.model,
-            pin_worker=pin_worker,
-            pin_base_url=pin_base_url,
-            pin_lane_type=pin_lane_type,
-        )
-    except Exception as e:
-        raise HTTPException(status_code=503, detail=str(e))
-
-    lease = None
-    request_id = str(uuid.uuid4())
-    started = time.time()
-
-    # Ensure model exists in our DB for metrics and resolve any per-lane downstream alias.
-    downstream_model = req.model
-    with db.connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO models (model_name, format)
-                VALUES (%s, 'other'::model_format)
-                ON CONFLICT (model_name) DO UPDATE SET updated_at=now()
-                """,
-                (req.model,),
-            )
-            cur.execute("SELECT model_id FROM models WHERE model_name=%s", (req.model,))
-            model_id = cur.fetchone()["model_id"]
-            lane_id = choice.lane_id or None
-
-            if lane_id is not None:
-                downstream_model = _resolve_downstream_model_for_lane(
-                    cur,
-                    lane_id=str(lane_id),
-                    requested_model_name=req.model,
-                    model_id=str(model_id),
-                )
-        conn.commit()
-
-    ok = True
-    err_kind = None
-    err_msg = None
-    resp_data: dict[str, Any] | None = None
-    tps: float | None = None
-    prompt_tokens: int | None = None
-    completion_tokens: int | None = None
-    try:
-        payload = _downstream_payload(req)
-        payload["model"] = downstream_model
-        # Acquire a router lease (the only source of truth). The worker gateway will
-        # call back to /api/router-leases/validate with this token.
-        lease_id, expires_at = _acquire_router_lease(
-            lane_id=choice.lane_id,
-            model_id=str(model_id),
+        result = _execute_router_request(
+            request_id=request_id,
+            route="chat",
+            raw_payload=raw_payload,
             owner=settings.default_owner,
             job_type=settings.default_job_type,
-            ttl_seconds=settings.default_lease_ttl_seconds,
-            details={
-                "worker_id": choice.worker_id,
-                "base_url": choice.base_url,
-                "downstream_model": downstream_model,
-                "route": "chat",
-                "request_id": request_id,
-                "request_payload": payload,
-            },
         )
-        lease = {
-            "lease_id": lease_id,
-            "expires_at": expires_at.isoformat(),
-        }
-        response.headers["X-Mesh-Request-Id"] = request_id
-        response.headers["X-Mesh-Lane-Id"] = str(choice.lane_id)
-        response.headers["X-Mesh-Worker-Id"] = str(choice.worker_id)
-        token = sign_token(
-            {
-                "lease_id": lease_id,
-                "lane_id": choice.lane_id,
-                "worker_id": choice.worker_id,
-                "base_url": choice.base_url,
-                "model": downstream_model,
-                "owner": settings.default_owner,
-                "exp": int(expires_at.timestamp()),
-            }
-        )
-        # Apply downstream model alias if needed (must match leased model for worker gateway validation).
-        # Proxy directly to the worker gateway (11434/11435). Backends are bound to localhost.
-        stop_heartbeat = threading.Event()
-        heartbeat_error: dict[str, str] = {}
-
-        def _heartbeat_loop() -> None:
-            interval = max(5, int(settings.default_lease_heartbeat_interval_seconds))
-            while not stop_heartbeat.wait(interval):
-                try:
-                    _heartbeat_router_lease(lease_id=lease_id)
-                except Exception as exc:
-                    heartbeat_error["error"] = str(exc)
-                    break
-
-        heartbeat_thread = threading.Thread(target=_heartbeat_loop, name=f"lease-heartbeat-{lease_id}", daemon=True)
-        heartbeat_thread.start()
-        try:
-            with httpx.Client(timeout=float(max(30, settings.default_lease_ttl_seconds))) as client:
-                r = client.post(
-                    f"{choice.base_url.rstrip('/')}/v1/chat/completions",
-                    json=payload,
-                    headers={"Authorization": f"Bearer {token}"},
-                )
-        finally:
-            stop_heartbeat.set()
-            heartbeat_thread.join(timeout=2)
-        if heartbeat_error:
-            raise RuntimeError(f"lease heartbeat failed: {heartbeat_error['error']}")
-        try:
-            resp_data = r.json()
-        except Exception:
-            resp_data = {"raw": r.text}
-        if r.status_code >= 400:
-            raise RuntimeError(f"worker proxy http_{r.status_code}: {resp_data}")
-
-        # Best-effort parse of llama.cpp timings/usage when available.
-        try:
-            usage = (resp_data or {}).get("usage") or {}
-            prompt_tokens = int(usage.get("prompt_tokens")) if usage.get("prompt_tokens") is not None else None
-            completion_tokens = int(usage.get("completion_tokens")) if usage.get("completion_tokens") is not None else None
-        except Exception:
-            pass
-        try:
-            timings = (((resp_data or {}).get("timings") or {}) if isinstance(resp_data, dict) else {})
-            if timings.get("predicted_per_second") is not None:
-                tps = float(timings["predicted_per_second"])
-        except Exception:
-            pass
-
-        return resp_data
-    except Exception as e:
-        ok = False
-        err_kind = "proxy_error"
-        err_msg = str(e)
-        headers: dict[str, str] = {}
-        if request_id:
-            headers["X-Mesh-Request-Id"] = request_id
-        if choice.lane_id:
-            headers["X-Mesh-Lane-Id"] = str(choice.lane_id)
-        if choice.worker_id:
-            headers["X-Mesh-Worker-Id"] = str(choice.worker_id)
-        raise HTTPException(status_code=502, detail=str(e), headers=headers)
-    finally:
-        elapsed_ms = int((time.time() - started) * 1000)
-        # Metrics: best-effort insert.
-        try:
-            with db.connect() as conn:
-                with conn.cursor() as cur:
-                    if lane_id is not None:
-                        cur.execute(
-                            """
-                            INSERT INTO lane_model_metrics (
-                              lane_id, model_id,
-                              load_time_ms, request_latency_ms,
-                              tps, prompt_tokens, completion_tokens,
-                              success, error_kind, error_message, run_tag
-                            )
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                            """,
-                            (
-                                lane_id,
-                                model_id,
-                                None,
-                                elapsed_ms,
-                                tps,
-                                prompt_tokens,
-                                completion_tokens,
-                                ok,
-                                err_kind,
-                                err_msg,
-                                "mesh-router:chat",
-                            ),
-                        )
-                        if ok:
-                            _upsert_usage(
-                                cur,
-                                lane_id=str(lane_id),
-                                model_id=str(model_id),
-                                used_at=datetime.now(UTC),
-                            )
-                conn.commit()
-        except Exception:
-            pass
-        try:
-            if lease is not None:
-                _release_router_lease(lease_id=str(lease["lease_id"]), ok=ok)
-        except Exception:
-            pass
+        row = _fetch_router_request(request_id)
+        if row and row.get("lane_id"):
+            response.headers["X-Mesh-Lane-Id"] = str(row["lane_id"])
+        if row and row.get("worker_id"):
+            response.headers["X-Mesh-Worker-Id"] = str(row["worker_id"])
+        return result
+    except Exception as exc:
+        row = _fetch_router_request(request_id)
+        headers: dict[str, str] = {"X-Mesh-Request-Id": request_id}
+        if row and row.get("lane_id"):
+            headers["X-Mesh-Lane-Id"] = str(row["lane_id"])
+        if row and row.get("worker_id"):
+            headers["X-Mesh-Worker-Id"] = str(row["worker_id"])
+        status_code = 503 if "no READY lanes" in str(exc) or "lane busy" in str(exc) else 502
+        raise HTTPException(status_code=status_code, detail=str(exc), headers=headers)
 
 
 @app.post("/v1/embeddings")
 def v1_embeddings(
     req: Request,
+    response: Response,
     body: dict[str, Any] = Body(default_factory=dict),
     x_mesh_pin_worker: str | None = Header(default=None),
     x_mesh_pin_base_url: str | None = Header(default=None),
 ) -> dict[str, Any]:
-    model_name = str((body or {}).get("model") or "").strip()
-    if not model_name:
-        raise HTTPException(status_code=400, detail="model is required")
-    pin_worker = x_mesh_pin_worker or body.get("mesh_pin_worker")
-    pin_base_url = x_mesh_pin_base_url or body.get("mesh_pin_base_url")
-    pin_lane_type = body.get("mesh_pin_lane_type")
-
+    raw_payload = dict(body or {})
+    if x_mesh_pin_worker is not None:
+        raw_payload["mesh_pin_worker"] = x_mesh_pin_worker
+    if x_mesh_pin_base_url is not None:
+        raw_payload["mesh_pin_base_url"] = x_mesh_pin_base_url
+    normalized = _normalize_route_request(route="embeddings", raw_payload=raw_payload)
+    request_id = _create_router_request(
+        route="embeddings",
+        request_payload=dict(normalized["request_payload"]),
+        owner=settings.default_owner,
+        job_type=settings.default_job_type,
+        requested_model_name=str(normalized["requested_model_name"]),
+        pin_worker=normalized.get("pin_worker"),
+        pin_base_url=normalized.get("pin_base_url"),
+        pin_lane_type=normalized.get("pin_lane_type"),
+    )
+    response.headers["X-Mesh-Request-Id"] = request_id
     try:
-        choice = pick_lane_for_model(
-            model=model_name,
-            pin_worker=pin_worker,
-            pin_base_url=pin_base_url,
-            pin_lane_type=pin_lane_type,
-        )
-    except Exception as e:
-        raise HTTPException(status_code=503, detail=str(e))
-
-    lease = None
-    started = time.time()
-    downstream_model = model_name
-    with db.connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO models (model_name, format)
-                VALUES (%s, 'other'::model_format)
-                ON CONFLICT (model_name) DO UPDATE SET updated_at=now()
-                """,
-                (model_name,),
-            )
-            cur.execute("SELECT model_id FROM models WHERE model_name=%s", (model_name,))
-            model_id = cur.fetchone()["model_id"]
-            lane_id = choice.lane_id or None
-            if lane_id is not None:
-                downstream_model = _resolve_downstream_model_for_lane(
-                    cur,
-                    lane_id=str(lane_id),
-                    requested_model_name=model_name,
-                    model_id=str(model_id),
-                )
-        conn.commit()
-
-    ok = True
-    err_kind = None
-    err_msg = None
-    resp_data: dict[str, Any] | None = None
-    tps: float | None = None
-    prompt_tokens: int | None = None
-    completion_tokens = 0
-    try:
-        payload = dict(body or {})
-        payload["model"] = downstream_model
-        for k in list(payload.keys()):
-            if k.startswith("mesh_"):
-                payload.pop(k, None)
-        lease_id, expires_at = _acquire_router_lease(
-            lane_id=choice.lane_id,
-            model_id=str(model_id),
+        result = _execute_router_request(
+            request_id=request_id,
+            route="embeddings",
+            raw_payload=raw_payload,
             owner=settings.default_owner,
             job_type=settings.default_job_type,
-            ttl_seconds=settings.default_lease_ttl_seconds,
-            details={
-                "worker_id": choice.worker_id,
-                "base_url": choice.base_url,
-                "downstream_model": downstream_model,
-                "route": "embeddings",
-                "request_payload": payload,
-            },
         )
-        lease = {
-            "lease_id": lease_id,
-            "expires_at": expires_at.isoformat(),
-        }
-        token = sign_token(
-            {
-                "lease_id": lease_id,
-                "lane_id": choice.lane_id,
-                "worker_id": choice.worker_id,
-                "base_url": choice.base_url,
-                "model": downstream_model,
-                "owner": settings.default_owner,
-                "exp": int(expires_at.timestamp()),
-            }
-        )
-        stop_heartbeat = threading.Event()
-        heartbeat_error: dict[str, str] = {}
-
-        def _heartbeat_loop() -> None:
-            interval = max(5, int(settings.default_lease_heartbeat_interval_seconds))
-            while not stop_heartbeat.wait(interval):
-                try:
-                    _heartbeat_router_lease(lease_id=lease_id)
-                except Exception as exc:
-                    heartbeat_error["error"] = str(exc)
-                    break
-
-        heartbeat_thread = threading.Thread(target=_heartbeat_loop, name=f"lease-heartbeat-{lease_id}", daemon=True)
-        heartbeat_thread.start()
-        try:
-            with httpx.Client(timeout=float(max(30, settings.default_lease_ttl_seconds))) as client:
-                r = client.post(
-                    f"{choice.base_url.rstrip('/')}/v1/embeddings",
-                    json=payload,
-                    headers={"Authorization": f"Bearer {token}"},
-                )
-        finally:
-            stop_heartbeat.set()
-            heartbeat_thread.join(timeout=2)
-        if heartbeat_error:
-            raise RuntimeError(f"lease heartbeat failed: {heartbeat_error['error']}")
-        try:
-            resp_data = r.json()
-        except Exception:
-            resp_data = {"raw": r.text}
-        if r.status_code >= 400:
-            raise RuntimeError(f"worker proxy http_{r.status_code}: {resp_data}")
-
-        usage = (resp_data or {}).get("usage") or {}
-        if usage.get("prompt_tokens") is not None:
-            prompt_tokens = int(usage["prompt_tokens"])
-        elif usage.get("total_tokens") is not None:
-            prompt_tokens = int(usage["total_tokens"])
-        elapsed_ms = max(1, int((time.time() - started) * 1000))
-        if prompt_tokens:
-            tps = round((float(prompt_tokens) * 1000.0) / float(elapsed_ms), 6)
-        return resp_data
-    except Exception as e:
-        ok = False
-        err_kind = "proxy_error"
-        err_msg = str(e)
-        raise HTTPException(status_code=502, detail=str(e))
-    finally:
-        elapsed_ms = int((time.time() - started) * 1000)
-        try:
-            with db.connect() as conn:
-                with conn.cursor() as cur:
-                    if lane_id is not None:
-                        cur.execute(
-                            """
-                            INSERT INTO lane_model_metrics (
-                              lane_id, model_id,
-                              load_time_ms, request_latency_ms,
-                              tps, prompt_tokens, completion_tokens,
-                              success, error_kind, error_message, run_tag
-                            )
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                            """,
-                            (
-                                lane_id,
-                                model_id,
-                                None,
-                                elapsed_ms,
-                                tps,
-                                prompt_tokens,
-                                completion_tokens,
-                                ok,
-                                err_kind,
-                                err_msg,
-                                "mesh-router:embeddings",
-                            ),
-                        )
-                        if ok:
-                            _upsert_usage(
-                                cur,
-                                lane_id=str(lane_id),
-                                model_id=str(model_id),
-                                used_at=datetime.now(UTC),
-                            )
-                conn.commit()
-        except Exception:
-            pass
-        try:
-            if lease is not None:
-                _release_router_lease(lease_id=str(lease["lease_id"]), ok=ok)
-        except Exception:
-            pass
+        row = _fetch_router_request(request_id)
+        if row and row.get("lane_id"):
+            response.headers["X-Mesh-Lane-Id"] = str(row["lane_id"])
+        if row and row.get("worker_id"):
+            response.headers["X-Mesh-Worker-Id"] = str(row["worker_id"])
+        return result
+    except Exception as exc:
+        headers = {"X-Mesh-Request-Id": request_id}
+        row = _fetch_router_request(request_id)
+        if row and row.get("lane_id"):
+            headers["X-Mesh-Lane-Id"] = str(row["lane_id"])
+        if row and row.get("worker_id"):
+            headers["X-Mesh-Worker-Id"] = str(row["worker_id"])
+        status_code = 503 if "no READY lanes" in str(exc) or "lane busy" in str(exc) else 502
+        raise HTTPException(status_code=status_code, detail=str(exc), headers=headers)
 
 
 class SwapModelRequest(BaseModel):

@@ -154,3 +154,17 @@ class ModelTuningProfileResponse(BaseModel):
     notes: str | None = None
     created_at: str
     updated_at: str
+
+
+class RouterRequestSubmitRequest(BaseModel):
+    route: Literal["chat", "embeddings"]
+    payload: dict[str, Any]
+    owner: str | None = None
+    job_type: str | None = None
+    app_name: str | None = None
+    client_request_id: str | None = None
+    wait: bool = False
+
+
+class RouterRequestCancelRequest(BaseModel):
+    reason: str | None = None
