@@ -791,10 +791,14 @@ def _strip_nones(value: Any) -> Any:
 
 def _downstream_payload(req: ChatCompletionRequest) -> dict[str, Any]:
     raw = req.model_dump(by_alias=True)
+    extra_body = raw.pop("extra_body", None) or {}
     # Remove router-only hint fields.
     for k in list(raw.keys()):
-        if k.startswith("mesh_") or k in {"extra_body"}:
+        if k.startswith("mesh_"):
             raw.pop(k, None)
+    if isinstance(extra_body, dict):
+        for key, value in extra_body.items():
+            raw[key] = value
     return _strip_nones(raw)
 
 
