@@ -1009,6 +1009,11 @@ def _touch_router_request(*, request_id: str, state: str | None = None, **fields
             set_parts.append(f"{key}=%s::jsonb")
             params.append(Jsonb(value) if value is not None else None)
             continue
+        if key == "released_at":
+            # Finalizers may explicitly pass released_at while terminal states also
+            # auto-populate it. Avoid duplicate column assignments.
+            if any(part.split("=")[0] == "released_at" for part in set_parts):
+                continue
         set_parts.append(f"{key}=%s")
         params.append(value)
     set_parts.append("updated_at=now()")
