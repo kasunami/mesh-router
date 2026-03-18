@@ -7,7 +7,7 @@ metadata:
     app: mesh-router
 spec:
   type: LoadBalancer
-  loadBalancerIP: 10.0.1.47
+  # loadBalancerIP: <your-lb-ip>  # Set to your MetalLB/LoadBalancer IP
   selector:
     app: mesh-router
   ports:
@@ -34,10 +34,11 @@ spec:
     spec:
       # Prefer packserv for control-plane services.
       nodeSelector:
+        # kubernetes.io/hostname: <your-node>  # Pin to a specific node if needed
         kubernetes.io/hostname: packserv
       initContainers:
         - name: migrate-db
-          image: 10.0.0.2:5000/mesh-router:20260313-release-fix-arm64
+          image: <your-registry>/mesh-router:<tag>
           imagePullPolicy: Never
           envFrom:
             - secretRef:
@@ -50,7 +51,7 @@ spec:
               init_db()
       containers:
         - name: mesh-router
-          image: 10.0.0.2:5000/mesh-router:20260313-release-fix-arm64
+          image: <your-registry>/mesh-router:<tag>
           imagePullPolicy: Never
           envFrom:
             - secretRef:

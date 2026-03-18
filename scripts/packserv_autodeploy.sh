@@ -2,7 +2,7 @@
 set -euo pipefail
 
 MESH_ROUTER_REPO_URL="${MESH_ROUTER_REPO_URL:-git@github.com:kasunami/mesh-router.git}"
-K3S_MANIFESTS_REPO_URL="${K3S_MANIFESTS_REPO_URL:-ssh://kasunami@10.0.0.4/git-registry/k3s-manifests.git}"
+K3S_MANIFESTS_REPO_URL="${K3S_MANIFESTS_REPO_URL:-ssh://<user>@<your-git-server>/git-registry/k3s-manifests.git}"
 
 BASE_DIR="${BASE_DIR:-/home/kasunami/srv}"
 MESH_ROUTER_DIR="${MESH_ROUTER_DIR:-${BASE_DIR}/mesh-router}"
@@ -11,7 +11,7 @@ K3S_MANIFESTS_DIR="${K3S_MANIFESTS_DIR:-${BASE_DIR}/k3s-manifests}"
 BRANCH="${BRANCH:-main}"
 K3S_BRANCH="${K3S_BRANCH:-master}"
 
-IMAGE_REPO="${IMAGE_REPO:-10.0.0.2:5000/mesh-router}"
+IMAGE_REPO="${IMAGE_REPO:-<your-registry>/mesh-router}"
 MANIFEST_PATH="${MANIFEST_PATH:-apps/ai-tools/mesh-router/mesh-router.yaml}"
 
 GIT_USER_NAME="${GIT_USER_NAME:-mesh-router-autodeploy}"
