@@ -2173,6 +2173,54 @@ def v1_embeddings(
         raise HTTPException(status_code=status_code, detail=str(exc), headers=headers)
 
 
+@app.post("/api/embeddings")
+def legacy_embeddings(
+    req: Request,
+    response: Response,
+    body: dict[str, Any] = Body(default_factory=dict),
+    x_mesh_pin_worker: str | None = Header(default=None),
+    x_mesh_pin_base_url: str | None = Header(default=None),
+) -> dict[str, Any]:
+    # Compatibility endpoint for legacy Ollama clients (like the current watchdog)
+    # 1. Map 'prompt' to 'input' if needed (handled by _normalize_route_request)
+    # 2. Return top-level 'embedding' key instead of OpenAI list
+    raw_payload = dict(body or {})
+    if x_mesh_pin_worker is not None:
+        raw_payload["mesh_pin_worker"] = x_mesh_pin_worker
+    if x_mesh_pin_base_url is not None:
+        raw_payload["mesh_pin_base_url"] = x_mesh_pin_base_url
+    normalized = _normalize_route_request(route="embeddings", raw_payload=raw_payload)
+    request_id = _create_router_request(
+        route="embeddings",
+        request_payload=dict(normalized["request_payload"]),
+        owner=settings.default_owner,
+        job_type="legacy_proxy",
+        requested_model_name=str(normalized["requested_model_name"]),
+        pin_worker=normalized.get("pin_worker"),
+        pin_base_url=normalized.get("pin_base_url"),
+        pin_lane_type=normalized.get("pin_lane_type"),
+    )
+    response.headers["X-Mesh-Request-Id"] = request_id
+    try:
+        result = _execute_router_request(
+            request_id=request_id,
+            route="embeddings",
+            raw_payload=raw_payload,
+            owner=settings.default_owner,
+            job_type="legacy_proxy",
+        )
+        if "data" in result and len(result["data"]) > 0:
+            return {"embedding": result["data"][0]["embedding"]}
+        return result
+    except Exception as exc:
+        row = _fetch_router_request(request_id)
+        headers = {"X-Mesh-Request-Id": request_id}
+        if row and row.get("worker_id"):
+            headers["X-Mesh-Worker-Id"] = str(row["worker_id"])
+        status_code = 503 if "no READY lanes" in str(exc) or "lane busy" in str(exc) else 502
+        raise HTTPException(status_code=status_code, detail=str(exc), headers=headers)
+
+
 class SwapModelRequest(BaseModel):
     model_name: str
     allow_unverified: bool = False
