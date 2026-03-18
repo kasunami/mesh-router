@@ -18,6 +18,10 @@ def _probe_lane_health(base_url: str) -> tuple[bool, int | None, float, str | No
     try:
         with httpx.Client(timeout=3.5) as c:
             r = c.get(url)
+            # Fallback for standalone Ollama which doesn't have /healthz
+            if r.status_code == 404:
+                r = c.get(f"{base_url.rstrip('/')}/api/tags")
+        
         latency_ms = (time.perf_counter() - start) * 1000
         if r.status_code == 200:
             return True, r.status_code, latency_ms, None

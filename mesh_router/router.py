@@ -6,6 +6,8 @@ import re
 from .db import db, q
 from .config import settings
 
+_RECENT_PROXY_ERROR_COOLDOWN_S = 900
+
 
 @dataclass(frozen=True)
 class LaneChoice:
@@ -105,9 +107,6 @@ def pick_lane_for_model(
             lane_type=str(r0["lane_type"]),
         )
 
-# These hosts are part of a dualboot group and rely on probe.py for mutual exclusion.
-    preferred_hosts = ["Static-Deskix", "Static-Mobile-2", "pupix1", "tiffs-macbook"]
-
     if pin_worker and not pin_base_url:
         # Pick the best READY lane for that host.
         with db.connect() as conn:
@@ -126,6 +125,12 @@ def pick_lane_for_model(
                           AND rl.state = 'active'
                           AND COALESCE(rl.last_heartbeat_at, rl.acquired_at) > now() - (%s * interval '1 second')
                       )
+                      AND NOT EXISTS (
+                        SELECT 1 FROM router_requests rr
+                        WHERE rr.lane_id = l.lane_id
+                          AND rr.error_kind = 'proxy_error'
+                          AND rr.released_at > now() - (%s * interval '1 second')
+                      )
                       AND (%s::text IS NULL OR l.lane_type::text = %s::text)
                       AND (%s::text[] IS NULL OR l.lane_id::text <> ALL(%s::text[]))
                     ORDER BY
@@ -136,6 +141,7 @@ def pick_lane_for_model(
                     (
                         pin_worker,
                         settings.default_lease_stale_seconds,
+                        _RECENT_PROXY_ERROR_COOLDOWN_S,
                         pin_lane_type,
                         pin_lane_type,
                         list(excluded) or None,
@@ -153,7 +159,7 @@ def pick_lane_for_model(
             lane_type=str(r0["lane_type"]),
         )
 
-    def _pick(allow_fallback_hosts: bool) -> LaneChoice | None:
+    def _pick() -> LaneChoice | None:
         with db.connect() as conn:
             with conn.cursor() as cur:
                 rows = q(
@@ -169,19 +175,16 @@ def pick_lane_for_model(
                           AND rl.state = 'active'
                           AND COALESCE(rl.last_heartbeat_at, rl.acquired_at) > now() - (%s * interval '1 second')
                       )
-                      AND (%s OR h.host_name IN ('Static-Deskix','Static-Mobile-2','pupix1','tiffs-macbook'))
+                      AND NOT EXISTS (
+                        SELECT 1 FROM router_requests rr
+                        WHERE rr.lane_id = l.lane_id
+                          AND rr.error_kind = 'proxy_error'
+                          AND rr.released_at > now() - (%s * interval '1 second')
+                      )
                       AND h.host_name NOT IN ('litellm-router')
                       AND (%s::text IS NULL OR l.lane_type::text = %s::text)
                       AND (%s::text[] IS NULL OR l.lane_id::text <> ALL(%s::text[]))
                     ORDER BY
-                      -- Prefer primary worker hosts; 'pupix1' is in a dualboot group. Keep other hosts as last-resort.
-                      CASE h.host_name
-                        WHEN 'Static-Deskix' THEN 0
-                        WHEN 'Static-Mobile-2' THEN 1
-                        WHEN 'pupix1' THEN 2
-                        WHEN 'tiffs-macbook' THEN 3
-                        ELSE 999
-                      END,
                       -- Prefer GPU for generation, then MLX, then CPU.
                       CASE l.lane_type WHEN 'gpu' THEN 0 WHEN 'mlx' THEN 1 WHEN 'cpu' THEN 2 ELSE 9 END,
                       h.host_name ASC
@@ -189,7 +192,7 @@ def pick_lane_for_model(
                     """,
                     (
                         settings.default_lease_stale_seconds,
-                        allow_fallback_hosts,
+                        _RECENT_PROXY_ERROR_COOLDOWN_S,
                         pin_lane_type,
                         pin_lane_type,
                         list(excluded) or None,
@@ -207,7 +210,7 @@ def pick_lane_for_model(
             lane_type=str(r0["lane_type"]),
         )
 
-    chosen = _pick(allow_fallback_hosts=False) or _pick(allow_fallback_hosts=True)
+    chosen = _pick()
     if not chosen:
         raise RuntimeError(f"no READY lanes available serving requested model: {model}")
     return chosen

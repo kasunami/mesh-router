@@ -1685,6 +1685,11 @@ def _normalize_route_request(*, route: str, raw_payload: dict[str, Any]) -> dict
         model_name = str(payload.get("model") or "").strip()
         if not model_name:
             raise HTTPException(status_code=400, detail="model is required")
+        
+        # Compatibility mapping: some clients use 'prompt' instead of 'input' for embeddings.
+        if "prompt" in payload and "input" not in payload:
+            payload["input"] = payload.pop("prompt")
+
         pin_worker = payload.get("mesh_pin_worker")
         pin_base_url = payload.get("mesh_pin_base_url")
         pin_lane_type = payload.get("mesh_pin_lane_type")
