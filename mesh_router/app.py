@@ -24,10 +24,16 @@ from .schemas import (
     HostInventoryScanRequest,
     LaneModelCandidate,
     LaneCapabilityResponse,
+    LaneSwapEventRequest,
+    LaneSwapResponse,
+    ModelTagsResponse,
+    ModelTagsUpdateRequest,
     ModelTuningProfileResponse,
     ModelTuningProfileUpsertRequest,
     ModelInfo,
     ModelsResponse,
+    RestoreSplitModeRequest,
+    RestoreSplitModeResponse,
     RouterRequestCancelRequest,
     RouterRequestSubmitRequest,
     SwapPreflightResponse,
@@ -41,6 +47,7 @@ logger = logging.getLogger(__name__)
 
 ARCHIVE_PROVIDERS = {"packhub", "packhub02"}
 REQUEST_TERMINAL_STATES = {"released", "failed", "expired", "canceled"}
+SWAP_TERMINAL_STATES = {"ready", "failed", "canceled"}
 
 
 def _bytes_from_gib(value: Any) -> int | None:
@@ -92,6 +99,25 @@ def _model_lookup_keys(model_name: str | None) -> set[str]:
     return {key for key in keys if key}
 
 
+def _normalize_model_tag(tag: str | None) -> str | None:
+    raw = (tag or "").strip().lower()
+    if not raw:
+        return None
+    return raw.replace("_", "-")
+
+
+def _normalized_model_tags(tags: list[str] | None) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for tag in tags or []:
+        value = _normalize_model_tag(tag)
+        if not value or value in seen:
+            continue
+        normalized.append(value)
+        seen.add(value)
+    return normalized
+
+
 def _is_exact_model_request(model_name: str | None) -> bool:
     raw = (model_name or "").strip()
     if not raw:
@@ -108,10 +134,17 @@ def _is_exact_model_request(model_name: str | None) -> bool:
     return False
 
 
-def _model_request_matches_candidate(requested_model_name: str, candidate_model_name: str) -> bool:
+def _model_request_matches_candidate(
+    requested_model_name: str,
+    candidate_model_name: str,
+    candidate_tags: list[str] | None = None,
+) -> bool:
     if _is_exact_model_request(requested_model_name):
         return candidate_model_name == requested_model_name
-    return bool(_model_lookup_keys(requested_model_name) & _model_lookup_keys(candidate_model_name))
+    request_keys = _model_lookup_keys(requested_model_name)
+    if request_keys & _model_lookup_keys(candidate_model_name):
+        return True
+    return bool(request_keys & set(_normalized_model_tags(candidate_tags)))
 
 
 def _resolve_swap_candidate(
@@ -125,7 +158,11 @@ def _resolve_swap_candidate(
 
     for group_name, candidates in groups:
         for candidate in candidates:
-            if _model_request_matches_candidate(requested_model_name, candidate.model_name):
+            if _model_request_matches_candidate(
+                requested_model_name,
+                candidate.model_name,
+                candidate.tags,
+            ):
                 return candidate, group_name
 
     return None, None
@@ -172,6 +209,22 @@ def _ensure_model(cur, *, model_name: str, model_format: str | None, size_bytes:
         (model_name, _normalize_model_format(model_format), size_bytes),
     )
     return str(cur.fetchone()["model_id"])
+
+
+def _resolve_model_ref(cur, model_ref: str) -> tuple[str, str, list[str]]:
+    cur.execute(
+        """
+        SELECT model_id, model_name, tags
+        FROM models
+        WHERE model_id::text=%s OR model_name::text=%s
+        LIMIT 1
+        """,
+        (model_ref, model_ref),
+    )
+    row = cur.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail=f"model not found: {model_ref}")
+    return str(row["model_id"]), str(row["model_name"]), _normalized_model_tags(row.get("tags") or [])
 
 
 def _resolve_lane_ref(cur, lane_ref: str | None) -> tuple[str | None, str | None, str | None]:
@@ -491,6 +544,7 @@ def _resolve_lane(cur, lane_ref: str) -> dict[str, Any]:
     cur.execute(
         """
         SELECT lane_id, host_id, lane_name, lane_type, base_url, current_model_name,
+               default_model_name,
                ram_budget_bytes, vram_budget_bytes, usable_memory_bytes,
                runtime_overhead_bytes, reserved_headroom_bytes
         FROM lanes
@@ -575,6 +629,7 @@ def _build_lane_capability_payload(cur, lane_ref: str) -> tuple[dict[str, Any], 
           hma.present,
           m.model_id,
           m.model_name,
+          m.tags,
           p.required_ram_bytes,
           p.required_vram_bytes,
           p.allowed
@@ -704,6 +759,7 @@ def _build_lane_capability_payload(cur, lane_ref: str) -> tuple[dict[str, Any], 
             continue
         candidate = LaneModelCandidate(
             model_name=model_name,
+            tags=_normalized_model_tags(row.get("tags") or []),
             locality=locality,
             artifact_path=str(row["local_path"]),
             artifact_host=str(row["host_name"]),
@@ -815,10 +871,23 @@ def _resolve_downstream_model_for_lane(
     requested_model_name: str,
     model_id: str | None,
 ) -> str:
-    cur.execute("SELECT current_model_name FROM lanes WHERE lane_id=%s", (lane_id,))
+    cur.execute(
+        """
+        SELECT l.current_model_name, m.tags AS current_model_tags
+        FROM lanes l
+        LEFT JOIN models m ON m.model_name = l.current_model_name
+        WHERE l.lane_id=%s
+        """,
+        (lane_id,),
+    )
     lane_row = cur.fetchone()
     current_model_name = str((lane_row or {}).get("current_model_name") or "").strip()
-    if current_model_name and _model_request_matches_candidate(requested_model_name, current_model_name):
+    current_model_tags = _normalized_model_tags((lane_row or {}).get("current_model_tags") or [])
+    if current_model_name and _model_request_matches_candidate(
+        requested_model_name,
+        current_model_name,
+        current_model_tags,
+    ):
         return current_model_name
 
     if model_id:
@@ -886,11 +955,78 @@ def v1_models() -> dict[str, Any]:
 
     with db.connect() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT model_name FROM models ORDER BY model_name")
+            cur.execute("SELECT model_name, tags FROM models ORDER BY model_name")
             rows = cur.fetchall()
-    data = [ModelInfo(id=str(r["model_name"])) for r in rows if _is_canonical(str(r["model_name"]))]
+    data = [
+        ModelInfo(
+            id=str(r["model_name"]),
+            tags=_normalized_model_tags(r.get("tags") or []),
+        )
+        for r in rows
+        if _is_canonical(str(r["model_name"]))
+    ]
     resp = ModelsResponse(data=data)
     return resp.model_dump()
+
+
+@app.post("/api/models/{model_ref}/tags", response_model=ModelTagsResponse)
+def api_model_tags(model_ref: str, body: ModelTagsUpdateRequest) -> ModelTagsResponse:
+    tags = _normalized_model_tags(body.tags)
+    with db.connect() as conn:
+        with conn.cursor() as cur:
+            model_id, model_name, existing_tags = _resolve_model_ref(cur, model_ref)
+            existing = list(existing_tags)
+            if body.mode == "replace":
+                updated_tags = tags
+            elif body.mode == "add":
+                updated_tags = _normalized_model_tags(existing + tags)
+            else:
+                remove = set(tags)
+                updated_tags = [tag for tag in existing if tag not in remove]
+            cur.execute(
+                """
+                UPDATE models
+                SET tags=%s::text[],
+                    updated_at=now()
+                WHERE model_id=%s
+                RETURNING model_id, model_name, tags
+                """,
+                (updated_tags, model_id),
+            )
+            row = cur.fetchone()
+        conn.commit()
+    return ModelTagsResponse(
+        model_id=str(row["model_id"]),
+        model_name=str(row["model_name"]),
+        tags=_normalized_model_tags(row.get("tags") or []),
+    )
+
+
+@app.post("/api/hosts/{host_ref}/restore-split-mode", response_model=RestoreSplitModeResponse)
+def api_restore_split_mode(host_ref: str, body: RestoreSplitModeRequest) -> RestoreSplitModeResponse:
+    with db.connect() as conn:
+        with conn.cursor() as cur:
+            host_id, host_name = _resolve_host_id(cur, host_ref, create=False)
+        conn.commit()
+    overrides = {
+        lane_type: model_name.strip()
+        for lane_type, model_name in {
+            "cpu": body.cpu_model_name,
+            "gpu": body.gpu_model_name,
+            "mlx": body.mlx_model_name,
+        }.items()
+        if model_name and model_name.strip()
+    }
+    actions = _restore_split_mode_for_host(
+        host_id=host_id,
+        host_name=host_name,
+        overrides=overrides,
+    )
+    return RestoreSplitModeResponse(
+        host_id=host_id,
+        host_name=host_name,
+        actions=actions,
+    )
 
 
 def _bearer_token(req: Request) -> str:
@@ -1169,6 +1305,207 @@ def _router_request_health(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _serialize_lane_swap(row: dict[str, Any]) -> LaneSwapResponse:
+    return LaneSwapResponse(
+        swap_id=str(row["swap_id"]),
+        lane_id=str(row["lane_id"]),
+        host_name=str(row.get("host_name") or ""),
+        requested_model_name=str(row.get("requested_model_name") or ""),
+        resolved_model_name=str(row.get("resolved_model_name") or "") or None,
+        state=str(row.get("state") or ""),
+        terminal=bool(row.get("terminal")),
+        source_mode=str(row.get("source_mode") or "") or None,
+        error_message=str(row.get("error_message") or "") or None,
+        details=dict(row.get("details") or {}),
+        started_at=row["started_at"].isoformat(),
+        last_event_at=row["last_event_at"].isoformat() if row.get("last_event_at") else None,
+        completed_at=row["completed_at"].isoformat() if row.get("completed_at") else None,
+        updated_at=row["updated_at"].isoformat(),
+    )
+
+
+def _fetch_lane_swap(cur, swap_id: str) -> dict[str, Any] | None:
+    cur.execute(
+        """
+        SELECT
+          ls.swap_id,
+          ls.lane_id,
+          ls.requested_model_name,
+          ls.resolved_model_name,
+          ls.source_mode,
+          ls.state,
+          ls.terminal,
+          ls.error_message,
+          ls.details,
+          ls.started_at,
+          ls.last_event_at,
+          ls.completed_at,
+          ls.updated_at,
+          h.host_name
+        FROM lane_swaps ls
+        JOIN lanes l ON l.lane_id = ls.lane_id
+        JOIN hosts h ON h.host_id = l.host_id
+        WHERE ls.swap_id=%s
+        """,
+        (swap_id,),
+    )
+    return cur.fetchone()
+
+
+def _create_lane_swap(
+    cur,
+    *,
+    lane_id: str,
+    requested_model_name: str,
+    resolved_model_name: str | None,
+    source_mode: str | None,
+    details: dict[str, Any] | None = None,
+) -> str:
+    cur.execute(
+        """
+        INSERT INTO lane_swaps (
+          lane_id, requested_model_name, resolved_model_name, source_mode,
+          state, terminal, details, started_at, last_event_at, updated_at
+        )
+        VALUES (%s, %s, %s, %s, 'queued', false, %s::jsonb, now(), now(), now())
+        RETURNING swap_id
+        """,
+        (
+            lane_id,
+            requested_model_name,
+            resolved_model_name,
+            source_mode,
+            Jsonb(details or {}),
+        ),
+    )
+    swap_id = str(cur.fetchone()["swap_id"])
+    cur.execute(
+        """
+        INSERT INTO lane_swap_events (
+          swap_id, lane_id, event_type, state, message, details
+        )
+        VALUES (%s, %s, 'router_enqueued', 'queued', %s, %s::jsonb)
+        """,
+        (
+            swap_id,
+            lane_id,
+            f"swap requested for {resolved_model_name or requested_model_name}",
+            Jsonb(details or {}),
+        ),
+    )
+    cur.execute(
+        """
+        UPDATE lanes
+        SET status='suspended',
+            suspension_reason=%s,
+            updated_at=now()
+        WHERE lane_id=%s
+        """,
+        (f"swap:{swap_id}:queued", lane_id),
+    )
+    return swap_id
+
+
+def _record_lane_swap_event(
+    cur,
+    *,
+    swap_id: str,
+    event_type: str,
+    state: str,
+    message: str | None = None,
+    details: dict[str, Any] | None = None,
+    current_model_name: str | None = None,
+    error_message: str | None = None,
+) -> dict[str, Any]:
+    swap_row = _fetch_lane_swap(cur, swap_id)
+    if not swap_row:
+        raise HTTPException(status_code=404, detail="swap not found")
+
+    lane_id = str(swap_row["lane_id"])
+    payload = dict(details or {})
+    terminal = state in SWAP_TERMINAL_STATES
+    now = datetime.now(UTC)
+
+    cur.execute(
+        """
+        INSERT INTO lane_swap_events (
+          swap_id, lane_id, event_type, state, message, details, error_message
+        )
+        VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s)
+        """,
+        (swap_id, lane_id, event_type, state, message, Jsonb(payload), error_message),
+    )
+    cur.execute(
+        """
+        UPDATE lane_swaps
+        SET state=%s,
+            terminal=%s,
+            details=COALESCE(details, '{}'::jsonb) || %s::jsonb,
+            error_message=COALESCE(%s, error_message),
+            last_event_at=%s,
+            completed_at=CASE WHEN %s THEN %s ELSE completed_at END,
+            updated_at=%s
+        WHERE swap_id=%s
+        """,
+        (
+            state,
+            terminal,
+            Jsonb(payload),
+            error_message,
+            now,
+            terminal,
+            now,
+            now,
+            swap_id,
+        ),
+    )
+
+    if current_model_name:
+        cur.execute(
+            "UPDATE lanes SET current_model_name=%s, updated_at=now() WHERE lane_id=%s",
+            (current_model_name, lane_id),
+        )
+
+    if state == "ready":
+        cur.execute(
+            """
+            UPDATE lanes
+            SET status='ready',
+                suspension_reason=NULL,
+                updated_at=now()
+            WHERE lane_id=%s
+            """,
+            (lane_id,),
+        )
+    elif state in {"queued", "stopping_siblings", "copying", "restarting", "loading"}:
+        cur.execute(
+            """
+            UPDATE lanes
+            SET status='suspended',
+                suspension_reason=%s,
+                updated_at=now()
+            WHERE lane_id=%s
+            """,
+            (f"swap:{swap_id}:{state}", lane_id),
+        )
+    elif state in {"failed", "canceled"}:
+        cur.execute(
+            """
+            UPDATE lanes
+            SET status='error',
+                suspension_reason=%s,
+                updated_at=now()
+            WHERE lane_id=%s
+            """,
+            (f"swap:{swap_id}:{state}", lane_id),
+        )
+
+    row = _fetch_lane_swap(cur, swap_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="swap disappeared")
+    return row
+
+
 def _load_swap_tuning_profile(cur, *, host_id: str, lane_id: str, model_name: str) -> dict[str, Any] | None:
     cur.execute(
         """
@@ -1205,7 +1542,7 @@ def _load_swap_tuning_profile(cur, *, host_id: str, lane_id: str, model_name: st
 def _list_host_sibling_lanes(cur, *, host_id: str, lane_id: str) -> list[dict[str, Any]]:
     cur.execute(
         """
-        SELECT lane_id, lane_name, lane_type, base_url, status, suspension_reason, current_model_name
+        SELECT lane_id, lane_name, lane_type, base_url, status, suspension_reason, current_model_name, default_model_name
         FROM lanes
         WHERE host_id=%s AND lane_id<>%s
         ORDER BY lane_name
@@ -1213,6 +1550,43 @@ def _list_host_sibling_lanes(cur, *, host_id: str, lane_id: str) -> list[dict[st
         (host_id, lane_id),
     )
     return list(cur.fetchall())
+
+
+def _list_host_lanes(cur, *, host_id: str) -> list[dict[str, Any]]:
+    cur.execute(
+        """
+        SELECT lane_id, lane_name, lane_type, base_url, status, suspension_reason, current_model_name, default_model_name
+        FROM lanes
+        WHERE host_id=%s
+        ORDER BY lane_name
+        """,
+        (host_id,),
+    )
+    return list(cur.fetchall())
+
+
+def _lane_split_slot(lane_row: dict[str, Any]) -> str | None:
+    lane_name = str(lane_row.get("lane_name") or "").strip().lower()
+    lane_type = str(lane_row.get("lane_type") or "").strip().lower()
+    if lane_name in {"cpu", "gpu", "mlx"}:
+        return lane_name
+    if not lane_name and lane_type in {"cpu", "gpu", "mlx"}:
+        return lane_type
+    return None
+
+
+def _desired_restore_model_name(lane_row: dict[str, Any], overrides: dict[str, str]) -> str | None:
+    slot = _lane_split_slot(lane_row)
+    if not slot:
+        return None
+    requested = (overrides.get(slot) or "").strip()
+    if requested:
+        return requested
+    default_model_name = str(lane_row.get("default_model_name") or "").strip()
+    if default_model_name:
+        return default_model_name
+    current_model_name = str(lane_row.get("current_model_name") or "").strip()
+    return current_model_name or None
 
 
 def _list_active_router_leases(cur, lane_ids: list[str]) -> list[dict[str, Any]]:
@@ -1292,6 +1666,21 @@ def _set_lane_suspension(cur, *, lane_id: str, suspended: bool, reason: str) -> 
         """,
         (reason, reason, lane_id),
     )
+
+
+def _display_lane_status(
+    *,
+    raw_status: str,
+    suspension_reason: str | None,
+    active_swap: dict[str, Any] | None,
+) -> str:
+    if active_swap:
+        return str(active_swap.get("state") or raw_status)
+    if (suspension_reason or "").strip():
+        return "suspended"
+    if raw_status == "suspended":
+        return "offline"
+    return raw_status
 
 
 def _mark_leases_canceled_for_swap(
@@ -1474,6 +1863,243 @@ def _call_lane_service_action(*, base_url: str, action: Literal["start", "stop",
     if response.status_code >= 400:
         raise HTTPException(status_code=response.status_code, detail=body)
     return body
+
+
+def _call_lane_swap_gateway(*, base_url: str, payload: dict[str, Any]) -> dict[str, Any]:
+    with httpx.Client(timeout=float(max(180, settings.swap_proxy_timeout_seconds))) as client:
+        response = client.post(
+            f"{base_url.rstrip('/')}/swap-model",
+            json=payload,
+            headers={"Authorization": f"Bearer {settings.swap_auth_token}"},
+        )
+    try:
+        body = response.json()
+    except Exception:
+        body = {"raw": response.text}
+    if response.status_code >= 400:
+        raise HTTPException(status_code=response.status_code, detail=body)
+    return body
+
+
+def _build_swap_gateway_payload(
+    *,
+    lane_state: dict[str, Any],
+    preflight: SwapPreflightResponse,
+    artifact_row: dict[str, Any],
+    requested_model_name: str,
+    swap_id: str | None = None,
+) -> tuple[str, dict[str, Any]]:
+    source_mode = preflight.source_mode or "local"
+    exact_downstream_model = Path(str(preflight.artifact_path)).name if preflight.artifact_path else preflight.model_name
+    payload: dict[str, Any] = {
+        "model_name": preflight.model_name,
+        "model_path": preflight.artifact_path,
+        "model_alias": exact_downstream_model,
+        "source_mode": source_mode,
+        "swap_id": swap_id,
+        "swap_callback_url": f"{settings.router_public_base_url.rstrip('/')}/api/lane-swaps/{swap_id}/events" if swap_id else None,
+        "swap_callback_token": settings.swap_auth_token if swap_id else None,
+    }
+    if source_mode == "remote_copy_then_load":
+        local_model_root = lane_state.get("local_model_root")
+        if not local_model_root:
+            raise HTTPException(status_code=409, detail="worker has no configured local model root")
+        remote_user = artifact_row.get("mgmt_ssh_user")
+        remote_host = artifact_row.get("mgmt_ssh_host")
+        if remote_user and remote_host:
+            payload["copy_source"] = f"{remote_user}@{remote_host}:{preflight.artifact_path}"
+        else:
+            payload["copy_source"] = preflight.artifact_path
+        payload["copy_destination"] = f"{str(local_model_root).rstrip('/')}/{preflight.model_name}"
+    return source_mode, payload
+
+
+def _resolve_swap_execution(
+    cur,
+    *,
+    lane_id: str,
+    model_name: str,
+    allow_unverified: bool = False,
+) -> tuple[dict[str, Any], SwapPreflightResponse, dict[str, Any], str]:
+    lane_state, preflight = _swap_preflight(
+        cur,
+        lane_id,
+        model_name,
+        allow_unverified=allow_unverified,
+    )
+    if not preflight.ok:
+        raise HTTPException(status_code=409, detail=preflight.reason or "swap preflight failed")
+    cur.execute(
+        """
+        SELECT hma.artifact_id, hma.model_id, hma.host_id, hma.local_path, h.host_name, h.mgmt_ssh_host, h.mgmt_ssh_user
+        FROM host_model_artifacts hma
+        JOIN models m ON m.model_id=hma.model_id
+        JOIN hosts h ON h.host_id=hma.host_id
+        WHERE m.model_name=%s AND hma.local_path=%s
+        LIMIT 1
+        """,
+        (preflight.model_name, preflight.artifact_path),
+    )
+    artifact_row = cur.fetchone()
+    if not artifact_row:
+        raise HTTPException(status_code=404, detail="artifact not found for swap")
+    source_mode, _ = _build_swap_gateway_payload(
+        lane_state=lane_state,
+        preflight=preflight,
+        artifact_row=artifact_row,
+        requested_model_name=model_name,
+        swap_id=None,
+    )
+    return lane_state, preflight, artifact_row, source_mode
+
+
+def _restore_split_mode_for_host(
+    *,
+    host_id: str,
+    host_name: str,
+    overrides: dict[str, str],
+    skip_lane_id: str | None = None,
+) -> list[dict[str, Any]]:
+    actions: list[dict[str, Any]] = []
+    with db.connect() as conn:
+        with conn.cursor() as cur:
+            lanes = _list_host_lanes(cur, host_id=host_id)
+        conn.commit()
+
+    non_split_lanes = [lane for lane in lanes if _lane_split_slot(lane) is None]
+    split_lanes = [lane for lane in lanes if _lane_split_slot(lane) is not None]
+
+    for lane in non_split_lanes:
+        if skip_lane_id and str(lane["lane_id"]) == skip_lane_id:
+            continue
+        try:
+            result = _call_lane_service_action(base_url=str(lane["base_url"]), action="stop")
+            with db.connect() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        UPDATE lanes
+                        SET status='offline',
+                            suspension_reason=NULL,
+                            updated_at=now()
+                        WHERE lane_id=%s
+                        """,
+                        (str(lane["lane_id"]),),
+                    )
+                conn.commit()
+            actions.append(
+                {
+                    "lane_id": str(lane["lane_id"]),
+                    "lane_name": str(lane.get("lane_name") or ""),
+                    "lane_type": str(lane.get("lane_type") or ""),
+                    "action": "stop",
+                    "ok": True,
+                    "details": result,
+                }
+            )
+        except Exception as exc:
+            actions.append(
+                {
+                    "lane_id": str(lane["lane_id"]),
+                    "lane_name": str(lane.get("lane_name") or ""),
+                    "lane_type": str(lane.get("lane_type") or ""),
+                    "action": "stop",
+                    "ok": False,
+                    "error": str(exc),
+                }
+            )
+
+    for lane in split_lanes:
+        lane_id = str(lane["lane_id"])
+        lane_slot = _lane_split_slot(lane) or ""
+        desired_model_name = _desired_restore_model_name(lane, overrides)
+        if lane_id == skip_lane_id:
+            actions.append(
+                {
+                    "lane_id": lane_id,
+                    "lane_name": str(lane.get("lane_name") or ""),
+                    "lane_type": str(lane.get("lane_type") or ""),
+                    "action": "preserve",
+                    "ok": True,
+                    "model_name": desired_model_name,
+                }
+            )
+            continue
+        if not desired_model_name:
+            actions.append(
+                {
+                    "lane_id": lane_id,
+                    "lane_name": str(lane.get("lane_name") or ""),
+                    "lane_type": str(lane.get("lane_type") or ""),
+                    "action": "swap-model",
+                    "ok": False,
+                    "error": f"no desired model configured for {lane_slot} lane",
+                }
+            )
+            continue
+        try:
+            with db.connect() as conn:
+                with conn.cursor() as cur:
+                    lane_state, preflight, artifact_row, source_mode = _resolve_swap_execution(
+                        cur,
+                        lane_id=lane_id,
+                        model_name=desired_model_name,
+                    )
+                conn.commit()
+            _, payload = _build_swap_gateway_payload(
+                lane_state=lane_state,
+                preflight=preflight,
+                artifact_row=artifact_row,
+                requested_model_name=desired_model_name,
+            )
+            result = _call_lane_swap_gateway(base_url=str(lane["base_url"]), payload=payload)
+            with db.connect() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        UPDATE lanes
+                        SET current_model_name=%s,
+                            status='ready',
+                            suspension_reason=NULL,
+                            updated_at=now()
+                        WHERE lane_id=%s
+                        """,
+                        (preflight.model_name, lane_id),
+                    )
+                    _upsert_usage(
+                        cur,
+                        lane_id=lane_id,
+                        model_id=str(artifact_row["model_id"]),
+                        used_at=datetime.now(UTC),
+                        swap_at=datetime.now(UTC),
+                    )
+                conn.commit()
+            actions.append(
+                {
+                    "lane_id": lane_id,
+                    "lane_name": str(lane.get("lane_name") or ""),
+                    "lane_type": str(lane.get("lane_type") or ""),
+                    "action": "swap-model",
+                    "ok": True,
+                    "requested_model_name": desired_model_name,
+                    "resolved_model_name": preflight.model_name,
+                    "source_mode": source_mode,
+                    "details": result,
+                }
+            )
+        except Exception as exc:
+            actions.append(
+                {
+                    "lane_id": lane_id,
+                    "lane_name": str(lane.get("lane_name") or ""),
+                    "lane_type": str(lane.get("lane_type") or ""),
+                    "action": "swap-model",
+                    "ok": False,
+                    "requested_model_name": desired_model_name,
+                    "error": str(exc),
+                }
+            )
+    return actions
 
 
 def _cleanup_expired_router_leases(cur) -> None:
@@ -1761,6 +2387,21 @@ def _execute_router_request(
             err_kind = "routing_error"
             err_msg = str(exc)
             raise
+
+        if choice and not _model_request_matches_candidate(model_name, choice.current_model_name or ""):
+            # Swap needed — trigger swap and wait
+            try:
+                # api_lane_swap_model is a synchronous blocking function
+                api_lane_swap_model(
+                    choice.lane_id,
+                    SwapModelRequest(
+                        model_name=model_name,
+                        swap_urgency="wait"
+                    )
+                )
+            except Exception as swap_err:
+                logger.warning("Auto-swap failed for lane %s model %s: %s", choice.lane_id, model_name, swap_err)
+                raise RuntimeError(f"no READY lanes available serving {model_name} and auto-swap failed: {swap_err}")
 
         downstream_model = model_name
         with db.connect() as conn:
@@ -2426,6 +3067,10 @@ def api_lane_swap_model(lane_id: str, req: SwapModelRequest) -> dict[str, Any]:
     reroute_results: list[dict[str, Any]] = []
     active_before_action: list[dict[str, Any]] = []
     suspension_reason = "exclusive swap profile active"
+    swap_id: str | None = None
+    host_id: str | None = None
+    host_name: str | None = None
+    target_lane_slot: str | None = None
     with db.connect() as conn:
         with conn.cursor() as cur:
             lane_state, preflight = _swap_preflight(
@@ -2437,15 +3082,18 @@ def api_lane_swap_model(lane_id: str, req: SwapModelRequest) -> dict[str, Any]:
             if not preflight.ok:
                 conn.commit()
                 raise HTTPException(status_code=409, detail=preflight.reason or "swap preflight failed")
+            host_id = str(lane_state["host"]["host_id"])
+            host_name = str(lane_state["host"]["host_name"])
+            target_lane_slot = _lane_split_slot(lane_state["lane"])
             tuning_profile = _load_swap_tuning_profile(
                 cur,
-                host_id=str(lane_state["host"]["host_id"]),
+                host_id=host_id,
                 lane_id=str(lane_state["lane"]["lane_id"]),
                 model_name=preflight.model_name,
             )
             sibling_lanes = _list_host_sibling_lanes(
                 cur,
-                host_id=str(lane_state["host"]["host_id"]),
+                host_id=host_id,
                 lane_id=str(lane_state["lane"]["lane_id"]),
             )
             impacted_sibling_lanes = (
@@ -2518,6 +3166,22 @@ def api_lane_swap_model(lane_id: str, req: SwapModelRequest) -> dict[str, Any]:
                 (preflight.model_name, preflight.artifact_path),
             )
             artifact_row = cur.fetchone()
+            swap_id = _create_lane_swap(
+                cur,
+                lane_id=str(preflight.lane_id),
+                requested_model_name=req.model_name,
+                resolved_model_name=preflight.model_name,
+                source_mode=source_mode,
+                details=_strip_nones(
+                    {
+                        "artifact_path": preflight.artifact_path,
+                        "artifact_host": preflight.artifact_host,
+                        "artifact_provider": preflight.artifact_provider,
+                        "swap_strategy": preflight.swap_strategy,
+                        "estimated_swap_ms": preflight.estimated_swap_ms,
+                    }
+                ),
+            )
         conn.commit()
     if not lane_state or not preflight or not artifact_row:
         raise HTTPException(status_code=404, detail="artifact not found for swap")
@@ -2530,6 +3194,19 @@ def api_lane_swap_model(lane_id: str, req: SwapModelRequest) -> dict[str, Any]:
     )
     sibling_service_actions: list[dict[str, Any]] = []
     if impacted_sibling_lanes:
+        try:
+            with db.connect() as conn:
+                with conn.cursor() as cur:
+                    _record_lane_swap_event(
+                        cur,
+                        swap_id=str(swap_id),
+                        event_type="stopping_siblings",
+                        state="stopping_siblings",
+                        details={"siblings": [str(row["lane_id"]) for row in impacted_sibling_lanes]},
+                    )
+                conn.commit()
+        except Exception:
+            pass
         for sibling in impacted_sibling_lanes:
             try:
                 action_result = _call_lane_service_action(base_url=str(sibling["base_url"]), action="stop")
@@ -2554,74 +3231,36 @@ def api_lane_swap_model(lane_id: str, req: SwapModelRequest) -> dict[str, Any]:
                 )
                 raise
 
-    current_model_name = str(lane_state["lane"].get("current_model_name") or "").strip()
-    if current_model_name and _model_request_matches_candidate(preflight.model_name, current_model_name):
-        if _lane_gateway_healthy(base_url):
-            data = {
-                "ok": True,
-                "model_name": preflight.model_name,
-                "model_path": preflight.artifact_path,
-                "model_alias": preflight.model_name,
-                "copy_time_ms": 0,
-                "load_time_ms": 0,
-                "ready_time_ms": 0,
-                "health_path": "/health",
-                "noop": True,
-                "reason": "requested model already loaded and healthy",
-            }
-            ok = True
-            return {
-                "ok": True,
-                "lane_id": preflight.lane_id,
-                "model_name": preflight.model_name,
-                "requested_model_name": req.model_name,
-                "source_mode": source_mode,
-                "swap_urgency": req.swap_urgency,
-                "cost_tier": str(tuning_profile.get("cost_tier") or "standard") if tuning_profile else "standard",
-                "storage_scheme": str(tuning_profile.get("storage_scheme") or "unknown") if tuning_profile else None,
-                "active_leases_handled": _summarize_active_leases(active_before_action),
-                "reroute_results": reroute_results,
-                "sibling_service_actions": sibling_service_actions,
-                "details": data,
-            }
-
-    exact_downstream_model = Path(str(preflight.artifact_path)).name if preflight.artifact_path else preflight.model_name
-
-    payload: dict[str, Any] = {
-        "model_name": preflight.model_name,
-        "model_path": preflight.artifact_path,
-        "model_alias": exact_downstream_model,
-        "source_mode": source_mode,
-    }
-    if source_mode == "remote_copy_then_load":
-        local_model_root = lane_state.get("local_model_root")
-        if not local_model_root:
-            raise HTTPException(status_code=409, detail="worker has no configured local model root")
-        remote_user = artifact_row.get("mgmt_ssh_user")
-        remote_host = artifact_row.get("mgmt_ssh_host")
-        if remote_user and remote_host:
-            payload["copy_source"] = f"{remote_user}@{remote_host}:{preflight.artifact_path}"
-        else:
-            payload["copy_source"] = preflight.artifact_path
-        payload["copy_destination"] = f"{str(local_model_root).rstrip('/')}/{req.model_name}"
-
     ok = False
     err_kind = None
     err_msg = None
     data: dict[str, Any] | None = None
+    current_model_name = str(lane_state["lane"].get("current_model_name") or "").strip()
     try:
-        with httpx.Client(timeout=float(max(180, settings.swap_proxy_timeout_seconds))) as client:
-            r = client.post(
-                f"{base_url.rstrip('/')}/swap-model",
-                json=payload,
-                headers={"Authorization": f"Bearer {settings.swap_auth_token}"},
+        if current_model_name and _model_request_matches_candidate(preflight.model_name, current_model_name):
+            if _lane_gateway_healthy(base_url):
+                data = {
+                    "ok": True,
+                    "model_name": preflight.model_name,
+                    "model_path": preflight.artifact_path,
+                    "model_alias": preflight.model_name,
+                    "copy_time_ms": 0,
+                    "load_time_ms": 0,
+                    "ready_time_ms": 0,
+                    "health_path": "/health",
+                    "noop": True,
+                    "reason": "requested model already loaded and healthy",
+                }
+                ok = True
+        if not ok:
+            _, payload = _build_swap_gateway_payload(
+                lane_state=lane_state,
+                preflight=preflight,
+                artifact_row=artifact_row,
+                requested_model_name=req.model_name,
+                swap_id=swap_id,
             )
-            try:
-                data = r.json()
-            except Exception:
-                data = {"raw": r.text}
-            if r.status_code >= 400:
-                raise HTTPException(status_code=r.status_code, detail=str(data))
+            data = _call_lane_swap_gateway(base_url=base_url, payload=payload)
             ok = True
     except HTTPException:
         err_kind = "swap_http_error"
@@ -2671,6 +3310,16 @@ def api_lane_swap_model(lane_id: str, req: SwapModelRequest) -> dict[str, Any]:
                                 err_msg,
                             ),
                         )
+                    if swap_id:
+                        _record_lane_swap_event(
+                            cur,
+                            swap_id=str(swap_id),
+                            event_type="router_success" if ok else "router_failure",
+                            state="ready" if ok else "failed",
+                            details=data if isinstance(data, dict) else {"raw": data},
+                            current_model_name=preflight.model_name if ok else None,
+                            error_message=err_msg,
+                        )
                     if sibling_lanes:
                         for sibling in sibling_lanes:
                             _set_lane_suspension(
@@ -2682,29 +3331,22 @@ def api_lane_swap_model(lane_id: str, req: SwapModelRequest) -> dict[str, Any]:
                 conn.commit()
         except Exception:
             pass
-        if ok and sibling_lanes and not impacted_sibling_lanes:
-            for sibling in sibling_lanes:
-                try:
-                    action_result = _call_lane_service_action(base_url=str(sibling["base_url"]), action="start")
-                    sibling_service_actions.append(
-                        {
-                            "lane_id": str(sibling["lane_id"]),
-                            "base_url": str(sibling["base_url"]),
-                            "action": "start",
-                            "ok": True,
-                            "details": action_result,
-                        }
-                    )
-                except Exception as exc:
-                    sibling_service_actions.append(
-                        {
-                            "lane_id": str(sibling["lane_id"]),
-                            "base_url": str(sibling["base_url"]),
-                            "action": "start",
-                            "ok": False,
-                            "error": str(exc),
-                        }
-                    )
+        if (
+            ok
+            and sibling_lanes
+            and not impacted_sibling_lanes
+            and host_id
+            and host_name
+            and target_lane_slot
+            and any(_lane_split_slot(sibling) is None for sibling in sibling_lanes)
+        ):
+            split_restore_actions = _restore_split_mode_for_host(
+                host_id=host_id,
+                host_name=host_name,
+                overrides={target_lane_slot: preflight.model_name},
+                skip_lane_id=str(preflight.lane_id),
+            )
+            sibling_service_actions.extend(split_restore_actions)
 
     return {
         "ok": True,
@@ -2719,7 +3361,40 @@ def api_lane_swap_model(lane_id: str, req: SwapModelRequest) -> dict[str, Any]:
         "reroute_results": reroute_results,
         "sibling_service_actions": sibling_service_actions,
         "details": data,
+        "swap_id": swap_id,
     }
+
+
+@app.get("/api/lane-swaps/{swap_id}", response_model=LaneSwapResponse)
+def api_lane_swap_status(swap_id: str) -> LaneSwapResponse:
+    with db.connect() as conn:
+        with conn.cursor() as cur:
+            row = _fetch_lane_swap(cur, swap_id)
+        conn.commit()
+    if not row:
+        raise HTTPException(status_code=404, detail="swap not found")
+    return _serialize_lane_swap(row)
+
+
+@app.post("/api/lane-swaps/{swap_id}/events", response_model=LaneSwapResponse)
+def api_lane_swap_event(swap_id: str, req: Request, body: LaneSwapEventRequest) -> LaneSwapResponse:
+    token = _bearer_token(req)
+    if token != settings.swap_auth_token:
+        raise HTTPException(status_code=403, detail="unauthorized")
+    with db.connect() as conn:
+        with conn.cursor() as cur:
+            row = _record_lane_swap_event(
+                cur,
+                swap_id=swap_id,
+                event_type=body.event_type,
+                state=body.state,
+                message=body.message,
+                details=body.details,
+                current_model_name=body.current_model_name,
+                error_message=body.error_message,
+            )
+        conn.commit()
+    return _serialize_lane_swap(row)
 
 
 @app.get("/mesh/inventory")
@@ -2736,6 +3411,7 @@ def mesh_inventory() -> dict[str, Any]:
                   l.lane_type,
                   l.base_url,
                   l.status as lane_status,
+                  l.suspension_reason,
                   l.current_model_name,
                   l.last_ok_at,
                   l.last_probe_at
@@ -2764,10 +3440,40 @@ def mesh_inventory() -> dict[str, Any]:
                 """
             )
             aliases = cur.fetchall()
+            cur.execute(
+                """
+                SELECT DISTINCT ON (ls.lane_id)
+                  ls.swap_id,
+                  ls.lane_id,
+                  ls.state,
+                  ls.terminal,
+                  ls.details,
+                  ls.requested_model_name,
+                  ls.resolved_model_name,
+                  ls.error_message,
+                  ls.started_at,
+                  ls.last_event_at,
+                  ls.completed_at,
+                  ls.updated_at
+                FROM lane_swaps ls
+                WHERE NOT ls.terminal
+                ORDER BY ls.lane_id, ls.updated_at DESC
+                """
+            )
+            active_swaps = cur.fetchall()
 
     models_by_lane: dict[str, set[str]] = {}
     for r in policy + aliases:
         models_by_lane.setdefault(str(r["lane_id"]), set()).add(str(r["model_name"]))
+    active_swaps_by_lane = {str(r["lane_id"]): r for r in active_swaps}
+    active_swap_siblings: dict[str, dict[str, Any]] = {}
+    for swap in active_swaps:
+        details = dict(swap.get("details") or {})
+        sibling_ids = details.get("siblings") or details.get("affected_sibling_lanes") or []
+        for sibling_id in sibling_ids:
+            sibling_key = str(sibling_id or "").strip()
+            if sibling_key:
+                active_swap_siblings[sibling_key] = swap
 
     out = []
     for r in lanes:
@@ -2776,6 +3482,15 @@ def mesh_inventory() -> dict[str, Any]:
         cm = (r.get("current_model_name") or "").strip()
         if cm and cm not in known:
             known.append(cm)
+        active_swap = active_swaps_by_lane.get(lane_id)
+        sibling_swap = active_swap_siblings.get(lane_id)
+        lane_status = _display_lane_status(
+            raw_status=str(r["lane_status"]),
+            suspension_reason=str(r.get("suspension_reason") or "") or None,
+            active_swap=active_swap or sibling_swap,
+        )
+        if sibling_swap and not active_swap:
+            lane_status = "suspended"
         out.append(
             {
                 "host": str(r["host_name"]),
@@ -2783,11 +3498,40 @@ def mesh_inventory() -> dict[str, Any]:
                 "lane_id": lane_id,
                 "lane_type": str(r["lane_type"]),
                 "base_url": str(r["base_url"]),
-                "lane_status": str(r["lane_status"]),
+                "lane_status": lane_status,
+                "raw_lane_status": str(r["lane_status"]),
+                "suspension_reason": str(r.get("suspension_reason") or "") or None,
                 "current_model": cm or None,
                 "known_models": known,
                 "last_ok_at": r.get("last_ok_at").isoformat() if r.get("last_ok_at") else None,
                 "last_probe_at": r.get("last_probe_at").isoformat() if r.get("last_probe_at") else None,
+                "active_swap": (
+                    {
+                        "swap_id": str(active_swap["swap_id"]),
+                        "state": str(active_swap.get("state") or ""),
+                        "requested_model_name": str(active_swap.get("requested_model_name") or ""),
+                        "resolved_model_name": str(active_swap.get("resolved_model_name") or "") or None,
+                        "error_message": str(active_swap.get("error_message") or "") or None,
+                        "started_at": active_swap["started_at"].isoformat() if active_swap.get("started_at") else None,
+                        "last_event_at": active_swap["last_event_at"].isoformat() if active_swap.get("last_event_at") else None,
+                        "completed_at": active_swap["completed_at"].isoformat() if active_swap.get("completed_at") else None,
+                        "updated_at": active_swap["updated_at"].isoformat() if active_swap.get("updated_at") else None,
+                    }
+                    if active_swap
+                    else None
+                ),
+                "blocked_by_swap": (
+                    {
+                        "swap_id": str(sibling_swap["swap_id"]),
+                        "state": str(sibling_swap.get("state") or ""),
+                        "requested_model_name": str(sibling_swap.get("requested_model_name") or ""),
+                        "resolved_model_name": str(sibling_swap.get("resolved_model_name") or "") or None,
+                        "started_at": sibling_swap["started_at"].isoformat() if sibling_swap.get("started_at") else None,
+                        "last_event_at": sibling_swap["last_event_at"].isoformat() if sibling_swap.get("last_event_at") else None,
+                    }
+                    if sibling_swap and not active_swap
+                    else None
+                ),
             }
         )
     return {"lanes": out}

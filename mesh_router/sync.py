@@ -30,6 +30,7 @@ def _upsert_host_and_lane(item: dict[str, Any]) -> None:
     lane_type = str(item.get("lane_type") or "other").strip().lower()
     status = str(item.get("status") or "offline").strip().lower()
     current_model = item.get("current_model")
+    is_stale = bool(item.get("is_stale"))
     md = item.get("metadata") or {}
 
     if not worker_id or not base_url:
@@ -55,7 +56,16 @@ def _upsert_host_and_lane(item: dict[str, Any]) -> None:
                 INSERT INTO hosts (host_name, status, last_seen_at)
                 VALUES (%s, %s, now())
                 ON CONFLICT (host_name)
-                DO UPDATE SET status=EXCLUDED.status, last_seen_at=now(), updated_at=now()
+                DO UPDATE SET
+                  status=CASE
+                    WHEN EXCLUDED.status = 'ready' THEN 'ready'
+                    ELSE hosts.status
+                  END,
+                  last_seen_at=CASE
+                    WHEN EXCLUDED.status = 'ready' THEN now()
+                    ELSE hosts.last_seen_at
+                  END,
+                  updated_at=now()
                 RETURNING host_id
                 """,
                 (worker_id, "ready" if status in ("ready", "busy") else ("offline" if status == "offline" else "unknown")),
@@ -79,12 +89,18 @@ def _upsert_host_and_lane(item: dict[str, Any]) -> None:
                   host_id=EXCLUDED.host_id,
                   lane_name=EXCLUDED.lane_name,
                   lane_type=EXCLUDED.lane_type,
-                  status=EXCLUDED.status,
-                  current_model_name=EXCLUDED.current_model_name,
+                  -- Discovery sync should not overwrite probe/swap truth for live status.
+                  status=lanes.status,
+                  suspension_reason=lanes.suspension_reason,
+                  current_model_name=CASE
+                    WHEN %s THEN lanes.current_model_name
+                    WHEN lanes.current_model_name IS NULL OR lanes.current_model_name = '' THEN EXCLUDED.current_model_name
+                    ELSE lanes.current_model_name
+                  END,
                   proxy_auth_mode=EXCLUDED.proxy_auth_mode,
                   proxy_auth_metadata=EXCLUDED.proxy_auth_metadata,
-                  last_probe_at=now(),
-                  last_ok_at=CASE WHEN EXCLUDED.status IN ('ready','busy') THEN now() ELSE lanes.last_ok_at END,
+                  last_probe_at=lanes.last_probe_at,
+                  last_ok_at=lanes.last_ok_at,
                   updated_at=now()
                 """,
                 (
@@ -97,6 +113,7 @@ def _upsert_host_and_lane(item: dict[str, Any]) -> None:
                     str(md.get("proxy_auth_mode") or "").strip() or None,
                     Jsonb(md),
                     status,
+                    is_stale,
                 ),
             )
         conn.commit()

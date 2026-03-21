@@ -34,6 +34,8 @@ class Settings(BaseSettings):
     swap_auth_token: str = "replace-with-worker-swap-token"
     # Must exceed worker-side WORKER_SWITCH_TIMEOUT_S so the router does not time out first.
     swap_proxy_timeout_seconds: int = 240
+    # Public callback URL reachable by worker nodes for swap progress events.
+    router_public_base_url: str = "http://10.0.1.47:4010"
 
 
 settings = Settings()

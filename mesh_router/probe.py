@@ -31,6 +31,32 @@ def _probe_lane_health(base_url: str) -> tuple[bool, int | None, float, str | No
         return False, None, latency_ms, str(e)
 
 
+def _probe_lane_model(base_url: str) -> str | None:
+    """Try to detect currently loaded model on the lane."""
+    try:
+        # After confirming base_url is healthy, sync current_model_name from Ollama/llama.cpp
+        with httpx.Client(timeout=3.0) as client:
+            # Try Ollama-style /api/tags first, then OpenAI-style /v1/models
+            for probe_path in ["/api/tags", "/v1/models"]:
+                try:
+                    r = client.get(f"{base_url.rstrip('/')}{probe_path}")
+                    if r.status_code == 200:
+                        data = r.json()
+                        # Ollama: {"models": [{"name": "qwen2.5-9b:latest",...}]}
+                        # llama.cpp: {"data": [{"id": "qwen2.5-9b",...}]}
+                        models = data.get("models") or data.get("data") or []
+                        if models:
+                            loaded = (models[0].get("name") or models[0].get("id") or "").split(":")[0]
+                            if loaded:
+                                return loaded
+                        break
+                except Exception:
+                    continue
+    except Exception:
+        pass
+    return None
+
+
 def _enforce_dualboot_mutual_exclusion(cur: Any) -> None:
     """
     Enforces dual-boot mutual exclusion by ensuring only one host per
@@ -164,6 +190,14 @@ def probe_once() -> None:
                         """,
                         (host_id,),
                     )
+                    
+                    # Also detect currently loaded model
+                    loaded_model = _probe_lane_model(base_url)
+                    if loaded_model:
+                        cur.execute(
+                            "UPDATE lanes SET current_model_name=%s WHERE lane_id=%s",
+                            (loaded_model, lane_id),
+                        )
             
             # After all lanes probed, enforce dual-boot mutual exclusion
             _enforce_dualboot_mutual_exclusion(cur)

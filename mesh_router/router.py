@@ -15,6 +15,23 @@ class LaneChoice:
     worker_id: str
     base_url: str
     lane_type: str
+    current_model_name: str | None = None
+
+
+def _normalize_model_tag(tag: str | None) -> str | None:
+    raw = (tag or "").strip().lower()
+    if not raw:
+        return None
+    return raw.replace("_", "-")
+
+
+def _normalized_model_tags(tags: list[str] | None) -> set[str]:
+    out: set[str] = set()
+    for tag in tags or []:
+        value = _normalize_model_tag(tag)
+        if value:
+            out.add(value)
+    return out
 
 
 def _model_lookup_keys(model_name: str | None) -> set[str]:
@@ -54,13 +71,20 @@ def _is_exact_model_request(model_name: str | None) -> bool:
     return False
 
 
-def _model_matches_request(requested_model: str, candidate_model: str | None) -> bool:
+def _model_matches_request(
+    requested_model: str,
+    candidate_model: str | None,
+    candidate_tags: list[str] | None = None,
+) -> bool:
     candidate = (candidate_model or "").strip()
     if not candidate:
         return False
     if _is_exact_model_request(requested_model):
         return candidate == requested_model
-    return bool(_model_lookup_keys(requested_model) & _model_lookup_keys(candidate))
+    request_keys = _model_lookup_keys(requested_model)
+    if request_keys & _model_lookup_keys(candidate):
+        return True
+    return bool(request_keys & _normalized_model_tags(candidate_tags))
 
 
 def pick_lane_for_model(
@@ -105,6 +129,7 @@ def pick_lane_for_model(
             worker_id=str(r0["host_name"]),
             base_url=str(r0["base_url"]),
             lane_type=str(r0["lane_type"]),
+            current_model_name=r0.get("current_model_name"),
         )
 
     if pin_worker and not pin_base_url:
@@ -114,9 +139,10 @@ def pick_lane_for_model(
                 rows = q(
                     cur,
                     """
-                    SELECT l.lane_id, h.host_name, l.base_url, l.lane_type, l.current_model_name
+                    SELECT l.lane_id, h.host_name, l.base_url, l.lane_type, l.current_model_name, m.tags AS current_model_tags
                     FROM lanes l
                     JOIN hosts h ON h.host_id = l.host_id
+                    LEFT JOIN models m ON m.model_name = l.current_model_name
                     WHERE h.host_name=%s
                       AND l.status='ready'
                       AND NOT EXISTS (
@@ -148,7 +174,11 @@ def pick_lane_for_model(
                         list(excluded) or None,
                     ),
                 )
-        matched = [row for row in rows if _model_matches_request(model, row.get("current_model_name"))]
+        matched = [
+            row
+            for row in rows
+            if _model_matches_request(model, row.get("current_model_name"), row.get("current_model_tags") or [])
+        ]
         if not matched:
             raise RuntimeError(f"no READY lanes for pinned worker serving requested model: {model}")
         r0 = matched[0]
@@ -157,6 +187,7 @@ def pick_lane_for_model(
             worker_id=str(r0["host_name"]),
             base_url=str(r0["base_url"]),
             lane_type=str(r0["lane_type"]),
+            current_model_name=r0.get("current_model_name"),
         )
 
     def _pick() -> LaneChoice | None:
@@ -165,9 +196,36 @@ def pick_lane_for_model(
                 rows = q(
                     cur,
                     """
-                    SELECT l.lane_id, h.host_name, l.base_url, l.lane_type, l.status, l.current_model_name
+                    SELECT 
+                      l.lane_id, h.host_name, l.base_url, l.lane_type, l.status, l.current_model_name,
+                      current_m.tags AS current_model_tags,
+                      COALESCE((
+                        SELECT jsonb_agg(
+                          jsonb_build_object(
+                            'model_name', m.model_name,
+                            'tags', COALESCE(m.tags, '{}'::text[])
+                          )
+                          ORDER BY m.model_name
+                        )
+                        FROM lane_model_viability lmv 
+                        JOIN models m ON m.model_id=lmv.model_id 
+                        WHERE lmv.lane_id=l.lane_id AND lmv.is_viable=true AND lmv.source_locality='local'
+                      ), '[]'::jsonb) as local_viable_models,
+                      COALESCE((
+                        SELECT jsonb_agg(
+                          jsonb_build_object(
+                            'model_name', m.model_name,
+                            'tags', COALESCE(m.tags, '{}'::text[])
+                          )
+                          ORDER BY m.model_name
+                        )
+                        FROM lane_model_viability lmv 
+                        JOIN models m ON m.model_id=lmv.model_id 
+                        WHERE lmv.lane_id=l.lane_id AND lmv.is_viable=true AND lmv.source_locality='remote'
+                      ), '[]'::jsonb) as remote_viable_models
                     FROM lanes l
                     JOIN hosts h ON h.host_id = l.host_id
+                    LEFT JOIN models current_m ON current_m.model_name = l.current_model_name
                     WHERE l.status = 'ready'
                       AND NOT EXISTS (
                         SELECT 1 FROM router_leases rl
@@ -199,16 +257,49 @@ def pick_lane_for_model(
                         list(excluded) or None,
                     ),
                 )
-        matched = [row for row in rows if _model_matches_request(model, row.get("current_model_name"))]
-        if not matched:
-            return None
-        r0 = matched[0]
-        return LaneChoice(
-            lane_id=str(r0["lane_id"]),
-            worker_id=str(r0["host_name"]),
-            base_url=str(r0["base_url"]),
-            lane_type=str(r0["lane_type"]),
-        )
+        matched = [
+            row
+            for row in rows
+            if _model_matches_request(model, row.get("current_model_name"), row.get("current_model_tags") or [])
+        ]
+        if matched:
+            r0 = matched[0]
+            return LaneChoice(
+                lane_id=str(r0["lane_id"]),
+                worker_id=str(r0["host_name"]),
+                base_url=str(r0["base_url"]),
+                lane_type=str(r0["lane_type"]),
+                current_model_name=r0.get("current_model_name"),
+            )
+        
+        # Fallback: find a lane that can serve this model after a swap (has it in viable_models)
+        swappable = [
+            row for row in rows
+            if any(
+                _model_matches_request(model, item.get("model_name"), item.get("tags") or [])
+                for item in (row.get("local_viable_models") or [])
+            )
+            or any(
+                _model_matches_request(model, item.get("model_name"), item.get("tags") or [])
+                for item in (row.get("remote_viable_models") or [])
+            )
+        ]
+        if swappable:
+            # Pick the GPU lane first, then by host_name
+            swappable.sort(key=lambda r: (
+                0 if "gpu" in r.get("lane_type","").lower() else 1,
+                r.get("host_name") or ""
+            ))
+            r0 = swappable[0]
+            return LaneChoice(
+                lane_id=str(r0["lane_id"]),
+                worker_id=str(r0["host_name"]),
+                base_url=str(r0["base_url"]),
+                lane_type=str(r0["lane_type"]),
+                current_model_name=r0.get("current_model_name"),
+            )
+            
+        return None
 
     chosen = _pick()
     if not chosen:

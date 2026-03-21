@@ -64,6 +64,7 @@ class ArchiveInventoryScanRequest(BaseModel):
 
 class LaneModelCandidate(BaseModel):
     model_name: str
+    tags: list[str] = Field(default_factory=list)
     locality: Literal["local", "remote", "unverified"]
     artifact_path: str | None = None
     artifact_host: str | None = None
@@ -104,6 +105,7 @@ class SwapPreflightResponse(BaseModel):
 
 class ModelInfo(BaseModel):
     id: str
+    tags: list[str] = Field(default_factory=list)
     object: str = "model"
     owned_by: str = "mesh-router"
 
@@ -111,6 +113,17 @@ class ModelInfo(BaseModel):
 class ModelsResponse(BaseModel):
     object: str = "list"
     data: list[ModelInfo]
+
+
+class ModelTagsUpdateRequest(BaseModel):
+    tags: list[str] = Field(default_factory=list)
+    mode: Literal["replace", "add", "remove"] = "replace"
+
+
+class ModelTagsResponse(BaseModel):
+    model_id: str
+    model_name: str
+    tags: list[str] = Field(default_factory=list)
 
 
 class ModelTuningProfileUpsertRequest(BaseModel):
@@ -168,3 +181,41 @@ class RouterRequestSubmitRequest(BaseModel):
 
 class RouterRequestCancelRequest(BaseModel):
     reason: str | None = None
+
+
+class LaneSwapEventRequest(BaseModel):
+    event_type: str
+    state: str
+    message: str | None = None
+    details: dict[str, Any] | None = None
+    current_model_name: str | None = None
+    error_message: str | None = None
+
+
+class LaneSwapResponse(BaseModel):
+    swap_id: str
+    lane_id: str
+    host_name: str
+    requested_model_name: str
+    resolved_model_name: str | None = None
+    state: str
+    terminal: bool
+    source_mode: str | None = None
+    error_message: str | None = None
+    details: dict[str, Any]
+    started_at: str
+    last_event_at: str | None = None
+    completed_at: str | None = None
+    updated_at: str
+
+
+class RestoreSplitModeRequest(BaseModel):
+    cpu_model_name: str | None = None
+    gpu_model_name: str | None = None
+    mlx_model_name: str | None = None
+
+
+class RestoreSplitModeResponse(BaseModel):
+    host_id: str
+    host_name: str
+    actions: list[dict[str, Any]] = Field(default_factory=list)
