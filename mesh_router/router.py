@@ -15,6 +15,7 @@ class LaneChoice:
     worker_id: str
     base_url: str
     lane_type: str
+    backend_type: str
     current_model_name: str | None = None
 
 
@@ -80,7 +81,10 @@ def _model_matches_request(
     if not candidate:
         return False
     if _is_exact_model_request(requested_model):
-        return candidate == requested_model
+        # Also match against the basename so that lanes storing full local paths
+        # (e.g. /Users/kasunami/models/Qwen3.5-9B-6bit) match a bare name request.
+        candidate_stem = candidate.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+        return candidate == requested_model or candidate_stem == requested_model
     request_keys = _model_lookup_keys(requested_model)
     if request_keys & _model_lookup_keys(candidate):
         return True
@@ -90,6 +94,7 @@ def _model_matches_request(
 def pick_lane_for_model(
     *,
     model: str,
+    backend_type: str | None = None,
     pin_worker: str | None = None,
     pin_base_url: str | None = None,
     pin_lane_type: str | None = None,
@@ -112,14 +117,22 @@ def pick_lane_for_model(
                 rows = q(
                     cur,
                     """
-                    SELECT l.lane_id, h.host_name, l.base_url, l.lane_type
+                    SELECT l.lane_id, h.host_name, l.base_url, l.lane_type, l.backend_type
                     FROM lanes l
                     JOIN hosts h ON h.host_id=l.host_id
                     WHERE h.host_name=%s AND l.base_url=%s
+                      AND (%s::text IS NULL OR l.backend_type = %s::text)
                       AND (%s::text[] IS NULL OR l.lane_id::text <> ALL(%s::text[]))
                     LIMIT 1
                     """,
-                    (pin_worker, pin_base_url, list(excluded) or None, list(excluded) or None),
+                    (
+                        pin_worker,
+                        pin_base_url,
+                        backend_type,
+                        backend_type,
+                        list(excluded) or None,
+                        list(excluded) or None,
+                    ),
                 )
         if not rows:
             raise RuntimeError("pinned lane not found")
@@ -129,6 +142,7 @@ def pick_lane_for_model(
             worker_id=str(r0["host_name"]),
             base_url=str(r0["base_url"]),
             lane_type=str(r0["lane_type"]),
+            backend_type=str(r0.get("backend_type") or "llama"),
             current_model_name=r0.get("current_model_name"),
         )
 
@@ -139,7 +153,7 @@ def pick_lane_for_model(
                 rows = q(
                     cur,
                     """
-                    SELECT l.lane_id, h.host_name, l.base_url, l.lane_type, l.current_model_name, m.tags AS current_model_tags
+                    SELECT l.lane_id, h.host_name, l.base_url, l.lane_type, l.backend_type, l.current_model_name, m.tags AS current_model_tags
                     FROM lanes l
                     JOIN hosts h ON h.host_id = l.host_id
                     LEFT JOIN models m ON m.model_name = l.current_model_name
@@ -158,6 +172,7 @@ def pick_lane_for_model(
                           AND rr.released_at > now() - (%s * interval '1 second')
                       )
                       AND (%s::text IS NULL OR l.lane_type::text = %s::text)
+                      AND (%s::text IS NULL OR l.backend_type = %s::text)
                       AND (%s::text[] IS NULL OR l.lane_id::text <> ALL(%s::text[]))
                     ORDER BY
                       CASE l.lane_type WHEN 'gpu' THEN 0 WHEN 'mlx' THEN 1 WHEN 'cpu' THEN 2 ELSE 9 END,
@@ -170,6 +185,8 @@ def pick_lane_for_model(
                         _RECENT_PROXY_ERROR_COOLDOWN_S,
                         pin_lane_type,
                         pin_lane_type,
+                        backend_type,
+                        backend_type,
                         list(excluded) or None,
                         list(excluded) or None,
                     ),
@@ -187,6 +204,7 @@ def pick_lane_for_model(
             worker_id=str(r0["host_name"]),
             base_url=str(r0["base_url"]),
             lane_type=str(r0["lane_type"]),
+            backend_type=str(r0.get("backend_type") or "llama"),
             current_model_name=r0.get("current_model_name"),
         )
 
@@ -197,7 +215,7 @@ def pick_lane_for_model(
                     cur,
                     """
                     SELECT 
-                      l.lane_id, h.host_name, l.base_url, l.lane_type, l.status, l.current_model_name,
+                      l.lane_id, h.host_name, l.base_url, l.lane_type, l.backend_type, l.status, l.current_model_name,
                       current_m.tags AS current_model_tags,
                       COALESCE((
                         SELECT jsonb_agg(
@@ -241,6 +259,12 @@ def pick_lane_for_model(
                       )
                       AND h.host_name NOT IN ('litellm-router')
                       AND (%s::text IS NULL OR l.lane_type::text = %s::text)
+                      AND (
+                        CASE
+                          WHEN %s::text IS NOT NULL THEN l.backend_type = %s::text
+                          ELSE l.backend_type = 'llama' OR l.backend_type IS NULL
+                        END
+                      )
                       AND (%s::text[] IS NULL OR l.lane_id::text <> ALL(%s::text[]))
                     ORDER BY
                       -- Prefer GPU for generation, then MLX, then CPU.
@@ -253,6 +277,8 @@ def pick_lane_for_model(
                         _RECENT_PROXY_ERROR_COOLDOWN_S,
                         pin_lane_type,
                         pin_lane_type,
+                        backend_type,
+                        backend_type,
                         list(excluded) or None,
                         list(excluded) or None,
                     ),
@@ -269,6 +295,7 @@ def pick_lane_for_model(
                 worker_id=str(r0["host_name"]),
                 base_url=str(r0["base_url"]),
                 lane_type=str(r0["lane_type"]),
+                backend_type=str(r0.get("backend_type") or "llama"),
                 current_model_name=r0.get("current_model_name"),
             )
         
@@ -296,6 +323,7 @@ def pick_lane_for_model(
                 worker_id=str(r0["host_name"]),
                 base_url=str(r0["base_url"]),
                 lane_type=str(r0["lane_type"]),
+                backend_type=str(r0.get("backend_type") or "llama"),
                 current_model_name=r0.get("current_model_name"),
             )
             

@@ -36,6 +36,22 @@ class ChatCompletionRequest(BaseModel):
     model_config = {"extra": "allow", "populate_by_name": True}
 
 
+class ImageGenerationRequest(BaseModel):
+    model: str
+    prompt: str
+    n: int | None = 1
+    size: str | None = "1024x1024"
+    response_format: Literal["url", "b64_json"] | None = "b64_json"
+    quality: str | None = None
+
+    mesh_pin_worker: str | None = None
+    mesh_pin_base_url: str | None = None
+    mesh_pin_lane_type: str | None = None
+    mesh_allow_swap: bool | None = None
+
+    model_config = {"extra": "allow"}
+
+
 class ArtifactItem(BaseModel):
     name: str
     path: str
@@ -170,7 +186,7 @@ class ModelTuningProfileResponse(BaseModel):
 
 
 class RouterRequestSubmitRequest(BaseModel):
-    route: Literal["chat", "embeddings"]
+    route: Literal["chat", "embeddings", "images"]
     payload: dict[str, Any]
     owner: str | None = None
     job_type: str | None = None
@@ -219,3 +235,27 @@ class RestoreSplitModeResponse(BaseModel):
     host_id: str
     host_name: str
     actions: list[dict[str, Any]] = Field(default_factory=list)
+
+
+# OpenAI Image Generation
+class ImageGenerationRequest(BaseModel):
+    model: str
+    prompt: str
+    n: int = 1
+    size: str = "1024x1024"
+    response_format: str = "b64_json"  # "b64_json" or "url"
+    quality: str = "standard"
+    style: str | None = None
+
+    model_config = {"extra": "allow"}
+
+
+class ImageGenerationDataItem(BaseModel):
+    b64_json: str | None = None
+    url: str | None = None
+    revised_prompt: str | None = None
+
+
+class ImageGenerationResponse(BaseModel):
+    created: int
+    data: list[ImageGenerationDataItem]

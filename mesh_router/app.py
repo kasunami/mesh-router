@@ -21,6 +21,7 @@ from .router import pick_lane_for_model
 from .schemas import (
     ArchiveInventoryScanRequest,
     ChatCompletionRequest,
+    ImageGenerationRequest,
     HostInventoryScanRequest,
     LaneModelCandidate,
     LaneCapabilityResponse,
@@ -48,6 +49,8 @@ logger = logging.getLogger(__name__)
 ARCHIVE_PROVIDERS = {"packhub", "packhub02"}
 REQUEST_TERMINAL_STATES = {"released", "failed", "expired", "canceled"}
 SWAP_TERMINAL_STATES = {"ready", "failed", "canceled"}
+IMAGE_DEFAULT_WIDTH = 1024
+IMAGE_DEFAULT_HEIGHT = 1024
 
 
 def _bytes_from_gib(value: Any) -> int | None:
@@ -140,7 +143,10 @@ def _model_request_matches_candidate(
     candidate_tags: list[str] | None = None,
 ) -> bool:
     if _is_exact_model_request(requested_model_name):
-        return candidate_model_name == requested_model_name
+        # Also match against the basename so that lanes storing full local paths
+        # (e.g. /Users/kasunami/models/Qwen3.5-9B-6bit) match a bare name request.
+        candidate_stem = candidate_model_name.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+        return candidate_model_name == requested_model_name or candidate_stem == requested_model_name
     request_keys = _model_lookup_keys(requested_model_name)
     if request_keys & _model_lookup_keys(candidate_model_name):
         return True
@@ -849,6 +855,84 @@ def _strip_nones(value: Any) -> Any:
     if isinstance(value, list):
         return [_strip_nones(v) for v in value if v is not None]
     return value
+
+
+def _parse_image_size(size: str | None) -> tuple[int, int]:
+    raw = str(size or "").strip().lower()
+    if not raw:
+        return IMAGE_DEFAULT_WIDTH, IMAGE_DEFAULT_HEIGHT
+    match = re.fullmatch(r"(\d{1,5})x(\d{1,5})", raw)
+    if not match:
+        raise HTTPException(status_code=400, detail="size must be WIDTHxHEIGHT")
+    width = int(match.group(1))
+    height = int(match.group(2))
+    if width <= 0 or height <= 0:
+        raise HTTPException(status_code=400, detail="size must be positive")
+    return width, height
+
+
+def _normalize_image_request(raw_payload: dict[str, Any]) -> dict[str, Any]:
+    try:
+        req = ImageGenerationRequest.model_validate(raw_payload or {})
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    width, height = _parse_image_size(req.size)
+    extra = req.model_extra or {}
+    return {
+        "route": "images",
+        "requested_model_name": req.model,
+        "pin_worker": extra.get("mesh_pin_worker"),
+        "pin_base_url": extra.get("mesh_pin_base_url"),
+        "pin_lane_type": extra.get("mesh_pin_lane_type"),
+        "response_format": req.response_format or "b64_json",
+        "request_payload": {
+            "prompt": req.prompt,
+            "width": width,
+            "height": height,
+            "batch_count": max(1, min(int(req.n or 1), 16)),
+            "seed": -1,
+            "cfg_scale": 1.0,
+            "sample_steps": 4,
+        },
+    }
+
+
+def _translate_sd_response_to_openai(
+    *,
+    response_payload: dict[str, Any],
+    response_format: str,
+) -> dict[str, Any]:
+    images = response_payload.get("images")
+    if not isinstance(images, list) or not images:
+        raise RuntimeError("sd.cpp response missing images")
+
+    data: list[dict[str, str]] = []
+    for item in images:
+        if isinstance(item, dict):
+            image_b64 = str(item.get("b64_json") or item.get("image") or item.get("data") or "").strip()
+            image_url = str(item.get("url") or "").strip()
+        else:
+            image_b64 = str(item or "").strip()
+            image_url = ""
+
+        if response_format == "url":
+            if image_url:
+                data.append({"url": image_url})
+            elif image_b64:
+                data.append({"url": f"data:image/png;base64,{image_b64}"})
+            else:
+                raise RuntimeError("sd.cpp response image item missing url/image data")
+            continue
+
+        if image_b64:
+            data.append({"b64_json": image_b64})
+        elif image_url.startswith("data:image/") and "," in image_url:
+            data.append({"b64_json": image_url.split(",", 1)[1]})
+        else:
+            raise RuntimeError("sd.cpp response image item missing base64 data")
+
+    return {"created": int(time.time()), "data": data}
 
 
 def _downstream_payload(req: ChatCompletionRequest) -> dict[str, Any]:
@@ -1758,12 +1842,13 @@ def _reroute_displaced_lease(
     route = str(details.get("route") or "chat")
     request_payload = dict(details.get("request_payload") or {})
     model_name = str(lease.get("model_name") or "").strip()
-    if route not in {"chat", "embeddings"} or not request_payload or not model_name:
+    if route not in {"chat", "embeddings", "images"} or not request_payload or not model_name:
         return {"status": "unsupported", "reason": "lease has no replayable request payload"}
 
     try:
         choice = pick_lane_for_model(
             model=model_name,
+            backend_type="sd" if route == "images" else "llama",
             pin_lane_type=request_payload.get("mesh_pin_lane_type"),
             exclude_lane_ids=excluded_lane_ids,
         )
@@ -1815,7 +1900,7 @@ def _reroute_displaced_lease(
     payload["model"] = downstream_model
     try:
         with httpx.Client(timeout=float(max(30, settings.default_lease_ttl_seconds))) as client:
-            endpoint = "/v1/chat/completions" if route == "chat" else "/v1/embeddings"
+            endpoint = "/v1/chat/completions" if route == "chat" else "/v1/embeddings" if route == "embeddings" else "/txt2img"
             response = client.post(
                 f"{choice.base_url.rstrip('/')}{endpoint}",
                 json=payload,
@@ -1833,12 +1918,18 @@ def _reroute_displaced_lease(
                 "reason": f"worker proxy http_{response.status_code}",
                 "result_payload": body,
             }
+        result_payload = body
+        if route == "images" and isinstance(body, dict):
+            result_payload = _translate_sd_response_to_openai(
+                response_payload=body,
+                response_format="b64_json",
+            )
         _release_router_lease(lease_id=lease_id, ok=True)
         return {
             "status": "rerouted",
             "replacement_lane_id": choice.lane_id,
             "replacement_base_url": choice.base_url,
-            "result_payload": body,
+            "result_payload": result_payload,
         }
     except Exception as exc:
         _release_router_lease(lease_id=lease_id, ok=False)
@@ -2330,6 +2421,8 @@ def _normalize_route_request(*, route: str, raw_payload: dict[str, Any]) -> dict
             "pin_lane_type": pin_lane_type,
             "request_payload": _strip_nones(payload),
         }
+    if route_name == "images":
+        return _normalize_image_request(raw_payload)
     raise HTTPException(status_code=400, detail=f"unsupported route: {route}")
 
 
@@ -2347,6 +2440,8 @@ def _execute_router_request(
     pin_base_url = normalized.get("pin_base_url")
     pin_lane_type = normalized.get("pin_lane_type")
     request_payload = dict(normalized["request_payload"])
+    response_format = str(normalized.get("response_format") or "b64_json")
+    backend_type = "sd" if route == "images" else "llama"
 
     _touch_router_request(
         request_id=request_id,
@@ -2379,6 +2474,7 @@ def _execute_router_request(
         try:
             choice = pick_lane_for_model(
                 model=model_name,
+                backend_type=backend_type,
                 pin_worker=pin_worker,
                 pin_base_url=pin_base_url,
                 pin_lane_type=pin_lane_type,
@@ -2499,8 +2595,9 @@ def _execute_router_request(
         heartbeat_thread = threading.Thread(target=_heartbeat_loop, name=f"request-heartbeat-{request_id}", daemon=True)
         heartbeat_thread.start()
         try:
-            endpoint = "/v1/chat/completions" if route == "chat" else "/v1/embeddings"
-            with httpx.Client(timeout=float(max(30, settings.default_lease_ttl_seconds))) as client:
+            endpoint = "/v1/chat/completions" if route == "chat" else "/v1/embeddings" if route == "embeddings" else "/txt2img"
+            request_timeout = 300.0 if route == "images" else float(max(30, settings.default_lease_ttl_seconds))
+            with httpx.Client(timeout=request_timeout) as client:
                 downstream_response = client.post(
                     f"{choice.base_url.rstrip('/')}{endpoint}",
                     json=request_payload,
@@ -2522,6 +2619,12 @@ def _execute_router_request(
             err_kind = "proxy_error"
             err_msg = f"worker proxy http_{downstream_response.status_code}: {resp_data}"
             raise RuntimeError(err_msg)
+
+        if route == "images":
+            resp_data = _translate_sd_response_to_openai(
+                response_payload=resp_data if isinstance(resp_data, dict) else {},
+                response_format=response_format,
+            )
 
         try:
             usage = (resp_data or {}).get("usage") or {}
@@ -2806,6 +2909,55 @@ def v1_embeddings(
     except Exception as exc:
         headers = {"X-Mesh-Request-Id": request_id}
         row = _fetch_router_request(request_id)
+        if row and row.get("lane_id"):
+            headers["X-Mesh-Lane-Id"] = str(row["lane_id"])
+        if row and row.get("worker_id"):
+            headers["X-Mesh-Worker-Id"] = str(row["worker_id"])
+        status_code = 503 if "no READY lanes" in str(exc) or "lane busy" in str(exc) else 502
+        raise HTTPException(status_code=status_code, detail=str(exc), headers=headers)
+
+
+@app.post("/v1/images/generations")
+def v1_images_generations(
+    req: ImageGenerationRequest,
+    response: Response,
+    x_mesh_pin_worker: str | None = Header(default=None),
+    x_mesh_pin_base_url: str | None = Header(default=None),
+) -> dict[str, Any]:
+    raw_payload = req.model_dump()
+    if x_mesh_pin_worker is not None:
+        raw_payload["mesh_pin_worker"] = x_mesh_pin_worker
+    if x_mesh_pin_base_url is not None:
+        raw_payload["mesh_pin_base_url"] = x_mesh_pin_base_url
+    normalized = _normalize_route_request(route="images", raw_payload=raw_payload)
+    request_id = _create_router_request(
+        route="images",
+        request_payload=dict(normalized["request_payload"]),
+        owner=settings.default_owner,
+        job_type=settings.default_job_type,
+        requested_model_name=str(normalized["requested_model_name"]),
+        pin_worker=normalized.get("pin_worker"),
+        pin_base_url=normalized.get("pin_base_url"),
+        pin_lane_type=normalized.get("pin_lane_type"),
+    )
+    response.headers["X-Mesh-Request-Id"] = request_id
+    try:
+        result = _execute_router_request(
+            request_id=request_id,
+            route="images",
+            raw_payload=raw_payload,
+            owner=settings.default_owner,
+            job_type=settings.default_job_type,
+        )
+        row = _fetch_router_request(request_id)
+        if row and row.get("lane_id"):
+            response.headers["X-Mesh-Lane-Id"] = str(row["lane_id"])
+        if row and row.get("worker_id"):
+            response.headers["X-Mesh-Worker-Id"] = str(row["worker_id"])
+        return result
+    except Exception as exc:
+        row = _fetch_router_request(request_id)
+        headers: dict[str, str] = {"X-Mesh-Request-Id": request_id}
         if row and row.get("lane_id"):
             headers["X-Mesh-Lane-Id"] = str(row["lane_id"])
         if row and row.get("worker_id"):
