@@ -235,27 +235,3 @@ class RestoreSplitModeResponse(BaseModel):
     host_id: str
     host_name: str
     actions: list[dict[str, Any]] = Field(default_factory=list)
-
-
-# OpenAI Image Generation
-class ImageGenerationRequest(BaseModel):
-    model: str
-    prompt: str
-    n: int = 1
-    size: str = "1024x1024"
-    response_format: str = "b64_json"  # "b64_json" or "url"
-    quality: str = "standard"
-    style: str | None = None
-
-    model_config = {"extra": "allow"}
-
-
-class ImageGenerationDataItem(BaseModel):
-    b64_json: str | None = None
-    url: str | None = None
-    revised_prompt: str | None = None
-
-
-class ImageGenerationResponse(BaseModel):
-    created: int
-    data: list[ImageGenerationDataItem]

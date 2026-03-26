@@ -1022,6 +1022,141 @@ def health_readiness() -> dict[str, Any]:
     return {"ok": True}
 
 
+@app.get("/api/lanes")
+def api_lanes() -> dict[str, Any]:
+    with db.connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                  l.lane_id,
+                  h.host_id,
+                  h.host_name,
+                  l.lane_name,
+                  l.lane_type,
+                  l.backend_type,
+                  l.base_url,
+                  l.status,
+                  l.current_model_name,
+                  l.ram_budget_bytes,
+                  l.vram_budget_bytes,
+                  l.proxy_auth_mode,
+                  l.proxy_auth_metadata,
+                  l.suspension_reason,
+                  l.last_probe_at,
+                  l.last_ok_at,
+                  l.created_at,
+                  l.updated_at
+                FROM lanes l
+                JOIN hosts h ON h.host_id = l.host_id
+                ORDER BY h.host_name, l.lane_name, l.base_url
+                """
+            )
+            rows = cur.fetchall()
+    return {
+        "items": [
+            {
+                "lane_id": str(row["lane_id"]),
+                "host_id": str(row["host_id"]),
+                "host_name": str(row["host_name"]),
+                "lane_name": str(row["lane_name"]),
+                "lane_type": str(row["lane_type"]),
+                "backend_type": str(row.get("backend_type") or "llama"),
+                "base_url": str(row["base_url"]),
+                "status": str(row["status"]),
+                "current_model_name": str(row["current_model_name"]) if row.get("current_model_name") else None,
+                "ram_budget_bytes": int(row["ram_budget_bytes"]) if row.get("ram_budget_bytes") is not None else None,
+                "vram_budget_bytes": int(row["vram_budget_bytes"]) if row.get("vram_budget_bytes") is not None else None,
+                "proxy_auth_mode": str(row["proxy_auth_mode"]) if row.get("proxy_auth_mode") else None,
+                "proxy_auth_metadata": dict(row.get("proxy_auth_metadata") or {}),
+                "suspension_reason": str(row["suspension_reason"]) if row.get("suspension_reason") else None,
+                "last_probe_at": row["last_probe_at"].isoformat() if row.get("last_probe_at") else None,
+                "last_ok_at": row["last_ok_at"].isoformat() if row.get("last_ok_at") else None,
+                "created_at": row["created_at"].isoformat() if row.get("created_at") else None,
+                "updated_at": row["updated_at"].isoformat() if row.get("updated_at") else None,
+            }
+            for row in rows
+        ]
+    }
+
+
+@app.post("/api/lanes")
+def api_lane_upsert(req: LaneUpsertRequest) -> dict[str, Any]:
+    with db.connect() as conn:
+        with conn.cursor() as cur:
+            host_id, host_name = _resolve_host_id(cur, req.host_ref, create=True)
+            cur.execute(
+                """
+                INSERT INTO lanes (
+                  host_id,
+                  lane_name,
+                  lane_type,
+                  backend_type,
+                  base_url,
+                  status,
+                  ram_budget_bytes,
+                  vram_budget_bytes,
+                  proxy_auth_mode,
+                  proxy_auth_metadata,
+                  updated_at
+                )
+                VALUES (
+                  %s,
+                  %s,
+                  %s::lane_type,
+                  %s,
+                  %s,
+                  %s::lane_status,
+                  %s,
+                  %s,
+                  %s,
+                  %s::jsonb,
+                  now()
+                )
+                ON CONFLICT (base_url)
+                DO UPDATE SET
+                  host_id = EXCLUDED.host_id,
+                  lane_name = EXCLUDED.lane_name,
+                  lane_type = EXCLUDED.lane_type,
+                  backend_type = EXCLUDED.backend_type,
+                  status = EXCLUDED.status,
+                  ram_budget_bytes = EXCLUDED.ram_budget_bytes,
+                  vram_budget_bytes = EXCLUDED.vram_budget_bytes,
+                  proxy_auth_mode = EXCLUDED.proxy_auth_mode,
+                  proxy_auth_metadata = EXCLUDED.proxy_auth_metadata,
+                  updated_at = now()
+                RETURNING lane_id, lane_name, lane_type, backend_type, base_url, status, ram_budget_bytes, vram_budget_bytes
+                """,
+                (
+                    host_id,
+                    req.lane_name,
+                    req.lane_type,
+                    req.backend_type,
+                    req.base_url,
+                    req.status,
+                    req.ram_budget_bytes,
+                    req.vram_budget_bytes,
+                    req.proxy_auth_mode,
+                    Jsonb(req.proxy_auth_metadata or {}),
+                ),
+            )
+            row = cur.fetchone()
+        conn.commit()
+    return {
+        "ok": True,
+        "lane_id": str(row["lane_id"]),
+        "host_id": host_id,
+        "host_name": host_name,
+        "lane_name": str(row["lane_name"]),
+        "lane_type": str(row["lane_type"]),
+        "backend_type": str(row.get("backend_type") or "llama"),
+        "base_url": str(row["base_url"]),
+        "status": str(row["status"]),
+        "ram_budget_bytes": int(row["ram_budget_bytes"]) if row.get("ram_budget_bytes") is not None else None,
+        "vram_budget_bytes": int(row["vram_budget_bytes"]) if row.get("vram_budget_bytes") is not None else None,
+    }
+
+
 @app.get("/v1/models")
 def v1_models() -> dict[str, Any]:
     def _is_canonical(model: str) -> bool:
@@ -3019,6 +3154,19 @@ class SwapModelRequest(BaseModel):
     allow_unverified: bool = False
     swap_urgency: Literal["wait", "cancel"] = "wait"
     wait_timeout_s: int = 1800
+
+
+class LaneUpsertRequest(BaseModel):
+    host_ref: str
+    lane_name: str
+    lane_type: Literal["cpu", "gpu", "mlx", "router", "other"]
+    backend_type: Literal["llama", "sd"] = "llama"
+    base_url: str
+    status: Literal["ready", "busy", "suspended", "offline", "error"] = "offline"
+    ram_budget_bytes: int | None = None
+    vram_budget_bytes: int | None = None
+    proxy_auth_mode: str | None = None
+    proxy_auth_metadata: dict[str, Any] | None = None
 
 
 def _swap_cost_metadata(
