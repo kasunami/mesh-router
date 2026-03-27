@@ -145,8 +145,14 @@ def _model_request_matches_candidate(
     if _is_exact_model_request(requested_model_name):
         # Also match against the basename so that lanes storing full local paths
         # (e.g. /Users/kasunami/models/Qwen3.5-9B-6bit) match a bare name request.
-        candidate_stem = candidate_model_name.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
-        return candidate_model_name == requested_model_name or candidate_stem == requested_model_name
+        path_parts = re.split(r"[\\/]+", candidate_model_name)
+        candidate_stem = path_parts[-1] if path_parts else candidate_model_name
+        candidate_parent = path_parts[-2] if len(path_parts) >= 2 else ""
+        return (
+            candidate_model_name == requested_model_name
+            or candidate_stem == requested_model_name
+            or candidate_parent == requested_model_name
+        )
     request_keys = _model_lookup_keys(requested_model_name)
     if request_keys & _model_lookup_keys(candidate_model_name):
         return True
