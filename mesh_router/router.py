@@ -175,6 +175,7 @@ def pick_lane_for_model(
                         SELECT 1 FROM router_requests rr
                         WHERE rr.lane_id = l.lane_id
                           AND rr.error_kind = 'proxy_error'
+                          AND COALESCE(rr.error_message, '') NOT ILIKE '%exceeds the available context size%'
                           AND rr.released_at > now() - (%s * interval '1 second')
                       )
                       AND (%s::text IS NULL OR l.lane_type::text = %s::text)
@@ -261,6 +262,7 @@ def pick_lane_for_model(
                         SELECT 1 FROM router_requests rr
                         WHERE rr.lane_id = l.lane_id
                           AND rr.error_kind = 'proxy_error'
+                          AND COALESCE(rr.error_message, '') NOT ILIKE '%exceeds the available context size%'
                           AND rr.released_at > now() - (%s * interval '1 second')
                       )
                       AND h.host_name NOT IN ('litellm-router')
