@@ -92,6 +92,7 @@ class LaneModelCandidate(BaseModel):
     size_bytes: int | None = None
     required_memory_bytes: int | None = None
     projected_free_bytes: int | None = None
+    max_context_tokens: int | None = None
 
 
 class LaneCapabilityResponse(BaseModel):

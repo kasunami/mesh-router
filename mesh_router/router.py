@@ -17,6 +17,15 @@ class LaneChoice:
     lane_type: str
     backend_type: str
     current_model_name: str | None = None
+    current_model_max_ctx: int | None = None
+
+
+def _context_is_sufficient(required_tokens: int | None, max_ctx: int | None) -> bool:
+    if required_tokens is None or required_tokens <= 0:
+        return True
+    if max_ctx is None or max_ctx <= 0:
+        return True
+    return required_tokens <= max_ctx
 
 
 def _normalize_model_tag(tag: str | None) -> str | None:
@@ -101,6 +110,7 @@ def pick_lane_for_model(
     *,
     model: str,
     backend_type: str | None = None,
+    request_context_tokens: int | None = None,
     pin_worker: str | None = None,
     pin_base_url: str | None = None,
     pin_lane_type: str | None = None,
@@ -123,9 +133,12 @@ def pick_lane_for_model(
                 rows = q(
                     cur,
                     """
-                    SELECT l.lane_id, h.host_name, l.base_url, l.lane_type, l.backend_type
+                    SELECT l.lane_id, h.host_name, l.base_url, l.lane_type, l.backend_type,
+                           cmp.max_ctx AS current_model_max_ctx
                     FROM lanes l
                     JOIN hosts h ON h.host_id=l.host_id
+                    LEFT JOIN models cm ON cm.model_name=l.current_model_name
+                    LEFT JOIN lane_model_policy cmp ON cmp.lane_id=l.lane_id AND cmp.model_id=cm.model_id
                     WHERE h.host_name=%s AND l.base_url=%s
                       AND (%s::text IS NULL OR l.backend_type = %s::text)
                       AND (%s::text[] IS NULL OR l.lane_id::text <> ALL(%s::text[]))
@@ -150,6 +163,7 @@ def pick_lane_for_model(
             lane_type=str(r0["lane_type"]),
             backend_type=str(r0.get("backend_type") or "llama"),
             current_model_name=r0.get("current_model_name"),
+            current_model_max_ctx=int(r0["current_model_max_ctx"]) if r0.get("current_model_max_ctx") is not None else None,
         )
 
     if pin_worker and not pin_base_url:
@@ -159,10 +173,12 @@ def pick_lane_for_model(
                 rows = q(
                     cur,
                     """
-                    SELECT l.lane_id, h.host_name, l.base_url, l.lane_type, l.backend_type, l.current_model_name, m.tags AS current_model_tags
+                    SELECT l.lane_id, h.host_name, l.base_url, l.lane_type, l.backend_type, l.current_model_name, m.tags AS current_model_tags,
+                           cmp.max_ctx AS current_model_max_ctx
                     FROM lanes l
                     JOIN hosts h ON h.host_id = l.host_id
                     LEFT JOIN models m ON m.model_name = l.current_model_name
+                    LEFT JOIN lane_model_policy cmp ON cmp.lane_id=l.lane_id AND cmp.model_id=m.model_id
                     WHERE h.host_name=%s
                       AND l.status='ready'
                       AND NOT EXISTS (
@@ -202,6 +218,7 @@ def pick_lane_for_model(
             row
             for row in rows
             if _model_matches_request(model, row.get("current_model_name"), row.get("current_model_tags") or [])
+            and _context_is_sufficient(request_context_tokens, row.get("current_model_max_ctx"))
         ]
         if not matched:
             raise RuntimeError(f"no READY lanes for pinned worker serving requested model: {model}")
@@ -213,6 +230,7 @@ def pick_lane_for_model(
             lane_type=str(r0["lane_type"]),
             backend_type=str(r0.get("backend_type") or "llama"),
             current_model_name=r0.get("current_model_name"),
+            current_model_max_ctx=int(r0["current_model_max_ctx"]) if r0.get("current_model_max_ctx") is not None else None,
         )
 
     def _pick() -> LaneChoice | None:
@@ -223,34 +241,40 @@ def pick_lane_for_model(
                     """
                     SELECT 
                       l.lane_id, h.host_name, l.base_url, l.lane_type, l.backend_type, l.status, l.current_model_name,
+                      cmp.max_ctx AS current_model_max_ctx,
                       current_m.tags AS current_model_tags,
                       COALESCE((
                         SELECT jsonb_agg(
                           jsonb_build_object(
                             'model_name', m.model_name,
-                            'tags', COALESCE(m.tags, '{}'::text[])
+                            'tags', COALESCE(m.tags, '{}'::text[]),
+                            'max_ctx', p.max_ctx
                           )
                           ORDER BY m.model_name
                         )
                         FROM lane_model_viability lmv 
                         JOIN models m ON m.model_id=lmv.model_id 
+                        LEFT JOIN lane_model_policy p ON p.lane_id=l.lane_id AND p.model_id=lmv.model_id
                         WHERE lmv.lane_id=l.lane_id AND lmv.is_viable=true AND lmv.source_locality='local'
                       ), '[]'::jsonb) as local_viable_models,
                       COALESCE((
                         SELECT jsonb_agg(
                           jsonb_build_object(
                             'model_name', m.model_name,
-                            'tags', COALESCE(m.tags, '{}'::text[])
+                            'tags', COALESCE(m.tags, '{}'::text[]),
+                            'max_ctx', p.max_ctx
                           )
                           ORDER BY m.model_name
                         )
                         FROM lane_model_viability lmv 
                         JOIN models m ON m.model_id=lmv.model_id 
+                        LEFT JOIN lane_model_policy p ON p.lane_id=l.lane_id AND p.model_id=lmv.model_id
                         WHERE lmv.lane_id=l.lane_id AND lmv.is_viable=true AND lmv.source_locality='remote'
                       ), '[]'::jsonb) as remote_viable_models
                     FROM lanes l
                     JOIN hosts h ON h.host_id = l.host_id
                     LEFT JOIN models current_m ON current_m.model_name = l.current_model_name
+                    LEFT JOIN lane_model_policy cmp ON cmp.lane_id=l.lane_id AND cmp.model_id=current_m.model_id
                     WHERE l.status = 'ready'
                       AND NOT EXISTS (
                         SELECT 1 FROM router_leases rl
@@ -295,6 +319,7 @@ def pick_lane_for_model(
             row
             for row in rows
             if _model_matches_request(model, row.get("current_model_name"), row.get("current_model_tags") or [])
+            and _context_is_sufficient(request_context_tokens, row.get("current_model_max_ctx"))
         ]
         if matched:
             r0 = matched[0]
@@ -305,6 +330,7 @@ def pick_lane_for_model(
                 lane_type=str(r0["lane_type"]),
                 backend_type=str(r0.get("backend_type") or "llama"),
                 current_model_name=r0.get("current_model_name"),
+                current_model_max_ctx=int(r0["current_model_max_ctx"]) if r0.get("current_model_max_ctx") is not None else None,
             )
         
         # Fallback: find a lane that can serve this model after a swap (has it in viable_models)
@@ -312,10 +338,12 @@ def pick_lane_for_model(
             row for row in rows
             if any(
                 _model_matches_request(model, item.get("model_name"), item.get("tags") or [])
+                and _context_is_sufficient(request_context_tokens, item.get("max_ctx"))
                 for item in (row.get("local_viable_models") or [])
             )
             or any(
                 _model_matches_request(model, item.get("model_name"), item.get("tags") or [])
+                and _context_is_sufficient(request_context_tokens, item.get("max_ctx"))
                 for item in (row.get("remote_viable_models") or [])
             )
         ]
@@ -333,6 +361,7 @@ def pick_lane_for_model(
                 lane_type=str(r0["lane_type"]),
                 backend_type=str(r0.get("backend_type") or "llama"),
                 current_model_name=r0.get("current_model_name"),
+                current_model_max_ctx=int(r0["current_model_max_ctx"]) if r0.get("current_model_max_ctx") is not None else None,
             )
             
         return None

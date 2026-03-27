@@ -180,6 +180,47 @@ def _resolve_swap_candidate(
     return None, None
 
 
+def _estimate_text_tokens(value: Any) -> int:
+    if value is None:
+        return 0
+    if isinstance(value, str):
+        return max(1, (len(value) + 3) // 4)
+    if isinstance(value, list):
+        return sum(_estimate_text_tokens(item) for item in value) + max(0, len(value) * 4)
+    if isinstance(value, dict):
+        total = 0
+        for key in ("content", "text", "input", "prompt", "name", "tool_call_id"):
+            if key in value:
+                total += _estimate_text_tokens(value.get(key))
+        if value.get("tool_calls"):
+            total += _estimate_text_tokens(value.get("tool_calls"))
+        return total
+    return _estimate_text_tokens(str(value))
+
+
+def _estimate_request_context_tokens(*, route: str, payload: dict[str, Any]) -> int | None:
+    if route == "images":
+        return None
+
+    prompt_tokens = 0
+    if route == "chat":
+        messages = payload.get("messages") or []
+        prompt_tokens = sum(_estimate_text_tokens(message) for message in messages) + max(32, len(messages) * 8)
+    elif route == "embeddings":
+        prompt_tokens = _estimate_text_tokens(payload.get("input"))
+    else:
+        prompt_tokens = _estimate_text_tokens(payload)
+
+    max_tokens = payload.get("max_tokens")
+    try:
+        completion_budget = max(0, int(max_tokens)) if max_tokens is not None else 0
+    except Exception:
+        completion_budget = 0
+
+    total = prompt_tokens + completion_budget
+    return total if total > 0 else None
+
+
 def _resolve_host_id(cur, host_ref: str, *, create: bool = False) -> tuple[str, str]:
     cur.execute(
         """
@@ -644,7 +685,8 @@ def _build_lane_capability_payload(cur, lane_ref: str) -> tuple[dict[str, Any], 
           m.tags,
           p.required_ram_bytes,
           p.required_vram_bytes,
-          p.allowed
+          p.allowed,
+          p.max_ctx
         FROM host_model_artifacts hma
         JOIN models m ON m.model_id=hma.model_id
         JOIN hosts h ON h.host_id=hma.host_id
@@ -694,14 +736,15 @@ def _build_lane_capability_payload(cur, lane_ref: str) -> tuple[dict[str, Any], 
             fallback_tps = tuning_profile.get("generation_tps") or tuning_profile.get("prompt_tps")
             if fallback_tps is not None:
                 tps_estimate = float(fallback_tps)
-        target_context_tokens = None
+        target_context_tokens = int(row["max_ctx"]) if row.get("max_ctx") is not None else None
         if tuning_profile and isinstance(tuning_profile.get("settings"), dict):
             ctx_value = tuning_profile["settings"].get("ctx_size")
             try:
-                if ctx_value is not None:
+                if target_context_tokens is None and ctx_value is not None:
                     target_context_tokens = int(ctx_value)
             except Exception:
-                target_context_tokens = None
+                if target_context_tokens is None:
+                    target_context_tokens = None
         model_lane_info = lane_info.model_copy(
             update={
                 "target_context_tokens": target_context_tokens,
@@ -783,6 +826,7 @@ def _build_lane_capability_payload(cur, lane_ref: str) -> tuple[dict[str, Any], 
             size_bytes=size_bytes,
             required_memory_bytes=required_memory_bytes,
             projected_free_bytes=projected_free_bytes,
+            max_context_tokens=target_context_tokens,
         )
         previous = candidates_by_model.get(model_name)
         if previous is not None:
@@ -2041,7 +2085,7 @@ def _reroute_displaced_lease(
     payload["model"] = downstream_model
     try:
         with httpx.Client(timeout=float(max(30, settings.default_lease_ttl_seconds))) as client:
-            endpoint = "/v1/chat/completions" if route == "chat" else "/v1/embeddings" if route == "embeddings" else "/txt2img"
+            endpoint = "/v1/chat/completions" if route == "chat" else "/v1/embeddings" if route == "embeddings" else "/sdapi/v1/txt2img"
             response = client.post(
                 f"{choice.base_url.rstrip('/')}{endpoint}",
                 json=payload,
@@ -2583,6 +2627,7 @@ def _execute_router_request(
     request_payload = dict(normalized["request_payload"])
     response_format = str(normalized.get("response_format") or "b64_json")
     backend_type = "sd" if route == "images" else "llama"
+    request_context_tokens = _estimate_request_context_tokens(route=route, payload=request_payload)
 
     _touch_router_request(
         request_id=request_id,
@@ -2612,73 +2657,85 @@ def _execute_router_request(
     started = time.time()
 
     try:
-        try:
-            choice = pick_lane_for_model(
-                model=model_name,
-                backend_type=backend_type,
-                pin_worker=pin_worker,
-                pin_base_url=pin_base_url,
-                pin_lane_type=pin_lane_type,
-            )
-        except Exception as exc:
-            err_kind = "routing_error"
-            err_msg = str(exc)
-            raise
-
-        if choice and not _model_request_matches_candidate(model_name, choice.current_model_name or ""):
-            # Swap needed — trigger swap and wait
+        _acquire_excluded: set[str] = set()
+        for _acquire_attempt in range(3):
             try:
-                # api_lane_swap_model is a synchronous blocking function
-                api_lane_swap_model(
-                    choice.lane_id,
-                    SwapModelRequest(
-                        model_name=model_name,
-                        swap_urgency="wait"
-                    )
+                choice = pick_lane_for_model(
+                    model=model_name,
+                    backend_type=backend_type,
+                    request_context_tokens=request_context_tokens,
+                    pin_worker=pin_worker,
+                    pin_base_url=pin_base_url,
+                    pin_lane_type=pin_lane_type,
+                    exclude_lane_ids=_acquire_excluded or None,
                 )
-            except Exception as swap_err:
-                logger.warning("Auto-swap failed for lane %s model %s: %s", choice.lane_id, model_name, swap_err)
-                raise RuntimeError(f"no READY lanes available serving {model_name} and auto-swap failed: {swap_err}")
+            except Exception as exc:
+                err_kind = "routing_error"
+                err_msg = str(exc)
+                raise
 
-        downstream_model = model_name
-        with db.connect() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    INSERT INTO models (model_name, format)
-                    VALUES (%s, 'other'::model_format)
-                    ON CONFLICT (model_name) DO UPDATE SET updated_at=now()
-                    """,
-                    (model_name,),
-                )
-                cur.execute("SELECT model_id FROM models WHERE model_name=%s", (model_name,))
-                model_id = str(cur.fetchone()["model_id"])
-                lane_id = choice.lane_id or None
-                if lane_id is not None:
-                    downstream_model = _resolve_downstream_model_for_lane(
-                        cur,
-                        lane_id=str(lane_id),
-                        requested_model_name=model_name,
-                        model_id=str(model_id),
+            if choice and not _model_request_matches_candidate(model_name, choice.current_model_name or ""):
+                # Swap needed — trigger swap and wait
+                try:
+                    # api_lane_swap_model is a synchronous blocking function
+                    api_lane_swap_model(
+                        choice.lane_id,
+                        SwapModelRequest(
+                            model_name=model_name,
+                            swap_urgency="wait"
+                        )
                     )
-            conn.commit()
+                except Exception as swap_err:
+                    logger.warning("Auto-swap failed for lane %s model %s: %s", choice.lane_id, model_name, swap_err)
+                    raise RuntimeError(f"no READY lanes available serving {model_name} and auto-swap failed: {swap_err}")
 
-        request_payload["model"] = downstream_model
-        lease_id, expires_at = _acquire_router_lease(
-            lane_id=choice.lane_id,
-            model_id=str(model_id),
-            owner=owner,
-            job_type=job_type,
-            ttl_seconds=settings.default_lease_ttl_seconds,
-            details={
-                "worker_id": choice.worker_id,
-                "base_url": choice.base_url,
-                "downstream_model": downstream_model,
-                "route": route,
-                "request_id": request_id,
-                "request_payload": request_payload,
-            },
-        )
+            downstream_model = model_name
+            with db.connect() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        INSERT INTO models (model_name, format)
+                        VALUES (%s, 'other'::model_format)
+                        ON CONFLICT (model_name) DO UPDATE SET updated_at=now()
+                        """,
+                        (model_name,),
+                    )
+                    cur.execute("SELECT model_id FROM models WHERE model_name=%s", (model_name,))
+                    model_id = str(cur.fetchone()["model_id"])
+                    lane_id = choice.lane_id or None
+                    if lane_id is not None:
+                        downstream_model = _resolve_downstream_model_for_lane(
+                            cur,
+                            lane_id=str(lane_id),
+                            requested_model_name=model_name,
+                            model_id=str(model_id),
+                        )
+                conn.commit()
+
+            request_payload["model"] = downstream_model
+            try:
+                lease_id, expires_at = _acquire_router_lease(
+                    lane_id=choice.lane_id,
+                    model_id=str(model_id),
+                    owner=owner,
+                    job_type=job_type,
+                    ttl_seconds=settings.default_lease_ttl_seconds,
+                    details={
+                        "worker_id": choice.worker_id,
+                        "base_url": choice.base_url,
+                        "downstream_model": downstream_model,
+                        "route": route,
+                        "request_id": request_id,
+                        "request_payload": request_payload,
+                    },
+                )
+                break  # lease acquired — exit retry loop
+            except RuntimeError as _busy_err:
+                if "lane busy" in str(_busy_err) and _acquire_attempt < 2:
+                    logger.info("Lane %s busy, retrying pick with exclusion (attempt %d)", choice.lane_id, _acquire_attempt + 1)
+                    _acquire_excluded.add(choice.lane_id)
+                    continue
+                raise
         _touch_router_request(
             request_id=request_id,
             state="acquired",
@@ -2736,7 +2793,7 @@ def _execute_router_request(
         heartbeat_thread = threading.Thread(target=_heartbeat_loop, name=f"request-heartbeat-{request_id}", daemon=True)
         heartbeat_thread.start()
         try:
-            endpoint = "/v1/chat/completions" if route == "chat" else "/v1/embeddings" if route == "embeddings" else "/txt2img"
+            endpoint = "/v1/chat/completions" if route == "chat" else "/v1/embeddings" if route == "embeddings" else "/sdapi/v1/txt2img"
             request_timeout = 300.0 if route == "images" else float(max(30, settings.default_lease_ttl_seconds))
             with httpx.Client(timeout=request_timeout) as client:
                 downstream_response = client.post(
@@ -3730,7 +3787,7 @@ def mesh_inventory() -> dict[str, Any]:
             # Allowed/known models per lane (policy + aliases).
             cur.execute(
                 """
-                SELECT l.lane_id, m.model_name
+                SELECT l.lane_id, m.model_name, p.max_ctx
                 FROM lane_model_policy p
                 JOIN lanes l ON l.lane_id=p.lane_id
                 JOIN models m ON m.model_id=p.model_id
@@ -3769,7 +3826,13 @@ def mesh_inventory() -> dict[str, Any]:
             active_swaps = cur.fetchall()
 
     models_by_lane: dict[str, set[str]] = {}
-    for r in policy + aliases:
+    model_context_by_lane: dict[str, dict[str, int | None]] = {}
+    for r in policy:
+        lane_key = str(r["lane_id"])
+        model_name = str(r["model_name"])
+        models_by_lane.setdefault(lane_key, set()).add(model_name)
+        model_context_by_lane.setdefault(lane_key, {})[model_name] = int(r["max_ctx"]) if r.get("max_ctx") is not None else None
+    for r in aliases:
         models_by_lane.setdefault(str(r["lane_id"]), set()).add(str(r["model_name"]))
     active_swaps_by_lane = {str(r["lane_id"]): r for r in active_swaps}
     active_swap_siblings: dict[str, dict[str, Any]] = {}
@@ -3809,6 +3872,13 @@ def mesh_inventory() -> dict[str, Any]:
                 "suspension_reason": str(r.get("suspension_reason") or "") or None,
                 "current_model": cm or None,
                 "known_models": known,
+                "known_models_detail": [
+                    {
+                        "model_name": model_name,
+                        "max_ctx": model_context_by_lane.get(lane_id, {}).get(model_name),
+                    }
+                    for model_name in known
+                ],
                 "last_ok_at": r.get("last_ok_at").isoformat() if r.get("last_ok_at") else None,
                 "last_probe_at": r.get("last_probe_at").isoformat() if r.get("last_probe_at") else None,
                 "active_swap": (
