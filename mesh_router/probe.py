@@ -165,13 +165,20 @@ def probe_once() -> None:
                     (lane_id, ok, code, int(latency), (err or "")[:240] if not ok else None),
                 )
                 
-                # Update lane status
+                # Update lane status.
+                # Preserve suspension_reason-based status (e.g. active swap in progress),
+                # BUT allow probe success to recover lanes stuck in 'error' state from a
+                # previously failed swap (suspension_reason = 'swap:UUID:failed').
                 cur.execute(
                     """
                     UPDATE lanes
                     SET status=CASE
-                          WHEN COALESCE(suspension_reason, '') <> '' THEN status
+                          WHEN COALESCE(suspension_reason, '') <> '' AND status != 'error' THEN status
                           ELSE %s::lane_status
+                        END,
+                        suspension_reason=CASE
+                          WHEN %s AND status = 'error' THEN NULL
+                          ELSE suspension_reason
                         END,
                         last_probe_at=now(),
                         last_ok_at=CASE WHEN %s THEN now() ELSE last_ok_at END,
@@ -179,7 +186,7 @@ def probe_once() -> None:
                         updated_at=now()
                     WHERE lane_id=%s
                     """,
-                    (new_status, ok, (err or "probe_failed")[:240] if not ok else None, lane_id),
+                    (new_status, ok, ok, (err or "probe_failed")[:240] if not ok else None, lane_id),
                 )
                 
                 # If ready, update host status too

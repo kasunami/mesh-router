@@ -624,14 +624,27 @@ def _resolve_host(cur, host_id: str) -> dict[str, Any] | None:
     return cur.fetchone()
 
 
-def _local_model_root(host_row: dict[str, Any] | None) -> str | None:
+def _local_model_root(host_row: dict[str, Any] | None, lane_row: dict[str, Any] | None = None) -> str | None:
     if not host_row:
         return None
     paths = host_row.get("model_store_paths") or []
     if isinstance(paths, list) and paths:
-        for path in paths:
-            if isinstance(path, str) and path.strip():
-                return path.strip()
+        normalized = [path.strip() for path in paths if isinstance(path, str) and path.strip()]
+        if not normalized:
+            return None
+        lane_type = str((lane_row or {}).get("lane_type") or "").lower()
+        backend_type = str((lane_row or {}).get("backend_type") or "").lower()
+        if lane_type == "gpu" and backend_type == "sd":
+            for path in normalized:
+                lowered = path.lower()
+                if "image-model" in lowered or "/image" in lowered:
+                    return path
+        for path in normalized:
+            lowered = path.lower()
+            if "image-model" in lowered:
+                continue
+            return path
+        return normalized[0]
     return None
 
 
@@ -887,7 +900,7 @@ def _build_lane_capability_payload(cur, lane_ref: str) -> tuple[dict[str, Any], 
         "lane": lane_row,
         "host": host_row,
         "lane_info": lane_info,
-        "local_model_root": _local_model_root(host_row),
+        "local_model_root": _local_model_root(host_row, lane_row),
     }, response
 
 def _strip_nones(value: Any) -> Any:
@@ -3625,9 +3638,9 @@ def api_lane_swap_model(lane_id: str, req: SwapModelRequest) -> dict[str, Any]:
             )
             data = _call_lane_swap_gateway(base_url=base_url, payload=payload)
             ok = True
-    except HTTPException:
+    except HTTPException as exc_http:
         err_kind = "swap_http_error"
-        err_msg = str(data)
+        err_msg = str(exc_http.detail) if exc_http.detail is not None else str(data)
         raise
     except Exception as e:
         err_kind = "swap_proxy_error"
