@@ -35,6 +35,6 @@ echo "  repo_root: ${ROOT}"
 echo "  image:     ${IMAGE}"
 
 cd "${ROOT}"
-docker build -t "${IMAGE}" .
+docker build --platform linux/amd64 -t "${IMAGE}" .
 
 echo "done"
