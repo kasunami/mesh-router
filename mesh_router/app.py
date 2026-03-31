@@ -3653,7 +3653,14 @@ def api_lane_swap_model(lane_id: str, req: SwapModelRequest) -> dict[str, Any]:
                 with conn.cursor() as cur:
                     if ok and artifact_row is not None:
                         cur.execute(
-                            "UPDATE lanes SET current_model_name=%s, updated_at=now() WHERE lane_id=%s",
+                            """
+                            UPDATE lanes
+                            SET current_model_name=%s,
+                                status='ready',
+                                suspension_reason=NULL,
+                                updated_at=now()
+                            WHERE lane_id=%s
+                            """,
                             (preflight.model_name, preflight.lane_id),
                         )
                         _upsert_usage(

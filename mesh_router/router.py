@@ -20,12 +20,29 @@ class LaneChoice:
     current_model_max_ctx: int | None = None
 
 
+class LanePlacementError(RuntimeError):
+    def __init__(self, message: str, *, status_code: int = 503):
+        super().__init__(message)
+        self.status_code = status_code
+
+
 def _context_is_sufficient(required_tokens: int | None, max_ctx: int | None) -> bool:
     if required_tokens is None or required_tokens <= 0:
         return True
     if max_ctx is None or max_ctx <= 0:
         return True
     return required_tokens <= max_ctx
+
+
+def _context_limit_message(*, model: str, required_tokens: int | None, max_available_ctx: int | None) -> str:
+    if required_tokens and max_available_ctx:
+        return (
+            f"requested context ({required_tokens} tokens estimated) exceeds the maximum configured context "
+            f"available for model {model} ({max_available_ctx} tokens)"
+        )
+    if required_tokens:
+        return f"requested context ({required_tokens} tokens estimated) exceeds the maximum configured context available for model {model}"
+    return f"requested context exceeds the maximum configured context available for model {model}"
 
 
 def _normalize_model_tag(tag: str | None) -> str | None:
@@ -220,6 +237,26 @@ def pick_lane_for_model(
             if _model_matches_request(model, row.get("current_model_name"), row.get("current_model_tags") or [])
             and _context_is_sufficient(request_context_tokens, row.get("current_model_max_ctx"))
         ]
+        context_mismatched = [
+            row
+            for row in rows
+            if _model_matches_request(model, row.get("current_model_name"), row.get("current_model_tags") or [])
+            and not _context_is_sufficient(request_context_tokens, row.get("current_model_max_ctx"))
+        ]
+        if not matched and context_mismatched:
+            max_available_ctx = max(
+                int(row["current_model_max_ctx"])
+                for row in context_mismatched
+                if row.get("current_model_max_ctx") is not None
+            )
+            raise LanePlacementError(
+                _context_limit_message(
+                    model=model,
+                    required_tokens=request_context_tokens,
+                    max_available_ctx=max_available_ctx,
+                ),
+                status_code=422,
+            )
         if not matched:
             raise RuntimeError(f"no READY lanes for pinned worker serving requested model: {model}")
         r0 = matched[0]
@@ -239,8 +276,9 @@ def pick_lane_for_model(
                 rows = q(
                     cur,
                     """
-                    SELECT 
-                      l.lane_id, h.host_name, l.base_url, l.lane_type, l.backend_type, l.status, l.current_model_name,
+                    SELECT
+                      l.lane_id, h.host_name, l.base_url, l.lane_type, l.backend_type, l.status, l.suspension_reason,
+                      l.current_model_name,
                       cmp.max_ctx AS current_model_max_ctx,
                       current_m.tags AS current_model_tags,
                       COALESCE((
@@ -252,8 +290,8 @@ def pick_lane_for_model(
                           )
                           ORDER BY m.model_name
                         )
-                        FROM lane_model_viability lmv 
-                        JOIN models m ON m.model_id=lmv.model_id 
+                        FROM lane_model_viability lmv
+                        JOIN models m ON m.model_id=lmv.model_id
                         LEFT JOIN lane_model_policy p ON p.lane_id=l.lane_id AND p.model_id=lmv.model_id
                         WHERE lmv.lane_id=l.lane_id AND lmv.is_viable=true AND lmv.source_locality='local'
                       ), '[]'::jsonb) as local_viable_models,
@@ -266,8 +304,8 @@ def pick_lane_for_model(
                           )
                           ORDER BY m.model_name
                         )
-                        FROM lane_model_viability lmv 
-                        JOIN models m ON m.model_id=lmv.model_id 
+                        FROM lane_model_viability lmv
+                        JOIN models m ON m.model_id=lmv.model_id
                         LEFT JOIN lane_model_policy p ON p.lane_id=l.lane_id AND p.model_id=lmv.model_id
                         WHERE lmv.lane_id=l.lane_id AND lmv.is_viable=true AND lmv.source_locality='remote'
                       ), '[]'::jsonb) as remote_viable_models
@@ -275,7 +313,7 @@ def pick_lane_for_model(
                     JOIN hosts h ON h.host_id = l.host_id
                     LEFT JOIN models current_m ON current_m.model_name = l.current_model_name
                     LEFT JOIN lane_model_policy cmp ON cmp.lane_id=l.lane_id AND cmp.model_id=current_m.model_id
-                    WHERE l.status = 'ready'
+                    WHERE l.status IN ('ready', 'suspended')
                       AND NOT EXISTS (
                         SELECT 1 FROM router_leases rl
                         WHERE rl.lane_id = l.lane_id
@@ -315,11 +353,20 @@ def pick_lane_for_model(
                         list(excluded) or None,
                     ),
                 )
+        # Only 'ready' lanes are eligible for direct dispatch.
         matched = [
             row
             for row in rows
-            if _model_matches_request(model, row.get("current_model_name"), row.get("current_model_tags") or [])
+            if row.get("status") == "ready"
+            and _model_matches_request(model, row.get("current_model_name"), row.get("current_model_tags") or [])
             and _context_is_sufficient(request_context_tokens, row.get("current_model_max_ctx"))
+        ]
+        context_mismatched = [
+            row
+            for row in rows
+            if row.get("status") == "ready"
+            and _model_matches_request(model, row.get("current_model_name"), row.get("current_model_tags") or [])
+            and not _context_is_sufficient(request_context_tokens, row.get("current_model_max_ctx"))
         ]
         if matched:
             r0 = matched[0]
@@ -332,10 +379,33 @@ def pick_lane_for_model(
                 current_model_name=r0.get("current_model_name"),
                 current_model_max_ctx=int(r0["current_model_max_ctx"]) if r0.get("current_model_max_ctx") is not None else None,
             )
-        
+        if context_mismatched:
+            max_available_ctx = max(
+                int(row["current_model_max_ctx"])
+                for row in context_mismatched
+                if row.get("current_model_max_ctx") is not None
+            )
+            raise LanePlacementError(
+                _context_limit_message(
+                    model=model,
+                    required_tokens=request_context_tokens,
+                    max_available_ctx=max_available_ctx,
+                ),
+                status_code=422,
+            )
+
+        # Swappable candidate pool: ready lanes + suspended lanes with no suspension_reason.
+        # Suspended lanes with a suspension_reason were explicitly disabled (e.g. sibling exclusion)
+        # and must not be demand-started.
+        swappable_rows = [
+            row for row in rows
+            if row.get("status") == "ready"
+            or (row.get("status") == "suspended" and not row.get("suspension_reason"))
+        ]
+
         # Fallback: find a lane that can serve this model after a swap (has it in viable_models)
         swappable = [
-            row for row in rows
+            row for row in swappable_rows
             if any(
                 _model_matches_request(model, item.get("model_name"), item.get("tags") or [])
                 and _context_is_sufficient(request_context_tokens, item.get("max_ctx"))
@@ -346,6 +416,20 @@ def pick_lane_for_model(
                 and _context_is_sufficient(request_context_tokens, item.get("max_ctx"))
                 for item in (row.get("remote_viable_models") or [])
             )
+        ]
+        context_limited = [
+            row for row in swappable_rows
+            if (
+                any(
+                    _model_matches_request(model, item.get("model_name"), item.get("tags") or [])
+                    for item in (row.get("local_viable_models") or [])
+                )
+                or any(
+                    _model_matches_request(model, item.get("model_name"), item.get("tags") or [])
+                    for item in (row.get("remote_viable_models") or [])
+                )
+            )
+            and row not in swappable
         ]
         if swappable:
             # Pick the GPU lane first, then by host_name
@@ -362,6 +446,23 @@ def pick_lane_for_model(
                 backend_type=str(r0.get("backend_type") or "llama"),
                 current_model_name=r0.get("current_model_name"),
                 current_model_max_ctx=int(r0["current_model_max_ctx"]) if r0.get("current_model_max_ctx") is not None else None,
+            )
+        if context_limited and request_context_tokens:
+            max_available_ctx = 0
+            for row in context_limited:
+                for group in ("local_viable_models", "remote_viable_models"):
+                    for item in row.get(group) or []:
+                        if _model_matches_request(model, item.get("model_name"), item.get("tags") or []):
+                            item_max_ctx = item.get("max_ctx")
+                            if item_max_ctx is not None:
+                                max_available_ctx = max(max_available_ctx, int(item_max_ctx))
+            raise LanePlacementError(
+                _context_limit_message(
+                    model=model,
+                    required_tokens=request_context_tokens,
+                    max_available_ctx=max_available_ctx or None,
+                ),
+                status_code=422,
             )
             
         return None
