@@ -38,7 +38,7 @@ spec:
         kubernetes.io/hostname: packserv
       initContainers:
         - name: migrate-db
-          image: <your-registry>/mesh-router:<tag>
+          image: 10.0.1.48:5000/mesh-router:20260331-hardening2
           imagePullPolicy: Never
           envFrom:
             - secretRef:
@@ -51,7 +51,7 @@ spec:
               init_db()
       containers:
         - name: mesh-router
-          image: <your-registry>/mesh-router:<tag>
+          image: 10.0.1.48:5000/mesh-router:20260331-hardening2
           imagePullPolicy: Never
           envFrom:
             - secretRef:
