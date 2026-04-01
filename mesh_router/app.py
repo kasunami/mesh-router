@@ -41,10 +41,13 @@ from .schemas import (
 )
 from .tokens import sign_token, verify_token
 from .viability import ViabilityLaneInfo, ViabilityModelInfo, check_viability, estimate_swap_time
+from .logging_config import setup_logging
 
+# Configure standardized logging
+setup_logging(service_name="mesh-router")
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="mesh-router", version="0.1.0")
-logger = logging.getLogger(__name__)
 
 ARCHIVE_PROVIDERS = {"packhub", "packhub02"}
 REQUEST_TERMINAL_STATES = {"released", "failed", "expired", "canceled"}
@@ -1499,6 +1502,8 @@ def _fetch_router_request(request_id: str) -> dict[str, Any] | None:
                   rr.created_at,
                   rr.updated_at,
                   m.model_name,
+                  m.context_default,
+                  cmp.max_ctx AS lane_max_ctx,
                   l.lane_name,
                   l.lane_type,
                   l.status AS lane_status,
@@ -1506,6 +1511,7 @@ def _fetch_router_request(request_id: str) -> dict[str, Any] | None:
                   rl.state AS lease_state
                 FROM router_requests rr
                 LEFT JOIN models m ON m.model_id = rr.model_id
+                LEFT JOIN lane_model_policy cmp ON cmp.lane_id = rr.lane_id AND cmp.model_id = rr.model_id
                 LEFT JOIN lanes l ON l.lane_id = rr.lane_id
                 LEFT JOIN hosts h ON h.host_id = l.host_id
                 LEFT JOIN router_leases rl ON rl.lease_id = rr.lease_id
@@ -3066,6 +3072,19 @@ def v1_chat_completions(
             response.headers["X-Mesh-Lane-Id"] = str(row["lane_id"])
         if row and row.get("worker_id"):
             response.headers["X-Mesh-Worker-Id"] = str(row["worker_id"])
+        if row:
+            effective_model_name = (
+                row.get("downstream_model_name")
+                or row.get("model_name")
+                or row.get("requested_model_name")
+            )
+            if effective_model_name:
+                response.headers["X-Mesh-Model-Name"] = str(effective_model_name)
+            max_ctx = row.get("lane_max_ctx")
+            if max_ctx is None:
+                max_ctx = row.get("context_default")
+            if max_ctx is not None:
+                response.headers["X-Mesh-Model-Max-Ctx"] = str(max_ctx)
         return result
     except Exception as exc:
         row = _fetch_router_request(request_id)
