@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 import time
 import threading
@@ -48,6 +49,46 @@ setup_logging(service_name="mesh-router")
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="mesh-router", version="0.1.0")
+
+
+def _configure_tracing(app: FastAPI) -> bool:
+    """Best-effort OTEL setup for FastAPI when explicitly enabled."""
+    enabled = os.getenv("MESH_ROUTER_OTEL_ENABLED", "false").lower() in {"1", "true", "yes"}
+    if not enabled:
+        return False
+
+    endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "").strip()
+    if not endpoint:
+        logger.warning(
+            "MESH_ROUTER_OTEL_ENABLED=true but OTEL_EXPORTER_OTLP_ENDPOINT is unset; tracing disabled"
+        )
+        return False
+
+    insecure = os.getenv("OTEL_EXPORTER_OTLP_INSECURE", "true").lower() in {"1", "true", "yes"}
+    service_name = os.getenv("OTEL_SERVICE_NAME", "mesh-router").strip() or "mesh-router"
+
+    try:
+        from opentelemetry import trace
+        from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+        from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+        from opentelemetry.sdk.resources import SERVICE_NAME, Resource
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import BatchSpanProcessor
+
+        provider = TracerProvider(resource=Resource.create({SERVICE_NAME: service_name}))
+        provider.add_span_processor(
+            BatchSpanProcessor(OTLPSpanExporter(endpoint=endpoint, insecure=insecure))
+        )
+        trace.set_tracer_provider(provider)
+        FastAPIInstrumentor.instrument_app(app, tracer_provider=provider)
+        logger.info("OpenTelemetry tracing enabled for %s -> %s", service_name, endpoint)
+        return True
+    except Exception as exc:
+        logger.warning("Failed to initialize OpenTelemetry tracing: %s", exc)
+        return False
+
+
+_configure_tracing(app)
 
 ARCHIVE_PROVIDERS = {"packhub", "packhub02"}
 REQUEST_TERMINAL_STATES = {"released", "failed", "expired", "canceled"}
