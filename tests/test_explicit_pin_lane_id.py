@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from unittest import mock
 
 from mesh_router import app as app_module
 from mesh_router import router as router_module
@@ -34,22 +35,17 @@ class NormalizePinLaneIdTests(unittest.TestCase):
 
 
 class PinLaneIdPlacementTests(unittest.TestCase):
-    def setUp(self) -> None:
-        self.orig_db = router_module.db
-        self.orig_q = router_module.q
-        self.orig_apply = router_module.apply_mw_effective_status
-
-    def tearDown(self) -> None:
-        router_module.db = self.orig_db  # type: ignore[assignment]
-        router_module.q = self.orig_q  # type: ignore[assignment]
-        router_module.apply_mw_effective_status = self.orig_apply  # type: ignore[assignment]
-
     def test_pin_lane_id_not_found_is_404(self) -> None:
-        router_module.q = lambda cur, sql, params: []  # type: ignore[assignment]
+        class _Cur:
+            def __enter__(self):  # noqa: ANN001
+                return self
+
+            def __exit__(self, exc_type, exc, tb):  # noqa: ANN001
+                return False
 
         class _Conn:
             def cursor(self):  # noqa: ANN001
-                return self
+                return _Cur()
 
             def __enter__(self):  # noqa: ANN001
                 return self
@@ -61,12 +57,14 @@ class PinLaneIdPlacementTests(unittest.TestCase):
             def connect(self):  # noqa: ANN001
                 return _Conn()
 
-        router_module.db = _Db()  # type: ignore[assignment]
-        router_module.apply_mw_effective_status = lambda *a, **k: None  # type: ignore[assignment]
-
-        with self.assertRaises(router_module.LanePlacementError) as ctx:
-            router_module.pick_lane_for_model(model="qwen", pin_lane_id="missing")
-        self.assertEqual(ctx.exception.status_code, 404)
+        with (
+            mock.patch.object(router_module, "db", _Db()),
+            mock.patch.object(router_module, "q", return_value=[]),
+            mock.patch.object(router_module, "apply_mw_effective_status", lambda *a, **k: None),
+        ):
+            with self.assertRaises(router_module.LanePlacementError) as ctx:
+                router_module.pick_lane_for_model(model="qwen", pin_lane_id="missing")
+        self.assertEqual(getattr(ctx.exception, "status_code", None), 404)
 
     def test_pin_lane_id_offline_is_409(self) -> None:
         row = {
@@ -80,11 +78,17 @@ class PinLaneIdPlacementTests(unittest.TestCase):
             "current_model_name": None,
             "current_model_max_ctx": None,
         }
-        router_module.q = lambda cur, sql, params: [row]  # type: ignore[assignment]
+
+        class _Cur:
+            def __enter__(self):  # noqa: ANN001
+                return self
+
+            def __exit__(self, exc_type, exc, tb):  # noqa: ANN001
+                return False
 
         class _Conn:
             def cursor(self):  # noqa: ANN001
-                return self
+                return _Cur()
 
             def __enter__(self):  # noqa: ANN001
                 return self
@@ -96,13 +100,16 @@ class PinLaneIdPlacementTests(unittest.TestCase):
             def connect(self):  # noqa: ANN001
                 return _Conn()
 
-        router_module.db = _Db()  # type: ignore[assignment]
-        router_module.apply_mw_effective_status = lambda *a, **k: None  # type: ignore[assignment]
-
-        with self.assertRaises(router_module.LanePlacementError) as ctx:
-            router_module.pick_lane_for_model(model="qwen", pin_lane_id="lane-1")
-        self.assertEqual(ctx.exception.status_code, 409)
+        with (
+            mock.patch.object(router_module, "db", _Db()),
+            mock.patch.object(router_module, "q", return_value=[row]),
+            mock.patch.object(router_module, "apply_mw_effective_status", lambda *a, **k: None),
+        ):
+            with self.assertRaises(router_module.LanePlacementError) as ctx:
+                router_module.pick_lane_for_model(model="qwen", pin_lane_id="lane-1")
+        self.assertEqual(getattr(ctx.exception, "status_code", None), 409)
 
 
 if __name__ == "__main__":
     unittest.main()
+

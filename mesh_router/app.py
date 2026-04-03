@@ -4087,6 +4087,10 @@ def v1_chat_completions(
             headers["X-Mesh-Lane-Id"] = str(row["lane_id"])
         if row and row.get("worker_id"):
             headers["X-Mesh-Worker-Id"] = str(row["worker_id"])
+        if isinstance(exc, HTTPException):
+            merged = dict(exc.headers or {})
+            merged.update(headers)
+            raise HTTPException(status_code=exc.status_code, detail=exc.detail, headers=merged)
         status_code = (
             int(getattr(exc, "status_code"))
             if isinstance(exc, LanePlacementError)
@@ -4149,6 +4153,10 @@ def v1_embeddings(
             headers["X-Mesh-Lane-Id"] = str(row["lane_id"])
         if row and row.get("worker_id"):
             headers["X-Mesh-Worker-Id"] = str(row["worker_id"])
+        if isinstance(exc, HTTPException):
+            merged = dict(exc.headers or {})
+            merged.update(headers)
+            raise HTTPException(status_code=exc.status_code, detail=exc.detail, headers=merged)
         status_code = (
             int(getattr(exc, "status_code"))
             if isinstance(exc, LanePlacementError)
@@ -4208,6 +4216,10 @@ def v1_images_generations(
             headers["X-Mesh-Lane-Id"] = str(row["lane_id"])
         if row and row.get("worker_id"):
             headers["X-Mesh-Worker-Id"] = str(row["worker_id"])
+        if isinstance(exc, HTTPException):
+            merged = dict(exc.headers or {})
+            merged.update(headers)
+            raise HTTPException(status_code=exc.status_code, detail=exc.detail, headers=merged)
         status_code = (
             int(getattr(exc, "status_code"))
             if isinstance(exc, LanePlacementError)
@@ -4266,6 +4278,10 @@ def legacy_embeddings(
         headers = {"X-Mesh-Request-Id": request_id}
         if row and row.get("worker_id"):
             headers["X-Mesh-Worker-Id"] = str(row["worker_id"])
+        if isinstance(exc, HTTPException):
+            merged = dict(exc.headers or {})
+            merged.update(headers)
+            raise HTTPException(status_code=exc.status_code, detail=exc.detail, headers=merged)
         status_code = (
             int(getattr(exc, "status_code"))
             if isinstance(exc, LanePlacementError)
