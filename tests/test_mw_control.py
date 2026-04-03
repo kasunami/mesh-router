@@ -56,6 +56,45 @@ class MWControlApiTests(unittest.TestCase):
         app_module._mw_client = self.original_getter
         app_module._mw_client.cache_clear()
 
+    def test_mw_command_status_not_found(self) -> None:
+        original_db = app_module.db
+
+        class _Cur:
+            def execute(self, *args, **kwargs):  # noqa: ANN001
+                return None
+
+            def fetchone(self):  # noqa: ANN001
+                return None
+
+            def __enter__(self):  # noqa: ANN001
+                return self
+
+            def __exit__(self, exc_type, exc, tb):  # noqa: ANN001
+                return False
+
+        class _Conn:
+            def cursor(self):  # noqa: ANN001
+                return _Cur()
+
+            def __enter__(self):  # noqa: ANN001
+                return self
+
+            def __exit__(self, exc_type, exc, tb):  # noqa: ANN001
+                return False
+
+        class _Db:
+            def connect(self):  # noqa: ANN001
+                return _Conn()
+
+        app_module.db = _Db()  # type: ignore[assignment]
+        try:
+            response = self.client.get("/api/mw/commands/00000000-0000-0000-0000-000000000000")
+            self.assertEqual(response.status_code, 200)
+            body = response.json()
+            self.assertFalse(body["found"])
+        finally:
+            app_module.db = original_db  # type: ignore[assignment]
+
     def test_generic_mw_command_endpoint(self) -> None:
         response = self.client.post(
             "/api/mw/commands",
