@@ -94,3 +94,7 @@ Control-plane / operator APIs:
 - Performance expectations (MB-aligned, durable):
   - `POST /api/perf/observations` — ingest an observation into `mw_perf_observations` (table lives in MW state DB; apply `sql/013_mw_perf_observations.sql`).
   - `GET /api/perf/expectations` — fetch p50 expectations from recent observations.
+
+Notes:
+- `perf.host_id` is canonicalized to MW-style ids (`Static-Deskix` → `static-deskix`) at ingest to avoid silent lookup mismatches during routing.
+- Tag-based route resolution ranks candidates using perf expectations when available (decode TPS / first-token latency for chat, total_ms for images); otherwise it falls back to deterministic defaults.
