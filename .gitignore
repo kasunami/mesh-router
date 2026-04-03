@@ -12,3 +12,5 @@ build/
 *.sealed.yaml
 *.local.yaml
 
+# Local evidence bundles (live validation output, curl headers/bodies, etc.)
+.evidence/
