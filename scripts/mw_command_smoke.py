@@ -18,6 +18,7 @@ def main() -> int:
     p.add_argument("--follow", action="store_true", help="If command returns pending/202, poll status until terminal or timeout")
     p.add_argument("--follow-timeout-s", type=int, default=180, help="Max seconds to poll when --follow is set")
     p.add_argument("--follow-interval-s", type=int, default=2, help="Poll interval seconds when --follow is set")
+    p.add_argument("--print-http", action="store_true", help="Print HTTP status + Location/Retry-After headers to stderr")
     args = p.parse_args()
 
     try:
@@ -34,6 +35,14 @@ def main() -> int:
         body["timeout_seconds"] = int(args.timeout_seconds)
     with httpx.Client(timeout=60.0) as client:
         resp = client.post(url, json=body)
+        if args.print_http:
+            loc = resp.headers.get("location")
+            retry_after = resp.headers.get("retry-after")
+            print(f"HTTP {resp.status_code}", file=sys.stderr)
+            if loc:
+                print(f"Location: {loc}", file=sys.stderr)
+            if retry_after:
+                print(f"Retry-After: {retry_after}", file=sys.stderr)
         if resp.status_code >= 400:
             print(resp.text, file=sys.stderr)
             return 2
