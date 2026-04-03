@@ -6,9 +6,6 @@ import unittest
 from fastapi.testclient import TestClient
 
 from mesh_router import app as app_module
-from mesh_router import db as db_module
-
-
 class _FakeCursor:
     def __init__(self, *, execute_rows: list[list[dict]]) -> None:
         self._execute_rows = execute_rows
@@ -59,11 +56,11 @@ class _FakeDb:
 class MWLaneReadinessOverlayTests(unittest.TestCase):
     def setUp(self) -> None:
         self.original_db = app_module.db
-        self.original_mw_state_db = db_module.mw_state_db
+        self.original_mw_state_db = app_module.mw_state_db
 
     def tearDown(self) -> None:
         app_module.db = self.original_db  # type: ignore[assignment]
-        db_module.mw_state_db = self.original_mw_state_db  # type: ignore[assignment]
+        app_module.mw_state_db = self.original_mw_state_db  # type: ignore[assignment]
 
     def test_api_lanes_overlays_mw_readiness_and_model(self) -> None:
         # Base lanes listing: lane is offline in MR DB but MW control plane should override.
@@ -105,7 +102,7 @@ class MWLaneReadinessOverlayTests(unittest.TestCase):
         ]
 
         app_module.db = _FakeDb(_FakeCursor(execute_rows=[base_rows]))  # type: ignore[assignment]
-        db_module.mw_state_db = _FakeDb(_FakeCursor(execute_rows=mw_execute_rows))  # type: ignore[assignment]
+        app_module.mw_state_db = _FakeDb(_FakeCursor(execute_rows=mw_execute_rows))  # type: ignore[assignment]
 
         client = TestClient(app_module.app)
         resp = client.get("/api/lanes")
@@ -121,4 +118,3 @@ class MWLaneReadinessOverlayTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

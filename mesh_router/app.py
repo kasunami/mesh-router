@@ -21,7 +21,7 @@ from psycopg.types.json import Jsonb
 from pydantic import BaseModel
 
 from .config import settings
-from .db import db
+from .db import db, mw_state_db
 from .router import pick_lane_for_model
 from .schemas import (
     ArchiveInventoryScanRequest,
@@ -1264,7 +1264,9 @@ def api_mw_command_status(request_id: str) -> MWCommandStatusResponse:
     if not rid:
         raise HTTPException(status_code=400, detail="missing request_id")
     try:
-        with db.connect() as conn:
+        # MW state can live in a separate DB (`MESH_ROUTER_MW_STATE_DATABASE_URL`).
+        # Always query the MW state DB handle here so that "202 pending + poll" is operationally safe.
+        with mw_state_db.connect() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """
@@ -1405,8 +1407,6 @@ def api_lanes() -> dict[str, Any]:
     if mw_refs:
         try:
             from datetime import timedelta
-
-            from .db import mw_state_db
 
             stale_after = timedelta(seconds=int(settings.default_lease_stale_seconds))
             now = datetime.now(UTC)
