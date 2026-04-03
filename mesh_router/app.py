@@ -3246,11 +3246,15 @@ def _execute_router_request_streaming(
         )
 
         token = sign_token(
-            lane_id=choice.lane_id,
-            lease_id=lease_id,
-            owner=owner,
-            ttl_seconds=settings.default_lease_ttl_seconds,
-            secret=settings.lease_token_secret,
+            {
+                "lease_id": lease_id,
+                "lane_id": choice.lane_id,
+                "worker_id": choice.worker_id,
+                "base_url": choice.base_url,
+                "model": downstream_model,
+                "owner": owner,
+                "exp": int(expires_at.timestamp()),
+            }
         )
 
         headers = {

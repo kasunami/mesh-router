@@ -12,6 +12,7 @@ def main() -> int:
     p.add_argument("--model", required=True, help="Model name")
     p.add_argument("--prompt", default="Hello from MW stream smoke test.", help="Prompt")
     p.add_argument("--lines", type=int, default=50, help="Max SSE lines to print")
+    p.add_argument("--read-timeout-s", type=float, default=600.0, help="HTTP read timeout (seconds)")
     args = p.parse_args()
 
     url = f"{args.mr.rstrip('/')}/v1/chat/completions"
@@ -20,10 +21,16 @@ def main() -> int:
         "stream": True,
         "messages": [{"role": "user", "content": args.prompt}],
     }
-    with httpx.Client(timeout=60.0) as client:
+    timeout = httpx.Timeout(60.0, read=float(args.read_timeout_s))
+    with httpx.Client(timeout=timeout) as client:
         with client.stream("POST", url, json=payload) as resp:
             if resp.status_code >= 400:
-                print(resp.text, file=sys.stderr)
+                body = resp.read()
+                text = body.decode("utf-8", errors="replace") if isinstance(body, (bytes, bytearray)) else str(body)
+                print(
+                    f"status={resp.status_code} content-type={resp.headers.get('content-type')}\n{text}",
+                    file=sys.stderr,
+                )
                 return 2
             print(f"status={resp.status_code} content-type={resp.headers.get('content-type')}")
             printed = 0
@@ -41,4 +48,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

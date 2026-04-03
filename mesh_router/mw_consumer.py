@@ -131,6 +131,10 @@ def _upsert_services(cur: Any, *, host_id: str, service_states: Iterable[dict[st
 
 def _upsert_lanes(cur: Any, *, host_id: str, lane_states: Iterable[dict[str, Any]], observed_at: datetime) -> None:
     for l in lane_states:
+        service_id = str(l.get("service_id") or "")
+        if not service_id:
+            # `mw_lanes.service_id` is FK'd to mw_services; skip malformed lane rows rather than breaking ingestion.
+            continue
         actual_state = str(l.get("actual_state") or "unknown")
         health_status = str(l.get("health_status") or "unknown")
         desired_state = "online" if actual_state in {"running", "ready"} else "offline"
@@ -167,7 +171,7 @@ def _upsert_lanes(cur: Any, *, host_id: str, lane_states: Iterable[dict[str, Any
                 str(l.get("lane_id") or ""),
                 str(l.get("lane_type") or "unknown"),
                 str(l.get("backend_type") or "unknown"),
-                str(l.get("service_id") or ""),
+                service_id,
                 str(l.get("resource_class") or ""),
                 str(l.get("desired_model") or "") or None,
                 str(l.get("actual_model") or "") or None,
@@ -270,6 +274,27 @@ def process_message(*, payload: dict[str, Any], observed_at: datetime, db_connec
                 )
                 service_states = list(snapshot.get("service_states") or [])
                 lane_states = list(snapshot.get("lane_states") or [])
+                # Some MW versions may omit `service_states` or not include every service_id referenced by lanes.
+                # `mw_lanes` has an FK to `mw_services`, so ensure at least stub service rows exist.
+                known_services: set[str] = {
+                    str(s.get("service_id") or "") for s in service_states if str(s.get("service_id") or "")
+                }
+                for lane in lane_states:
+                    service_id = str(lane.get("service_id") or "")
+                    if not service_id or service_id in known_services:
+                        continue
+                    service_states.append(
+                        {
+                            "service_id": service_id,
+                            "manager_name": "unknown",
+                            "backend_type": str(lane.get("backend_type") or "unknown"),
+                            "kind": "lane_backend",
+                            "desired_state": "unknown",
+                            "actual_state": "unknown",
+                            "health_status": str(lane.get("health_status") or "unknown"),
+                        }
+                    )
+                    known_services.add(service_id)
                 _upsert_services(cur, host_id=host_id, service_states=service_states, observed_at=observed_at)
                 _upsert_lanes(cur, host_id=host_id, lane_states=lane_states, observed_at=observed_at)
             elif message_type == "response":
