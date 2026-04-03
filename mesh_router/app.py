@@ -161,6 +161,49 @@ def _maybe_record_perf_observation(
         )
 
 
+def _maybe_add_perf_expectation_headers(
+    *,
+    headers: dict[str, str],
+    host_id: str | None,
+    lane_id: str | None,
+    model_name: str | None,
+    modality: str,
+) -> None:
+    """
+    Best-effort requestor-facing perf expectation headers.
+
+    This is intentionally optional/off by default to avoid adding DB overhead
+    or leaking internal details unintentionally.
+    """
+
+    if not settings.route_debug_headers_enabled:
+        return
+    if not host_id or not lane_id or not model_name:
+        return
+    try:
+        with mw_state_db.connect() as conn:
+            with conn.cursor() as cur:
+                exp = get_expectation(
+                    cur=cur,
+                    host_id=str(host_id),
+                    lane_id=str(lane_id),
+                    model_name=str(model_name),
+                    modality=str(modality),
+                )
+        if not exp:
+            return
+        headers["X-Mesh-Perf-Sample-Count"] = str(int(exp.sample_count))
+        headers["X-Mesh-Perf-Updated-At"] = exp.updated_at.isoformat()
+        if exp.first_token_ms_p50 is not None:
+            headers["X-Mesh-Perf-FirstTokenMs-P50"] = str(float(exp.first_token_ms_p50))
+        if exp.decode_tps_p50 is not None:
+            headers["X-Mesh-Perf-DecodeTps-P50"] = str(float(exp.decode_tps_p50))
+        if exp.total_ms_p50 is not None:
+            headers["X-Mesh-Perf-TotalMs-P50"] = str(float(exp.total_ms_p50))
+    except Exception:
+        return
+
+
 def _mw_target_for_lane(*, cur: Any, lane_id: str) -> MwGrpcTarget | None:
     """
     Returns a MW gRPC target when the lane is explicitly marked as MW-managed.
@@ -3688,6 +3731,13 @@ def _execute_router_request_streaming(
                         mw_target = _mw_target_for_lane(cur=cur, lane_id=str(lane_id))
             except Exception:
                 mw_target = None
+        _maybe_add_perf_expectation_headers(
+            headers=headers,
+            host_id=str(getattr(mw_target, "host_id", "") or "") if mw_target is not None else (str(choice.worker_id) if choice else None),
+            lane_id=str(lane_id) if lane_id else None,
+            model_name=str(downstream_model) if downstream_model else None,
+            modality="chat",
+        )
 
         # Best-effort: ensure the requested model is loaded on MW-managed lanes before streaming.
         if mw_target is not None and settings.mw_control_enabled:
@@ -4079,6 +4129,13 @@ def v1_chat_completions(
             )
             if effective_model_name:
                 response.headers["X-Mesh-Model-Name"] = str(effective_model_name)
+            _maybe_add_perf_expectation_headers(
+                headers=response.headers,  # type: ignore[arg-type]
+                host_id=str(row.get("worker_id") or ""),
+                lane_id=str(row.get("lane_id") or ""),
+                model_name=str(effective_model_name) if effective_model_name else None,
+                modality="chat",
+            )
             max_ctx = row.get("lane_max_ctx")
             if max_ctx is None:
                 max_ctx = row.get("context_default")

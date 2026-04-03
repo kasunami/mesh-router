@@ -79,5 +79,9 @@ class Settings(BaseSettings):
     perf_auto_observe_min_elapsed_ms: int = 50
     perf_auto_observe_max_total_ms: int = 600_000
 
+    # Optional requestor-facing debug headers. When enabled, MR includes perf expectation
+    # metadata (if available) in responses and SSE headers.
+    route_debug_headers_enabled: bool = False
+
 
 settings = Settings()

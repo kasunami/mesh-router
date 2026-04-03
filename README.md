@@ -116,6 +116,19 @@ MR records best-effort performance observations from real traffic into `mw_perf_
 - `MESH_ROUTER_PERF_AUTO_OBSERVE_ENABLED` (default `true`)
 - `MESH_ROUTER_PERF_AUTO_OBSERVE_SAMPLE_RATE` (default `1.0`)
 - `MESH_ROUTER_PERF_AUTO_OBSERVE_MIN_ELAPSED_MS` (default `50`)
-- `MESH_ROUTER_PERF_AUTO_OBSERVE_MAX_TOTAL_MS` (default `300000`)
+- `MESH_ROUTER_PERF_AUTO_OBSERVE_MAX_TOTAL_MS` (default `600000`)
 
 Observations are best-effort and never block responses. Canceled requests are dropped; failed requests are recorded but excluded from expectations (`ok=false`).
+
+### Optional perf expectation headers
+
+For debugging/validation, MR can include perf expectation metadata as response/SSE headers:
+
+- `MESH_ROUTER_ROUTE_DEBUG_HEADERS_ENABLED=true`
+
+When enabled and when an expectation exists for the resolved `(host,lane,model,modality)`, MR adds:
+- `X-Mesh-Perf-Sample-Count`
+- `X-Mesh-Perf-Updated-At`
+- `X-Mesh-Perf-FirstTokenMs-P50` (when available)
+- `X-Mesh-Perf-DecodeTps-P50` (when available)
+- `X-Mesh-Perf-TotalMs-P50` (when available)
