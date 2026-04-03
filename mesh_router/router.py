@@ -167,7 +167,7 @@ def pick_lane_for_model(
                       AND (%s::text IS NULL OR h.host_name=%s::text)
                       AND (%s::text IS NULL OR l.base_url=%s::text)
                       AND (%s::text IS NULL OR l.backend_type = %s::text)
-                      AND (%s::text IS NULL OR l.lane_type = %s::text)
+                      AND (%s::text IS NULL OR l.lane_type::text = %s::text)
                       AND (%s::text[] IS NULL OR l.lane_id::text <> ALL(%s::text[]))
                       AND (l.status='ready' OR (l.proxy_auth_metadata->>'control_plane')='mw')
                       AND NOT EXISTS (
