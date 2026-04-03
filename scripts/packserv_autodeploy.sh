@@ -11,7 +11,7 @@ K3S_MANIFESTS_DIR="${K3S_MANIFESTS_DIR:-${BASE_DIR}/k3s-manifests}"
 BRANCH="${BRANCH:-main}"
 K3S_BRANCH="${K3S_BRANCH:-master}"
 
-IMAGE_REPO="${IMAGE_REPO:-<your-registry>/mesh-router}"
+IMAGE_REPO="${IMAGE_REPO:-10.0.1.48:5000/mesh-router}"
 MANIFEST_PATH="${MANIFEST_PATH:-apps/ai-tools/mesh-router/mesh-router.yaml}"
 
 GIT_USER_NAME="${GIT_USER_NAME:-mesh-router-autodeploy}"
@@ -42,7 +42,7 @@ git -C "${K3S_MANIFESTS_DIR}" config user.name "${GIT_USER_NAME}"
 git -C "${K3S_MANIFESTS_DIR}" config user.email "${GIT_USER_EMAIL}"
 
 COMMIT_SHA="$(git -C "${MESH_ROUTER_DIR}" rev-parse --short=12 HEAD)"
-IMAGE="${IMAGE_REPO}:${COMMIT_SHA}"
+IMAGE_TAG="${IMAGE_REPO}:${COMMIT_SHA}"
 
 CURRENT_IMAGE="$(python3 - <<PY
 from pathlib import Path
@@ -54,29 +54,42 @@ print(m.group(1) if m else "")
 PY
 )"
 
-if [[ "${CURRENT_IMAGE}" == "${IMAGE}" ]]; then
-  echo "mesh-router already deployed at ${IMAGE}"
+if [[ "${CURRENT_IMAGE}" == "${IMAGE_TAG}" ]]; then
+  echo "mesh-router already deployed at ${IMAGE_TAG}"
   exit 0
 fi
 
 cd "${MESH_ROUTER_DIR}"
-IMAGE="${IMAGE}" ./scripts/build_image.sh "${COMMIT_SHA}"
-docker push "${IMAGE}"
+IMAGE="${IMAGE_TAG}" ./scripts/build_image.sh "${COMMIT_SHA}"
+docker push "${IMAGE_TAG}"
+
+IMAGE_DIGEST="$(docker image inspect --format '{{index .RepoDigests 0}}' "${IMAGE_TAG}" 2>/dev/null || true)"
+if [[ -z "${IMAGE_DIGEST}" ]]; then
+  # Some docker configurations don't populate RepoDigests until after a pull.
+  docker pull "${IMAGE_TAG}" >/dev/null
+  IMAGE_DIGEST="$(docker image inspect --format '{{index .RepoDigests 0}}' "${IMAGE_TAG}" 2>/dev/null || true)"
+fi
+if [[ -z "${IMAGE_DIGEST}" ]]; then
+  echo "fatal: could not determine pushed image digest for ${IMAGE_TAG}" >&2
+  exit 2
+fi
 
 python3 - <<PY
 from pathlib import Path
 import re
 p = Path("${K3S_MANIFESTS_DIR}/${MANIFEST_PATH}")
 text = p.read_text()
-text = re.sub(r'10\\.0\\.0\\.2:5000/mesh-router:[^\\s]+', "${IMAGE}", text)
+text = re.sub(r"(^\\s*image:\\s*)(\\S*mesh-router\\S*)\\s*$", r"\\1${IMAGE_DIGEST}", text, flags=re.M)
+text = re.sub(r"(^\\s*imagePullPolicy:\\s*)Never\\s*$", r"\\1IfNotPresent", text, flags=re.M)
 p.write_text(text)
 print("updated", p)
 PY
 
 if ! git -C "${K3S_MANIFESTS_DIR}" diff --quiet -- "${MANIFEST_PATH}"; then
   git -C "${K3S_MANIFESTS_DIR}" add "${MANIFEST_PATH}"
-  git -C "${K3S_MANIFESTS_DIR}" commit -m "Deploy mesh-router ${COMMIT_SHA}"
+  git -C "${K3S_MANIFESTS_DIR}" commit -m "Deploy mesh-router ${COMMIT_SHA} (${IMAGE_DIGEST})"
   git -C "${K3S_MANIFESTS_DIR}" push origin "${K3S_BRANCH}"
 fi
 
-echo "deployed ${IMAGE}"
+echo "deployed ${IMAGE_TAG}"
+echo "  digest: ${IMAGE_DIGEST}"

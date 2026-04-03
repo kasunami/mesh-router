@@ -38,8 +38,13 @@ spec:
         kubernetes.io/hostname: packserv
       initContainers:
         - name: migrate-db
-          image: 10.0.1.48:5000/mesh-router:20260331-hardening2
-          imagePullPolicy: Never
+          # Deploy hygiene:
+          # - Prefer immutable digest refs (registry/repo@sha256:...) OR unique tags (e.g. git SHA).
+          # - Never reuse tags for different digests.
+          image: 10.0.1.48:5000/mesh-router:__SET_BY_DEPLOY__
+          # Control-plane safety: always pull when a tag is used.
+          # If you deploy by digest (repo@sha256:...), `IfNotPresent` is also safe.
+          imagePullPolicy: Always
           envFrom:
             - secretRef:
                 name: mesh-router-secret
@@ -51,8 +56,11 @@ spec:
               init_db()
       containers:
         - name: mesh-router
-          image: 10.0.1.48:5000/mesh-router:20260331-hardening2
-          imagePullPolicy: Never
+          # Deploy hygiene: prefer digest refs or unique tags; never reuse tags.
+          image: 10.0.1.48:5000/mesh-router:__SET_BY_DEPLOY__
+          # Control-plane safety: always pull when a tag is used.
+          # If you deploy by digest (repo@sha256:...), `IfNotPresent` is also safe.
+          imagePullPolicy: Always
           envFrom:
             - secretRef:
                 name: mesh-router-secret
