@@ -111,6 +111,34 @@ class MWControlApiTests(unittest.TestCase):
         self.assertEqual(body["message_type"], "load_model")
         self.assertEqual(body["result"]["echo"]["model_name"], "qwen3.5-4b")
 
+    def test_load_model_accepts_model_id_alias(self) -> None:
+        response = self.client.post(
+            "/api/mw/commands",
+            json={
+                "host_id": "static-deskix",
+                "message_type": "load_model",
+                "payload": {"lane_id": "gpu", "model_id": "qwen3.5-2b"},
+                "wait": True,
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertTrue(body["ok"])
+        # Verify MR normalized the payload before dispatch.
+        self.assertEqual(self.fake.calls[-1]["payload"]["model_name"], "qwen3.5-2b")
+
+    def test_load_model_rejects_missing_model_name(self) -> None:
+        response = self.client.post(
+            "/api/mw/commands",
+            json={
+                "host_id": "static-deskix",
+                "message_type": "load_model",
+                "payload": {"lane_id": "gpu"},
+                "wait": True,
+            },
+        )
+        self.assertEqual(response.status_code, 400)
+
     def test_mw_command_timeout_returns_pending_202(self) -> None:
         self.fake.next_result = {
             "ok": True,

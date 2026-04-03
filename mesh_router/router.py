@@ -194,10 +194,22 @@ def pick_lane_for_model(
                            cmp.max_ctx AS current_model_max_ctx
                     FROM lanes l
                     JOIN hosts h ON h.host_id = l.host_id
+                    LEFT JOIN mw_hosts mh ON mh.host_id = (l.proxy_auth_metadata->>'mw_host_id')
+                    LEFT JOIN mw_lanes ml
+                      ON ml.host_id = (l.proxy_auth_metadata->>'mw_host_id')
+                     AND ml.lane_id = (l.proxy_auth_metadata->>'mw_lane_id')
                     LEFT JOIN models m ON m.model_name = l.current_model_name
                     LEFT JOIN lane_model_policy cmp ON cmp.lane_id=l.lane_id AND cmp.model_id=m.model_id
                     WHERE h.host_name=%s
-                      AND l.status='ready'
+                      AND (
+                        l.status='ready'
+                        OR (
+                          (l.proxy_auth_metadata->>'control_plane')='mw'
+                          AND mh.last_heartbeat_at > now() - (%s * interval '1 second')
+                          AND ml.actual_state='running'
+                          AND ml.health_status='healthy'
+                        )
+                      )
                       AND NOT EXISTS (
                         SELECT 1 FROM router_leases rl
                         WHERE rl.lane_id = l.lane_id
@@ -221,6 +233,7 @@ def pick_lane_for_model(
                     """,
                     (
                         pin_worker,
+                        settings.default_lease_stale_seconds,
                         settings.default_lease_stale_seconds,
                         _RECENT_PROXY_ERROR_COOLDOWN_S,
                         pin_lane_type,
@@ -278,6 +291,17 @@ def pick_lane_for_model(
                     """
                     SELECT
                       l.lane_id, h.host_name, l.base_url, l.lane_type, l.backend_type, l.status, l.suspension_reason,
+                      CASE
+                        WHEN (l.proxy_auth_metadata->>'control_plane') = 'mw' THEN
+                          CASE
+                            WHEN mh.last_heartbeat_at > now() - (%s * interval '1 second')
+                             AND ml.actual_state = 'running'
+                             AND ml.health_status = 'healthy'
+                            THEN 'ready'
+                            ELSE 'offline'
+                          END
+                        ELSE l.status::text
+                      END AS effective_status,
                       l.current_model_name,
                       cmp.max_ctx AS current_model_max_ctx,
                       current_m.tags AS current_model_tags,
@@ -311,9 +335,13 @@ def pick_lane_for_model(
                       ), '[]'::jsonb) as remote_viable_models
                     FROM lanes l
                     JOIN hosts h ON h.host_id = l.host_id
+                    LEFT JOIN mw_hosts mh ON mh.host_id = (l.proxy_auth_metadata->>'mw_host_id')
+                    LEFT JOIN mw_lanes ml
+                      ON ml.host_id = (l.proxy_auth_metadata->>'mw_host_id')
+                     AND ml.lane_id = (l.proxy_auth_metadata->>'mw_lane_id')
                     LEFT JOIN models current_m ON current_m.model_name = l.current_model_name
                     LEFT JOIN lane_model_policy cmp ON cmp.lane_id=l.lane_id AND cmp.model_id=current_m.model_id
-                    WHERE l.status IN ('ready', 'suspended')
+                    WHERE (l.status IN ('ready', 'suspended') OR (l.proxy_auth_metadata->>'control_plane') = 'mw')
                       AND NOT EXISTS (
                         SELECT 1 FROM router_leases rl
                         WHERE rl.lane_id = l.lane_id
@@ -344,6 +372,7 @@ def pick_lane_for_model(
                     """,
                     (
                         settings.default_lease_stale_seconds,
+                        settings.default_lease_stale_seconds,
                         _RECENT_PROXY_ERROR_COOLDOWN_S,
                         pin_lane_type,
                         pin_lane_type,
@@ -353,18 +382,21 @@ def pick_lane_for_model(
                         list(excluded) or None,
                     ),
                 )
+        def _status(row: dict) -> str:
+            return str(row.get("effective_status") or row.get("status") or "")
+
         # Only 'ready' lanes are eligible for direct dispatch.
         matched = [
             row
             for row in rows
-            if row.get("status") == "ready"
+            if _status(row) == "ready"
             and _model_matches_request(model, row.get("current_model_name"), row.get("current_model_tags") or [])
             and _context_is_sufficient(request_context_tokens, row.get("current_model_max_ctx"))
         ]
         context_mismatched = [
             row
             for row in rows
-            if row.get("status") == "ready"
+            if _status(row) == "ready"
             and _model_matches_request(model, row.get("current_model_name"), row.get("current_model_tags") or [])
             and not _context_is_sufficient(request_context_tokens, row.get("current_model_max_ctx"))
         ]
@@ -399,8 +431,8 @@ def pick_lane_for_model(
         # and must not be demand-started.
         swappable_rows = [
             row for row in rows
-            if row.get("status") == "ready"
-            or (row.get("status") == "suspended" and not row.get("suspension_reason"))
+            if _status(row) == "ready"
+            or (_status(row) == "suspended" and not row.get("suspension_reason"))
         ]
 
         # Fallback: find a lane that can serve this model after a swap (has it in viable_models)

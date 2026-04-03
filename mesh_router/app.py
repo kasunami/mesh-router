@@ -1213,11 +1213,18 @@ def health_readiness() -> dict[str, Any]:
 
 @app.post("/api/mw/commands", response_model=MWCommandResponse)
 def api_mw_command(req: MWCommandRequest) -> MWCommandResponse:
+    payload = dict(req.payload or {})
+    if req.message_type == "load_model":
+        # Operator safety / back-compat: accept model_id as an alias for model_name.
+        if "model_name" not in payload and "model_id" in payload:
+            payload["model_name"] = payload.get("model_id")
+        if not str(payload.get("model_name") or "").strip():
+            raise HTTPException(status_code=400, detail="load_model requires payload.model_name (or model_id alias)")
     try:
         result = _mw_client().send_command(
             host_id=req.host_id,
             message_type=req.message_type,
-            payload=req.payload,
+            payload=payload,
             request_id=req.request_id,
             wait=req.wait,
             timeout_seconds=req.timeout_seconds,
@@ -1332,7 +1339,17 @@ def api_lanes() -> dict[str, Any]:
                   l.lane_type,
                   l.backend_type,
                   l.base_url,
-                  l.status,
+                  CASE
+                    WHEN (l.proxy_auth_metadata->>'control_plane') = 'mw' THEN
+                      CASE
+                        WHEN mh.last_heartbeat_at > now() - (%s * interval '1 second')
+                         AND ml.actual_state = 'running'
+                         AND ml.health_status = 'healthy'
+                        THEN 'ready'::lane_status
+                        ELSE 'offline'::lane_status
+                      END
+                    ELSE l.status
+                  END AS status,
                   l.current_model_name,
                   l.ram_budget_bytes,
                   l.vram_budget_bytes,
@@ -1345,8 +1362,13 @@ def api_lanes() -> dict[str, Any]:
                   l.updated_at
                 FROM lanes l
                 JOIN hosts h ON h.host_id = l.host_id
+                LEFT JOIN mw_hosts mh ON mh.host_id = (l.proxy_auth_metadata->>'mw_host_id')
+                LEFT JOIN mw_lanes ml
+                  ON ml.host_id = (l.proxy_auth_metadata->>'mw_host_id')
+                 AND ml.lane_id = (l.proxy_auth_metadata->>'mw_lane_id')
                 ORDER BY h.host_name, l.lane_name, l.base_url
-                """
+                """,
+                (settings.default_lease_stale_seconds,),
             )
             rows = cur.fetchall()
     return {
