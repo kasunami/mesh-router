@@ -236,3 +236,30 @@ class RestoreSplitModeResponse(BaseModel):
     host_id: str
     host_name: str
     actions: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class MWCommandRequest(BaseModel):
+    host_id: str
+    message_type: Literal[
+        "activate_profile",
+        "load_model",
+        "start_service",
+        "stop_service",
+        "restart_service",
+        "health_probe",
+        "cancel_request",
+    ]
+    payload: dict[str, Any] = Field(default_factory=dict)
+    wait: bool = True
+    timeout_seconds: int | None = None
+    request_id: str | None = None
+
+
+class MWCommandResponse(BaseModel):
+    ok: bool
+    host_id: str
+    request_id: str
+    message_type: str
+    result: dict[str, Any] = Field(default_factory=dict)
+    error: str | None = None
+    response: dict[str, Any] | None = None

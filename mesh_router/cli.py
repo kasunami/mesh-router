@@ -50,6 +50,7 @@ def main() -> int:
     parser.add_argument("--port", default=4010, type=int)
     parser.add_argument("--no-sync", action="store_true", help="Disable worker-lane sync loop")
     parser.add_argument("--no-probe", action="store_true", help="Disable mesh-router health probe loop")
+    parser.add_argument("--no-mw-consume", action="store_true", help="Disable MW Kafka state/heartbeat consumer")
     args = parser.parse_args(sys.argv[start_idx:])
 
     from .db import init_db
@@ -69,6 +70,12 @@ def main() -> int:
     if not args.no_probe:
         t2 = threading.Thread(target=probe_forever, name="mesh-router-probe", daemon=True)
         t2.start()
+
+    if not args.no_mw_consume:
+        from .mw_consumer import run_forever as mw_consume_forever
+
+        t3 = threading.Thread(target=mw_consume_forever, name="mesh-router-mw-consumer", daemon=True)
+        t3.start()
 
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")
     return 0

@@ -14,6 +14,23 @@ This repo is intended to be safe to push to a private GitHub repository.
 
 Copy `.env.example` to `.env` and fill in real values outside Git.
 
+## MeshWorker (MW) integration
+
+`mesh-router` can optionally use `mesh-worker` as a Kafka control plane + gRPC data plane for selected lanes.
+
+Key behavior:
+- MW-managed lanes are gated per-lane via `lanes.proxy_auth_metadata.control_plane = "mw"`.
+- For MW-managed lanes, `/v1/chat/completions` streaming uses MW gRPC `StreamChat` and relays raw OpenAI-style SSE chunks.
+- Before opening the gRPC stream, MR best-effort issues an MW `load_model` command over Kafka for the requested model.
+- When running `mesh-router serve` (or `mesh-router` with serve flags), a background MW Kafka consumer thread ingests MW `state`/`heartbeats`/`responses` unless `--no-mw-consume` is set.
+
+MW state persistence:
+- By default, MW consumer writes `mw_*` rows into the same database as `database_url`.
+- To keep MW state in a separate DB (recommended `ai_mesh`), set `MESH_ROUTER_MW_STATE_DATABASE_URL`.
+
+Schema:
+- MW desired/actual state tables are mirrored in `sql/012_mw_state_model.sql` (apply requires coordinated ops).
+
 ## Kubernetes secrets
 
 The homelab cluster uses Bitnami Sealed Secrets. A safe workflow is:

@@ -1,18 +1,22 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import re
 import time
 import threading
 import uuid
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
 
 from datetime import UTC, datetime, timedelta
+from urllib.parse import urlparse
 
 import httpx
 from fastapi import Body, FastAPI, Header, HTTPException, Request, Response
+from fastapi.responses import StreamingResponse
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel
 
@@ -33,6 +37,8 @@ from .schemas import (
     ModelTuningProfileResponse,
     ModelTuningProfileUpsertRequest,
     ModelInfo,
+    MWCommandRequest,
+    MWCommandResponse,
     ModelsResponse,
     RestoreSplitModeRequest,
     RestoreSplitModeResponse,
@@ -43,12 +49,70 @@ from .schemas import (
 from .tokens import sign_token, verify_token
 from .viability import ViabilityLaneInfo, ViabilityModelInfo, check_viability, estimate_swap_time
 from .logging_config import setup_logging
+from .mw_control import MWControlError, MeshWorkerCommandClient
+from .mw_grpc import MwGrpcClient, MwGrpcClientError, MwGrpcTarget
 
 # Configure standardized logging
 setup_logging(service_name="mesh-router")
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="mesh-router", version="0.1.0")
+
+
+@lru_cache(maxsize=1)
+def _mw_client() -> MeshWorkerCommandClient:
+    return MeshWorkerCommandClient.from_settings()
+
+
+def _normalize_mw_host_id(host_name: str) -> str:
+    return (host_name or "").strip().lower().replace(" ", "-")
+
+
+def _mw_target_for_lane(*, cur: Any, lane_id: str) -> MwGrpcTarget | None:
+    """
+    Returns a MW gRPC target when the lane is explicitly marked as MW-managed.
+
+    Convention (lane.proxy_auth_metadata):
+    - control_plane: "mw"
+    - mw_host_id: optional override (default derived from host_name)
+    - mw_lane_id: optional override (default lane_name)
+    - mw_grpc_port: optional override (default settings.mw_grpc_default_port)
+    """
+    cur.execute(
+        """
+        SELECT
+          l.lane_id,
+          l.lane_name,
+          l.base_url,
+          l.proxy_auth_metadata,
+          h.host_name
+        FROM lanes l
+        JOIN hosts h ON h.host_id = l.host_id
+        WHERE l.lane_id=%s
+        """,
+        (lane_id,),
+    )
+    row = cur.fetchone()
+    if not row:
+        return None
+    meta = row.get("proxy_auth_metadata") or {}
+    if not isinstance(meta, dict):
+        return None
+    if str(meta.get("control_plane") or "").strip().lower() != "mw":
+        return None
+    base_url = str(row.get("base_url") or "")
+    parsed = urlparse(base_url)
+    host = parsed.hostname
+    if not host:
+        return None
+    port = int(meta.get("mw_grpc_port") or settings.mw_grpc_default_port)
+    endpoint = f"{host}:{port}"
+    host_id = str(meta.get("mw_host_id") or _normalize_mw_host_id(str(row.get("host_name") or "")))
+    lane_name = str(row.get("lane_name") or "").strip()
+    lane_id_str = str(meta.get("mw_lane_id") or lane_name)
+    if not host_id or not lane_id_str:
+        return None
+    return MwGrpcTarget(endpoint=endpoint, host_id=host_id, lane_id=lane_id_str)
 
 
 def _configure_tracing(app: FastAPI) -> bool:
@@ -1097,7 +1161,24 @@ def _resolve_downstream_model_for_lane(
     return requested_model_name
 
 
-def _lane_gateway_healthy(base_url: str) -> bool:
+def _lane_gateway_healthy(
+    base_url: str,
+    *,
+    host_id: str | None = None,
+    lane_id: str | None = None,
+) -> bool:
+    if settings.mw_control_enabled and host_id and lane_id:
+        try:
+            result = _mw_client().send_command(
+                host_id=host_id,
+                message_type="health_probe",
+                payload={"lane_id": lane_id},
+                wait=True,
+                timeout_seconds=10,
+            )
+            return bool(result.get("ok"))
+        except Exception:
+            pass
     health_urls = ("/health", "/healthz", "/readyz", "/livez")
     try:
         with httpx.Client(timeout=5.0) as client:
@@ -1127,6 +1208,47 @@ def health_liveliness() -> dict[str, Any]:
 @app.get("/health/readiness")
 def health_readiness() -> dict[str, Any]:
     return {"ok": True}
+
+
+@app.post("/api/mw/commands", response_model=MWCommandResponse)
+def api_mw_command(req: MWCommandRequest) -> MWCommandResponse:
+    try:
+        result = _mw_client().send_command(
+            host_id=req.host_id,
+            message_type=req.message_type,
+            payload=req.payload,
+            request_id=req.request_id,
+            wait=req.wait,
+            timeout_seconds=req.timeout_seconds,
+        )
+    except MWControlError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return MWCommandResponse(
+        ok=bool(result.get("ok", False)),
+        host_id=req.host_id,
+        request_id=str(result.get("request_id") or req.request_id or ""),
+        message_type=req.message_type,
+        result=dict(result.get("result") or {}),
+        error=result.get("error"),
+        response=dict(result.get("response") or {}) if result.get("response") else None,
+    )
+
+
+@app.post("/api/mw/hosts/{host_id}/health-probe", response_model=MWCommandResponse)
+def api_mw_health_probe(host_id: str, service_id: str | None = None, lane_id: str | None = None) -> MWCommandResponse:
+    payload: dict[str, Any] = {}
+    if service_id:
+        payload["service_id"] = service_id
+    if lane_id:
+        payload["lane_id"] = lane_id
+    return api_mw_command(
+        MWCommandRequest(
+            host_id=host_id,
+            message_type="health_probe",
+            payload=payload,
+            wait=True,
+        )
+    )
 
 
 @app.get("/api/lanes")
@@ -2185,7 +2307,34 @@ def _reroute_displaced_lease(
         }
 
 
-def _call_lane_service_action(*, base_url: str, action: Literal["start", "stop", "restart"]) -> dict[str, Any]:
+def _call_lane_service_action(
+    *,
+    base_url: str,
+    action: Literal["start", "stop", "restart"],
+    host_id: str | None = None,
+    lane_id: str | None = None,
+) -> dict[str, Any]:
+    if settings.mw_control_enabled and host_id and lane_id:
+        message_type = {
+            "start": "start_service",
+            "stop": "stop_service",
+            "restart": "restart_service",
+        }[action]
+        try:
+            result = _mw_client().send_command(
+                host_id=host_id,
+                message_type=message_type,
+                payload={"lane_id": lane_id},
+                wait=True,
+                timeout_seconds=max(30, settings.mw_command_timeout_seconds),
+            )
+            if not result.get("ok"):
+                raise HTTPException(status_code=502, detail=result.get("error") or result.get("response") or result)
+            return dict(result.get("result") or {})
+        except HTTPException:
+            raise
+        except Exception:
+            pass
     with httpx.Client(timeout=float(max(180, settings.swap_proxy_timeout_seconds))) as client:
         response = client.post(
             f"{base_url.rstrip('/')}/admin/service-action",
@@ -2309,7 +2458,12 @@ def _restore_split_mode_for_host(
         if skip_lane_id and str(lane["lane_id"]) == skip_lane_id:
             continue
         try:
-            result = _call_lane_service_action(base_url=str(lane["base_url"]), action="stop")
+            result = _call_lane_service_action(
+                base_url=str(lane["base_url"]),
+                action="stop",
+                host_id=host_id,
+                lane_id=str(lane["lane_id"]),
+            )
             with db.connect() as conn:
                 with conn.cursor() as cur:
                     cur.execute(
@@ -2990,6 +3144,303 @@ def _execute_router_request_async(*, request_id: str, route: str, raw_payload: d
         logger.exception("Asynchronous router request failed", extra={"request_id": request_id, "route": route})
 
 
+def _execute_router_request_streaming(
+    *,
+    request_id: str,
+    route: str,
+    raw_payload: dict[str, Any],
+    owner: str,
+    job_type: str,
+) -> StreamingResponse:
+    if route != "chat":
+        raise HTTPException(status_code=400, detail="streaming is only supported for chat route")
+
+    normalized = _normalize_route_request(route=route, raw_payload=raw_payload)
+    model_name = str(normalized["requested_model_name"])
+    pin_worker = normalized.get("pin_worker")
+    pin_base_url = normalized.get("pin_base_url")
+    pin_lane_type = normalized.get("pin_lane_type")
+    request_payload = dict(normalized["request_payload"])
+    request_payload["stream"] = True
+    request_context_tokens = _estimate_request_context_tokens(route=route, payload=request_payload)
+
+    _touch_router_request(
+        request_id=request_id,
+        requested_model_name=model_name,
+    )
+    if _request_cancel_requested(request_id):
+        _touch_router_request(
+            request_id=request_id,
+            state="canceled",
+            error_kind="canceled",
+            error_message="request canceled before acquisition",
+        )
+        return StreamingResponse(iter([b"data: [DONE]\n\n"]), media_type="text/event-stream")
+
+    started = time.time()
+    lease_id: str | None = None
+    lane_id: str | None = None
+    model_id: str | None = None
+    choice = None
+
+    try:
+        choice = pick_lane_for_model(
+            model=model_name,
+            backend_type="llama",
+            request_context_tokens=request_context_tokens,
+            pin_worker=pin_worker,
+            pin_base_url=pin_base_url,
+            pin_lane_type=pin_lane_type,
+        )
+
+        downstream_model = model_name
+        with db.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO models (model_name, format)
+                    VALUES (%s, 'other'::model_format)
+                    ON CONFLICT (model_name) DO UPDATE SET updated_at=now()
+                    """,
+                    (model_name,),
+                )
+                cur.execute("SELECT model_id FROM models WHERE model_name=%s", (model_name,))
+                model_id = str(cur.fetchone()["model_id"])
+                lane_id = choice.lane_id or None
+                if lane_id is not None:
+                    downstream_model = _resolve_downstream_model_for_lane(
+                        cur,
+                        lane_id=str(lane_id),
+                        requested_model_name=model_name,
+                        model_id=str(model_id),
+                    )
+            conn.commit()
+
+        request_payload["model"] = downstream_model
+        lease_id, expires_at = _acquire_router_lease(
+            lane_id=choice.lane_id,
+            model_id=str(model_id),
+            owner=owner,
+            job_type=job_type,
+            ttl_seconds=settings.default_lease_ttl_seconds,
+            details={
+                "worker_id": choice.worker_id,
+                "base_url": choice.base_url,
+                "downstream_model": downstream_model,
+                "route": route,
+                "request_id": request_id,
+                "request_payload": request_payload,
+            },
+        )
+        _touch_router_request(
+            request_id=request_id,
+            state="acquired",
+            lease_id=lease_id,
+            lane_id=choice.lane_id,
+            model_id=model_id,
+            worker_id=choice.worker_id,
+            base_url=choice.base_url,
+            downstream_model_name=downstream_model,
+            expires_at=expires_at,
+            last_heartbeat_at=datetime.now(UTC),
+        )
+
+        token = sign_token(
+            lane_id=choice.lane_id,
+            lease_id=lease_id,
+            owner=owner,
+            ttl_seconds=settings.default_lease_ttl_seconds,
+            secret=settings.lease_token_secret,
+        )
+
+        headers = {
+            "X-Mesh-Request-Id": request_id,
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+        }
+        if lane_id:
+            headers["X-Mesh-Lane-Id"] = str(lane_id)
+        if choice and choice.worker_id:
+            headers["X-Mesh-Worker-Id"] = str(choice.worker_id)
+        if downstream_model:
+            headers["X-Mesh-Model-Name"] = str(downstream_model)
+
+        mw_target: MwGrpcTarget | None = None
+        if settings.mw_control_enabled and lane_id:
+            try:
+                with db.connect() as conn:
+                    with conn.cursor() as cur:
+                        mw_target = _mw_target_for_lane(cur=cur, lane_id=str(lane_id))
+            except Exception:
+                mw_target = None
+
+        # Best-effort: ensure the requested model is loaded on MW-managed lanes before streaming.
+        if mw_target is not None and settings.mw_control_enabled:
+            try:
+                result = _mw_client().send_command(
+                    host_id=mw_target.host_id,
+                    message_type="load_model",
+                    payload={"lane_id": mw_target.lane_id, "model_name": downstream_model},
+                    wait=True,
+                    timeout_seconds=max(30, settings.mw_command_timeout_seconds),
+                )
+                if not bool(result.get("ok", False)):
+                    raise RuntimeError(str(result.get("error") or "MW load_model failed"))
+            except Exception as exc:
+                raise RuntimeError(f"MW pre-stream load_model failed: {exc}") from exc
+
+        stop_heartbeat = threading.Event()
+        heartbeat_error: dict[str, Any] = {}
+
+        def _heartbeat_loop() -> None:
+            if lease_id is None:
+                return
+            while not stop_heartbeat.is_set():
+                try:
+                    _heartbeat_router_lease(lease_id=lease_id)
+                    _touch_router_request(
+                        request_id=request_id,
+                        last_heartbeat_at=datetime.now(UTC),
+                        expires_at=datetime.now(UTC) + timedelta(seconds=max(30, int(settings.default_lease_stale_seconds))),
+                    )
+                except Exception as exc:
+                    heartbeat_error["error"] = str(exc)
+                    break
+                stop_heartbeat.wait(timeout=float(settings.default_lease_heartbeat_interval_seconds))
+
+        heartbeat_thread = threading.Thread(target=_heartbeat_loop, name=f"request-heartbeat-{request_id}", daemon=True)
+        heartbeat_thread.start()
+
+        async def _event_stream() -> Any:
+            ok = False
+            err_kind: str | None = None
+            err_msg: str | None = None
+            try:
+                if heartbeat_error:
+                    raise RuntimeError(f"request heartbeat failed: {heartbeat_error.get('error')}")
+
+                if mw_target is not None:
+                    client = MwGrpcClient()
+                    async for event in client.stream_chat(
+                        target=mw_target,
+                        request_id=request_id,
+                        model=downstream_model,
+                        messages=[item.model_dump() if hasattr(item, "model_dump") else dict(item) for item in request_payload.get("messages") or []],
+                        temperature=request_payload.get("temperature"),
+                        max_tokens=request_payload.get("max_tokens"),
+                        deadline_unix_ms=None,
+                    ):
+                        if _request_cancel_requested(request_id):
+                            break
+                        raw = bytes(event.raw_backend_payload or b"")
+                        if raw:
+                            yield b"data: " + raw + b"\n\n"
+                        if str(event.event_type or "") in {"completed"}:
+                            break
+                        if str(event.event_type or "") in {"failed", "cancelled"}:
+                            err_kind = str(event.error_code or "mw_error")
+                            err_msg = str(event.error_message or "mw stream failed")
+                            break
+                else:
+                    endpoint = "/v1/chat/completions"
+                    request_timeout = float(max(30, settings.default_lease_ttl_seconds))
+                    async with httpx.AsyncClient(timeout=request_timeout) as client:
+                        async with client.stream(
+                            "POST",
+                            f"{choice.base_url.rstrip('/')}{endpoint}",
+                            json=request_payload,
+                            headers={"Authorization": f"Bearer {token}"},
+                        ) as downstream:
+                            if downstream.status_code >= 400:
+                                body = await downstream.aread()
+                                raise RuntimeError(f"worker proxy http_{downstream.status_code}: {body[:2048]!r}")
+                            async for chunk in downstream.aiter_bytes():
+                                if _request_cancel_requested(request_id):
+                                    break
+                                if chunk:
+                                    yield chunk
+                ok = True
+            except Exception as exc:
+                if err_kind is None:
+                    err_kind = "stream_error"
+                if err_msg is None:
+                    err_msg = str(exc)
+                logger.warning("Streaming request failed: %s", exc, extra={"request_id": request_id})
+                yield b"data: " + json.dumps({"error": {"message": err_msg, "type": err_kind}}).encode("utf-8") + b"\n\n"
+            finally:
+                stop_heartbeat.set()
+                heartbeat_thread.join(timeout=2)
+                try:
+                    yield b"data: [DONE]\n\n"
+                except Exception:
+                    pass
+
+                final_state = "released" if ok else ("canceled" if _request_cancel_requested(request_id) else "failed")
+                elapsed_ms = int((time.time() - started) * 1000)
+                try:
+                    _touch_router_request(
+                        request_id=request_id,
+                        state=final_state,
+                        error_kind=None if ok else (err_kind or "stream_error"),
+                        error_message=None if ok else (err_msg or "stream failed"),
+                        released_at=datetime.now(UTC),
+                        last_heartbeat_at=datetime.now(UTC),
+                    )
+                except Exception:
+                    logger.exception("Failed to finalize streaming router request", extra={"request_id": request_id})
+                try:
+                    if lease_id is not None:
+                        _release_router_lease(lease_id=lease_id, ok=ok)
+                except Exception:
+                    logger.exception("Failed to release streaming request lease", extra={"request_id": request_id})
+                try:
+                    with db.connect() as conn:
+                        with conn.cursor() as cur:
+                            if lane_id is not None and model_id is not None:
+                                cur.execute(
+                                    """
+                                    INSERT INTO lane_model_metrics (
+                                      lane_id, model_id,
+                                      load_time_ms, request_latency_ms,
+                                      tps, prompt_tokens, completion_tokens,
+                                      success, error_kind, error_message, run_tag
+                                    )
+                                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                    """,
+                                    (
+                                        lane_id,
+                                        model_id,
+                                        None,
+                                        elapsed_ms,
+                                        None,
+                                        None,
+                                        None,
+                                        ok,
+                                        None if ok else (err_kind or "stream_error"),
+                                        None if ok else (err_msg or "stream failed"),
+                                        "mesh-router:chat:stream",
+                                    ),
+                                )
+                        conn.commit()
+                except Exception:
+                    logger.exception("Failed to record streaming request metrics", extra={"request_id": request_id})
+
+        return StreamingResponse(_event_stream(), media_type="text/event-stream", headers=headers)
+    except Exception as exc:
+        if lease_id is not None:
+            try:
+                _release_router_lease(lease_id=lease_id, ok=False)
+            except Exception:
+                pass
+        _touch_router_request(
+            request_id=request_id,
+            state="failed",
+            error_kind="request_error",
+            error_message=str(exc),
+        )
+        raise HTTPException(status_code=502, detail=str(exc), headers={"X-Mesh-Request-Id": request_id}) from exc
+
+
 @app.post("/api/router-requests")
 def api_router_request_submit(req: RouterRequestSubmitRequest, response: Response) -> dict[str, Any]:
     normalized = _normalize_route_request(route=req.route, raw_payload=req.payload)
@@ -3082,7 +3533,7 @@ def v1_chat_completions(
     response: Response,
     x_mesh_pin_worker: str | None = Header(default=None),
     x_mesh_pin_base_url: str | None = Header(default=None),
-) -> dict[str, Any]:
+) -> Any:
     raw_payload = req.model_dump(by_alias=True)
     if x_mesh_pin_worker is not None:
         raw_payload["mesh_pin_worker"] = x_mesh_pin_worker
@@ -3100,6 +3551,15 @@ def v1_chat_completions(
         pin_lane_type=normalized.get("pin_lane_type"),
     )
     response.headers["X-Mesh-Request-Id"] = request_id
+
+    if bool((normalized.get("request_payload") or {}).get("stream")):
+        return _execute_router_request_streaming(
+            request_id=request_id,
+            route="chat",
+            raw_payload=raw_payload,
+            owner=settings.default_owner,
+            job_type=settings.default_job_type,
+        )
     try:
         result = _execute_router_request(
             request_id=request_id,
@@ -3645,7 +4105,12 @@ def api_lane_swap_model(lane_id: str, req: SwapModelRequest) -> dict[str, Any]:
             pass
         for sibling in impacted_sibling_lanes:
             try:
-                action_result = _call_lane_service_action(base_url=str(sibling["base_url"]), action="stop")
+                action_result = _call_lane_service_action(
+                    base_url=str(sibling["base_url"]),
+                    action="stop",
+                    host_id=host_id,
+                    lane_id=str(sibling["lane_id"]),
+                )
                 sibling_service_actions.append(
                     {
                         "lane_id": str(sibling["lane_id"]),
@@ -3674,7 +4139,11 @@ def api_lane_swap_model(lane_id: str, req: SwapModelRequest) -> dict[str, Any]:
     current_model_name = str(lane_state["lane"].get("current_model_name") or "").strip()
     try:
         if current_model_name and _model_request_matches_candidate(preflight.model_name, current_model_name):
-            if _lane_gateway_healthy(base_url):
+            if _lane_gateway_healthy(
+                base_url,
+                host_id=str(lane_state["host"]["host_id"]),
+                lane_id=str(preflight.lane_id),
+            ):
                 data = {
                     "ok": True,
                     "model_name": preflight.model_name,
