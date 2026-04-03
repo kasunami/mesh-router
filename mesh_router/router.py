@@ -321,6 +321,9 @@ def pick_lane_for_model(
                     ),
                 )
         _apply_mw_effective_status(rows)
+        # Defensive: even if the SQL layer changes, pinning must never route to a different host.
+        rows = [r for r in rows if str(r.get("host_name") or "") == str(pin_worker)]
+
         def _status(row: dict) -> str:
             return str(row.get("effective_status") or row.get("status") or "ready")
         matched = [
@@ -420,6 +423,7 @@ def pick_lane_for_model(
                     LEFT JOIN models current_m ON current_m.model_name = l.current_model_name
                     LEFT JOIN lane_model_policy cmp ON cmp.lane_id=l.lane_id AND cmp.model_id=current_m.model_id
                     WHERE (l.status IN ('ready', 'suspended') OR (l.proxy_auth_metadata->>'control_plane') = 'mw')
+                      AND (%s::text IS NULL OR h.host_name = %s::text)
                       AND NOT EXISTS (
                         SELECT 1 FROM router_leases rl
                         WHERE rl.lane_id = l.lane_id
@@ -449,6 +453,8 @@ def pick_lane_for_model(
                     LIMIT 50
                     """,
                     (
+                        pin_worker,
+                        pin_worker,
                         settings.default_lease_stale_seconds,
                         _RECENT_PROXY_ERROR_COOLDOWN_S,
                         pin_lane_type,
@@ -460,6 +466,9 @@ def pick_lane_for_model(
                     ),
                 )
         _apply_mw_effective_status(rows)
+        if pin_worker:
+            # Defensive: even if the SQL layer changes, pinning must never route to a different host.
+            rows = [r for r in rows if str(r.get("host_name") or "") == pin_worker]
 
         def _status(row: dict) -> str:
             return str(row.get("effective_status") or row.get("status") or "")

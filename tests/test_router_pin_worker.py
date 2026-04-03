@@ -37,6 +37,16 @@ class PinWorkerPlacementTests(unittest.TestCase):
         # model isn't already loaded. The MW pre-stream `load_model` step handles alignment.
         rows = [
             {
+                "lane_id": "lane-other",
+                "host_name": "Other-Host",
+                "base_url": "http://10.0.0.88:11434",
+                "lane_type": "gpu",
+                "backend_type": "llama",
+                "current_model_name": "Qwen3.5-2B-Q4_K_M.gguf",
+                "current_model_tags": [],
+                "current_model_max_ctx": 8192,
+            },
+            {
                 "lane_id": "lane-1",
                 "host_name": "Static-Deskix",
                 "base_url": "http://10.0.0.99:11434",
