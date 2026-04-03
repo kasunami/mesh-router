@@ -77,7 +77,6 @@ class Settings(BaseSettings):
     perf_auto_observe_enabled: bool = True
     perf_auto_observe_sample_rate: float = 1.0
     perf_auto_observe_min_elapsed_ms: int = 50
-    perf_auto_observe_max_total_ms: int = 300_000
     perf_auto_observe_max_total_ms: int = 600_000
 
 
