@@ -3446,7 +3446,7 @@ def _execute_router_request(
             _maybe_record_perf_observation(
                 host_name=str(choice.worker_id) if choice else None,
                 lane_id=str(lane_id) if lane_id else None,
-                model_name=str(model_name) if model_name else None,
+                model_name=str(downstream_model) if downstream_model else None,
                 modality=route,
                 backend_type=str(choice.backend_type) if choice else None,
                 lane_type=str(choice.lane_type) if choice else None,
@@ -3464,6 +3464,7 @@ def _execute_router_request(
                     "route": route,
                     "downstream_model": downstream_model,
                     "actual_model": choice.current_model_name if choice else None,
+                    "requested_model": model_name,
                     "pin_worker": pin_worker,
                     "pin_base_url": pin_base_url,
                     "pin_lane_type": pin_lane_type,
@@ -3812,7 +3813,14 @@ def _execute_router_request_streaming(
                 except Exception:
                     pass
 
-                final_state = "released" if ok else ("canceled" if _request_cancel_requested(request_id) else "failed")
+                canceled = bool(_request_cancel_requested(request_id))
+                if canceled:
+                    ok = False
+                    if err_kind is None:
+                        err_kind = "canceled"
+                    if err_msg is None:
+                        err_msg = "request canceled during streaming"
+                final_state = "released" if ok else ("canceled" if canceled else "failed")
                 elapsed_ms = int((time.time() - started) * 1000)
                 first_token_ms: float | None = None
                 decode_tps: float | None = None
@@ -3836,7 +3844,7 @@ def _execute_router_request_streaming(
                     _maybe_record_perf_observation(
                         host_name=str(getattr(mw_target, "host_id", "") or "") if mw_target is not None else (str(choice.worker_id) if choice else None),
                         lane_id=str(lane_id) if lane_id else None,
-                        model_name=str(model_name) if model_name else None,
+                        model_name=str(downstream_model) if downstream_model else None,
                         modality=route,
                         backend_type=str(choice.backend_type) if choice else None,
                         lane_type=str(choice.lane_type) if choice else None,
@@ -3854,6 +3862,7 @@ def _execute_router_request_streaming(
                             "route": route,
                             "downstream_model": downstream_model,
                             "actual_model": choice.current_model_name if choice else None,
+                            "requested_model": model_name,
                             "pin_worker": pin_worker,
                             "pin_base_url": pin_base_url,
                             "pin_lane_type": pin_lane_type,
