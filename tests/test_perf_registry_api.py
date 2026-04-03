@@ -88,7 +88,7 @@ class PerfRegistryApiTests(unittest.TestCase):
         resp = client.post(
             "/api/perf/observations",
             json={
-                "host_id": "static-deskix",
+                "host_id": "Static-Deskix",
                 "lane_id": "lane-1",
                 "model_name": "qwen3.5-9b",
                 "modality": "chat",
@@ -101,9 +101,13 @@ class PerfRegistryApiTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertTrue(resp.json().get("ok"))
 
+        # Ensure ingest normalizes host_id to match MW state tables.
+        insert_params = cur.executed[1][1]
+        self.assertEqual(insert_params["host_id"], "static-deskix")
+
         resp2 = client.get(
             "/api/perf/expectations",
-            params={"host_id": "static-deskix", "lane_id": "lane-1", "model_name": "qwen3.5-9b", "modality": "chat"},
+            params={"host_id": "Static-Deskix", "lane_id": "lane-1", "model_name": "qwen3.5-9b", "modality": "chat"},
         )
         self.assertEqual(resp2.status_code, 200)
         items = resp2.json()["items"]

@@ -11,7 +11,7 @@ from .mw_overlay import apply_mw_effective_status
 
 
 def _normalize_host_id(host_name: str) -> str:
-    return (host_name or "").strip().lower().replace(" ", "-")
+    return (host_name or "").strip().lower().replace(" ", "-").replace("_", "-")
 
 
 def _opportunistic_lane_ids(*, cur: Any) -> set[str]:

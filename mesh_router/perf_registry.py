@@ -9,6 +9,18 @@ from typing import Any
 _TABLE = "mw_perf_observations"
 
 
+def normalize_host_id(host_id: str) -> str:
+    """
+    Canonicalize host ids to match MW state tables (e.g. mw_hosts.host_id / mw_lanes.host_id).
+
+    Operators often use friendly host names like "Static-Deskix"; MW state typically uses
+    normalized ids like "static-deskix". We normalize at ingest to avoid silent mismatches
+    when looking up perf expectations during routing.
+    """
+
+    return (host_id or "").strip().lower().replace(" ", "-").replace("_", "-")
+
+
 @dataclass(frozen=True)
 class PerfExpectation:
     host_id: str
@@ -43,9 +55,17 @@ def insert_observation(*, cur: Any, obs: dict[str, Any]) -> None:
         Jsonb = None  # type: ignore
 
     payload = dict(obs)
+    host_id_in = str(payload.get("host_id") or "")
+    host_id_norm = normalize_host_id(host_id_in)
+    if host_id_norm:
+        payload["host_id"] = host_id_norm
+
     md = payload.get("metadata")
     if md is None:
         md = {}
+    if host_id_in and host_id_norm and host_id_in != host_id_norm:
+        md = dict(md)
+        md.setdefault("host_id_input", host_id_in)
     if Jsonb is not None:
         payload["metadata"] = Jsonb(md)
     else:
@@ -105,22 +125,31 @@ def get_expectation(
 ) -> PerfExpectation | None:
     if not _table_exists(cur=cur):
         return None
-    cur.execute(
-        f"""
-        SELECT
-          observed_at,
-          first_token_ms,
-          decode_tps,
-          total_ms
-        FROM {_TABLE}
-        WHERE host_id=%s AND lane_id=%s AND model_name=%s AND modality=%s
-          AND ok=true
-        ORDER BY observed_at DESC
-        LIMIT %s
-        """,
-        (host_id, lane_id, model_name, modality, int(lookback_n)),
-    )
-    rows = cur.fetchall() or []
+    rows: list[dict[str, Any]] = []
+    host_id_try = [host_id]
+    host_id_norm = normalize_host_id(host_id)
+    if host_id_norm and host_id_norm != host_id:
+        host_id_try.append(host_id_norm)
+    for hid in host_id_try:
+        cur.execute(
+            f"""
+            SELECT
+              observed_at,
+              first_token_ms,
+              decode_tps,
+              total_ms
+            FROM {_TABLE}
+            WHERE host_id=%s AND lane_id=%s AND model_name=%s AND modality=%s
+              AND ok=true
+            ORDER BY observed_at DESC
+            LIMIT %s
+            """,
+            (hid, lane_id, model_name, modality, int(lookback_n)),
+        )
+        rows = cur.fetchall() or []
+        if rows:
+            host_id = hid
+            break
     if not rows:
         return None
     first = [float(r["first_token_ms"]) for r in rows if r.get("first_token_ms") is not None]
