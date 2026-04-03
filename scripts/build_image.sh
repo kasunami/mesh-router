@@ -34,7 +34,10 @@ if [[ -z "${TAG}" ]]; then
   exit 2
 fi
 
-IMAGE="${IMAGE:-<your-registry>/mesh-router:${TAG}}"
+# Local default for this homelab: packserv registry.
+# Override with IMAGE or IMAGE_REPO when deploying elsewhere.
+IMAGE_REPO="${IMAGE_REPO:-10.0.1.48:5000/mesh-router}"
+IMAGE="${IMAGE:-${IMAGE_REPO}:${TAG}}"
 
 echo "building mesh-router image"
 echo "  repo_root: ${ROOT}"
