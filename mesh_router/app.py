@@ -3319,6 +3319,7 @@ def _execute_router_request_streaming(
             ok = False
             err_kind: str | None = None
             err_msg: str | None = None
+            done_sent = False
             try:
                 if heartbeat_error:
                     raise RuntimeError(f"request heartbeat failed: {heartbeat_error.get('error')}")
@@ -3338,6 +3339,10 @@ def _execute_router_request_streaming(
                             break
                         raw = bytes(event.raw_backend_payload or b"")
                         if raw:
+                            if raw.strip() == b"[DONE]":
+                                done_sent = True
+                                yield b"data: [DONE]\n\n"
+                                break
                             yield b"data: " + raw + b"\n\n"
                         if str(event.event_type or "") in {"completed"}:
                             break
@@ -3362,6 +3367,8 @@ def _execute_router_request_streaming(
                                 if _request_cancel_requested(request_id):
                                     break
                                 if chunk:
+                                    if b"data: [DONE]" in chunk:
+                                        done_sent = True
                                     yield chunk
                 ok = True
             except Exception as exc:
@@ -3375,7 +3382,9 @@ def _execute_router_request_streaming(
                 stop_heartbeat.set()
                 heartbeat_thread.join(timeout=2)
                 try:
-                    yield b"data: [DONE]\n\n"
+                    if not done_sent:
+                        yield b"data: [DONE]\n\n"
+                        done_sent = True
                 except Exception:
                     pass
 
