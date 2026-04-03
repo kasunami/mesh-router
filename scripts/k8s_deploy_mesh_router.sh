@@ -52,8 +52,11 @@ patch=[
 spec=((deploy.get("spec") or {}).get("template") or {}).get("spec") or {}
 for i, _c in enumerate(spec.get("containers") or []):
   patch.append({"op":"replace","path":f"/spec/template/spec/containers/{i}/image","value":image})
+  # Deploy hygiene: force fresh pulls even if tags are accidentally used elsewhere.
+  patch.append({"op":"add","path":f"/spec/template/spec/containers/{i}/imagePullPolicy","value":"Always"})
 for i, _c in enumerate(spec.get("initContainers") or []):
   patch.append({"op":"replace","path":f"/spec/template/spec/initContainers/{i}/image","value":image})
+  patch.append({"op":"add","path":f"/spec/template/spec/initContainers/{i}/imagePullPolicy","value":"Always"})
 
 print(json.dumps(patch))
 PY
