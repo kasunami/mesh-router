@@ -1556,6 +1556,7 @@ def api_perf_observations(
         with mw_state_db.connect() as conn:
             with conn.cursor() as cur:
                 insert_observation(cur=cur, obs=req.model_dump())
+            conn.commit()
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:

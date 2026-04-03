@@ -49,6 +49,9 @@ class _Conn:
     def __exit__(self, exc_type, exc, tb):  # noqa: ANN001
         return False
 
+    def commit(self) -> None:
+        return None
+
 
 class _Db:
     def __init__(self, cur: _Cur) -> None:
