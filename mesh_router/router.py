@@ -466,6 +466,13 @@ def pick_lane_for_model(
                     ),
                 )
         _apply_mw_effective_status(rows)
+        if settings.placement_prefer_mw_lanes:
+            def _is_mw(row: dict) -> bool:
+                pam = row.get("proxy_auth_metadata") or {}
+                return isinstance(pam, dict) and str(pam.get("control_plane") or "") == "mw"
+
+            # Stable sort: keep prior preference ordering, but front-load MW-managed lanes.
+            rows.sort(key=lambda r: 0 if _is_mw(r) else 1)
         if pin_worker:
             # Defensive: even if the SQL layer changes, pinning must never route to a different host.
             rows = [r for r in rows if str(r.get("host_name") or "") == pin_worker]

@@ -83,6 +83,8 @@ def main() -> int:
                 state = str(payload_obj.get("status") or "")
                 if state in {"completed", "failed", "rejected", "cancelled"}:
                     return 0 if payload_obj.get("ok") is not False else 2
+            print(f"follow timeout after {args.follow_timeout_s}s; request_id={rid}", file=sys.stderr)
+            return 2
     return 0
 
 
