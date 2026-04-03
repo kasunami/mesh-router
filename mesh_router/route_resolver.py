@@ -121,7 +121,28 @@ def resolve_route(
             with conn.cursor() as cur:
                 excluded_lane_ids |= _opportunistic_lane_ids(cur=cur)
 
-    for idx, cand_model in enumerate(candidates, start=1):
+    best_choice: dict[str, Any] | None = None
+    best_perf: dict[str, Any] | None = None
+    best_key: tuple[int, float, float] | None = None
+
+    def _rank_key(perf: dict[str, Any] | None) -> tuple[int, float, float]:
+        """
+        Deterministic ranking:
+        - Prefer candidates with perf data.
+        - For chat/embeddings: maximize decode TPS, then minimize first-token latency.
+        - For images: minimize total_ms.
+        """
+
+        if not perf:
+            return (0, 0.0, 0.0)
+        if modality == "images":
+            total = perf.get("total_ms_p50")
+            return (1, -float(total) if total is not None else 0.0, 0.0)
+        tps = perf.get("decode_tps_p50")
+        first = perf.get("first_token_ms_p50")
+        return (1, float(tps) if tps is not None else 0.0, -float(first) if first is not None else 0.0)
+
+    for cand_model in candidates:
         try:
             choice_obj = pick_lane_for_model(
                 model=cand_model,
@@ -141,7 +162,14 @@ def resolve_route(
             "resolved_model": cand_model,
         }
         perf = _perf_for_choice(choice, model=cand_model, modality=modality)
-        return choice, perf, None, idx
+        key = _rank_key(perf)
+        if best_key is None or key > best_key:
+            best_key = key
+            best_choice = choice
+            best_perf = perf
+
+    if best_choice:
+        return best_choice, best_perf, None, len(candidates)
 
     return None, None, "no eligible route found for tags/model constraints", len(candidates)
 
