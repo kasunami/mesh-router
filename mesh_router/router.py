@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import re
+import uuid
 from typing import Any
 
 from .db import db, mw_state_db, q
@@ -149,6 +150,10 @@ def pick_lane_for_model(
     excluded = {lane_id for lane_id in (exclude_lane_ids or set()) if lane_id}
 
     if pin_lane_id:
+        try:
+            uuid.UUID(str(pin_lane_id))
+        except Exception as exc:
+            raise LanePlacementError("pinned lane_id must be a UUID", status_code=400) from exc
         with db.connect() as conn:
             with conn.cursor() as cur:
                 rows = q(

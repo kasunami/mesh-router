@@ -63,12 +63,17 @@ class PinLaneIdPlacementTests(unittest.TestCase):
             mock.patch.object(router_module, "apply_mw_effective_status", lambda *a, **k: None),
         ):
             with self.assertRaises(router_module.LanePlacementError) as ctx:
-                router_module.pick_lane_for_model(model="qwen", pin_lane_id="missing")
+                router_module.pick_lane_for_model(model="qwen", pin_lane_id="11111111-1111-1111-1111-111111111111")
         self.assertEqual(getattr(ctx.exception, "status_code", None), 404)
+
+    def test_pin_lane_id_invalid_format_is_400(self) -> None:
+        with self.assertRaises(router_module.LanePlacementError) as ctx:
+            router_module.pick_lane_for_model(model="qwen", pin_lane_id="lane-does-not-exist")
+        self.assertEqual(getattr(ctx.exception, "status_code", None), 400)
 
     def test_pin_lane_id_offline_is_409(self) -> None:
         row = {
-            "lane_id": "lane-1",
+            "lane_id": "22222222-2222-2222-2222-222222222222",
             "host_name": "Static-Deskix",
             "base_url": "http://10.0.0.99:11434",
             "lane_type": "gpu",
@@ -106,10 +111,9 @@ class PinLaneIdPlacementTests(unittest.TestCase):
             mock.patch.object(router_module, "apply_mw_effective_status", lambda *a, **k: None),
         ):
             with self.assertRaises(router_module.LanePlacementError) as ctx:
-                router_module.pick_lane_for_model(model="qwen", pin_lane_id="lane-1")
+                router_module.pick_lane_for_model(model="qwen", pin_lane_id="22222222-2222-2222-2222-222222222222")
         self.assertEqual(getattr(ctx.exception, "status_code", None), 409)
 
 
 if __name__ == "__main__":
     unittest.main()
-
