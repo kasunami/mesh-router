@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import re
+from typing import Any
 
-from .db import db, q
+from .db import db, mw_state_db, q
 from .config import settings
 
 _RECENT_PROXY_ERROR_COOLDOWN_S = 900
@@ -144,6 +146,85 @@ def pick_lane_for_model(
     """
     excluded = {lane_id for lane_id in (exclude_lane_ids or set()) if lane_id}
 
+    def _apply_mw_effective_status(rows: list[dict[str, Any]]) -> None:
+        """
+        Enrich rows (from the router DB) with MW-derived readiness + current model when
+        lanes are MW-managed and MW state lives in a separate DB.
+        """
+        mw_pairs: list[tuple[str, str]] = []
+        for row in rows:
+            pam = row.get("proxy_auth_metadata") or {}
+            if not isinstance(pam, dict):
+                continue
+            if str(pam.get("control_plane") or "") != "mw":
+                continue
+            host_id = str(pam.get("mw_host_id") or "").strip()
+            lane_id = str(pam.get("mw_lane_id") or "").strip()
+            if host_id and lane_id:
+                mw_pairs.append((host_id, lane_id))
+        if not mw_pairs:
+            return
+
+        # Query MW state DB in one shot. If unavailable, leave rows unchanged.
+        facts: dict[tuple[str, str], dict[str, Any]] = {}
+        try:
+            with mw_state_db.connect() as conn:
+                with conn.cursor() as cur:
+                    values_sql = ",".join(["(%s,%s)"] * len(mw_pairs))
+                    params: list[Any] = []
+                    for host_id, lane_id in mw_pairs:
+                        params.extend([host_id, lane_id])
+                    cur.execute(
+                        f"""
+                        WITH wanted(host_id, lane_id) AS (VALUES {values_sql})
+                        SELECT
+                          w.host_id,
+                          w.lane_id,
+                          mh.last_heartbeat_at,
+                          ml.actual_state,
+                          ml.health_status,
+                          ml.actual_model
+                        FROM wanted w
+                        LEFT JOIN mw_hosts mh ON mh.host_id = w.host_id
+                        LEFT JOIN mw_lanes ml ON ml.host_id = w.host_id AND ml.lane_id = w.lane_id
+                        """,
+                        tuple(params),
+                    )
+                    for r in cur.fetchall():
+                        key = (str(r["host_id"]), str(r["lane_id"]))
+                        facts[key] = dict(r)
+        except Exception:
+            return
+
+        stale_seconds = settings.default_lease_stale_seconds
+        for row in rows:
+            pam = row.get("proxy_auth_metadata") or {}
+            if not isinstance(pam, dict):
+                continue
+            if str(pam.get("control_plane") or "") != "mw":
+                continue
+            host_id = str(pam.get("mw_host_id") or "").strip()
+            lane_id = str(pam.get("mw_lane_id") or "").strip()
+            if not host_id or not lane_id:
+                continue
+            f = facts.get((host_id, lane_id)) or {}
+            last_hb = f.get("last_heartbeat_at")
+            actual_state = str(f.get("actual_state") or "")
+            health_status = str(f.get("health_status") or "")
+            ready = False
+            try:
+                if last_hb is not None:
+                    # psycopg returns aware datetimes; compare via epoch seconds.
+                    age_s = (datetime.now(tz=timezone.utc) - last_hb).total_seconds()
+                    ready = age_s <= float(stale_seconds) and actual_state == "running" and health_status == "healthy"
+            except Exception:
+                ready = False
+            row["effective_status"] = "ready" if ready else "offline"
+            actual_model = str(f.get("actual_model") or "").strip()
+            if actual_model:
+                row["current_model_name"] = actual_model
+                row["current_model_tags"] = []
+
     if pin_worker and pin_base_url:
         with db.connect() as conn:
             with conn.cursor() as cur:
@@ -151,14 +232,13 @@ def pick_lane_for_model(
                     cur,
                     """
                     SELECT l.lane_id, h.host_name, l.base_url, l.lane_type, l.backend_type,
-                           COALESCE(ml.actual_model, l.current_model_name) AS current_model_name,
+                           l.status,
+                           l.proxy_auth_metadata,
+                           l.current_model_name,
                            cmp.max_ctx AS current_model_max_ctx
                     FROM lanes l
                     JOIN hosts h ON h.host_id=l.host_id
-                    LEFT JOIN mw_lanes ml
-                      ON ml.host_id = (l.proxy_auth_metadata->>'mw_host_id')
-                     AND ml.lane_id = (l.proxy_auth_metadata->>'mw_lane_id')
-                    LEFT JOIN models cm ON cm.model_name=COALESCE(ml.actual_model, l.current_model_name)
+                    LEFT JOIN models cm ON cm.model_name=l.current_model_name
                     LEFT JOIN lane_model_policy cmp ON cmp.lane_id=l.lane_id AND cmp.model_id=cm.model_id
                     WHERE h.host_name=%s AND l.base_url=%s
                       AND (%s::text IS NULL OR l.backend_type = %s::text)
@@ -176,6 +256,7 @@ def pick_lane_for_model(
                 )
         if not rows:
             raise RuntimeError("pinned lane not found")
+        _apply_mw_effective_status(rows)
         r0 = rows[0]
         return LaneChoice(
             lane_id=str(r0["lane_id"]),
@@ -195,27 +276,17 @@ def pick_lane_for_model(
                     cur,
                     """
                     SELECT l.lane_id, h.host_name, l.base_url, l.lane_type, l.backend_type,
-                           COALESCE(ml.actual_model, l.current_model_name) AS current_model_name,
+                           l.status,
+                           l.proxy_auth_metadata,
+                           l.current_model_name,
                            m.tags AS current_model_tags,
                            cmp.max_ctx AS current_model_max_ctx
                     FROM lanes l
                     JOIN hosts h ON h.host_id = l.host_id
-                    LEFT JOIN mw_hosts mh ON mh.host_id = (l.proxy_auth_metadata->>'mw_host_id')
-                    LEFT JOIN mw_lanes ml
-                      ON ml.host_id = (l.proxy_auth_metadata->>'mw_host_id')
-                     AND ml.lane_id = (l.proxy_auth_metadata->>'mw_lane_id')
-                    LEFT JOIN models m ON m.model_name = COALESCE(ml.actual_model, l.current_model_name)
+                    LEFT JOIN models m ON m.model_name = l.current_model_name
                     LEFT JOIN lane_model_policy cmp ON cmp.lane_id=l.lane_id AND cmp.model_id=m.model_id
                     WHERE h.host_name=%s
-                      AND (
-                        l.status='ready'
-                        OR (
-                          (l.proxy_auth_metadata->>'control_plane')='mw'
-                          AND mh.last_heartbeat_at > now() - (%s * interval '1 second')
-                          AND ml.actual_state='running'
-                          AND ml.health_status='healthy'
-                        )
-                      )
+                      AND (l.status='ready' OR (l.proxy_auth_metadata->>'control_plane')='mw')
                       AND NOT EXISTS (
                         SELECT 1 FROM router_leases rl
                         WHERE rl.lane_id = l.lane_id
@@ -240,7 +311,6 @@ def pick_lane_for_model(
                     (
                         pin_worker,
                         settings.default_lease_stale_seconds,
-                        settings.default_lease_stale_seconds,
                         _RECENT_PROXY_ERROR_COOLDOWN_S,
                         pin_lane_type,
                         pin_lane_type,
@@ -250,16 +320,21 @@ def pick_lane_for_model(
                         list(excluded) or None,
                     ),
                 )
+        _apply_mw_effective_status(rows)
+        def _status(row: dict) -> str:
+            return str(row.get("effective_status") or row.get("status") or "ready")
         matched = [
             row
             for row in rows
-            if _model_matches_request(model, row.get("current_model_name"), row.get("current_model_tags") or [])
+            if _status(row) == "ready"
+            and _model_matches_request(model, row.get("current_model_name"), row.get("current_model_tags") or [])
             and _context_is_sufficient(request_context_tokens, row.get("current_model_max_ctx"))
         ]
         context_mismatched = [
             row
             for row in rows
-            if _model_matches_request(model, row.get("current_model_name"), row.get("current_model_tags") or [])
+            if _status(row) == "ready"
+            and _model_matches_request(model, row.get("current_model_name"), row.get("current_model_tags") or [])
             and not _context_is_sufficient(request_context_tokens, row.get("current_model_max_ctx"))
         ]
         if not matched and context_mismatched:
@@ -279,7 +354,11 @@ def pick_lane_for_model(
         if not matched:
             # Pinned-worker semantics should be "place it on that host" even if the model isn't already loaded.
             # For MW-managed lanes, the caller will best-effort `load_model` before streaming.
-            eligible = [row for row in rows if _context_is_sufficient(request_context_tokens, row.get("current_model_max_ctx"))]
+            eligible = [
+                row
+                for row in rows
+                if _status(row) == "ready" and _context_is_sufficient(request_context_tokens, row.get("current_model_max_ctx"))
+            ]
             if not eligible:
                 raise RuntimeError(f"no READY lanes for pinned worker: {pin_worker}")
             r0 = eligible[0]
@@ -301,22 +380,13 @@ def pick_lane_for_model(
                 rows = q(
                     cur,
                     """
-                    SELECT
-                      l.lane_id, h.host_name, l.base_url, l.lane_type, l.backend_type, l.status, l.suspension_reason,
-                      CASE
-                        WHEN (l.proxy_auth_metadata->>'control_plane') = 'mw' THEN
-                          CASE
-                            WHEN mh.last_heartbeat_at > now() - (%s * interval '1 second')
-                             AND ml.actual_state = 'running'
-                             AND ml.health_status = 'healthy'
-                            THEN 'ready'
-                            ELSE 'offline'
-                          END
-                        ELSE l.status::text
-                      END AS effective_status,
-                      COALESCE(ml.actual_model, l.current_model_name) AS current_model_name,
-                      cmp.max_ctx AS current_model_max_ctx,
-                      current_m.tags AS current_model_tags,
+	                    SELECT
+	                      l.lane_id, h.host_name, l.base_url, l.lane_type, l.backend_type, l.status, l.suspension_reason,
+	                      l.proxy_auth_metadata,
+	                      l.status::text AS effective_status,
+	                      l.current_model_name AS current_model_name,
+	                      cmp.max_ctx AS current_model_max_ctx,
+	                      current_m.tags AS current_model_tags,
                       COALESCE((
                         SELECT jsonb_agg(
                           jsonb_build_object(
@@ -347,11 +417,7 @@ def pick_lane_for_model(
                       ), '[]'::jsonb) as remote_viable_models
                     FROM lanes l
                     JOIN hosts h ON h.host_id = l.host_id
-                    LEFT JOIN mw_hosts mh ON mh.host_id = (l.proxy_auth_metadata->>'mw_host_id')
-                    LEFT JOIN mw_lanes ml
-                      ON ml.host_id = (l.proxy_auth_metadata->>'mw_host_id')
-                     AND ml.lane_id = (l.proxy_auth_metadata->>'mw_lane_id')
-                    LEFT JOIN models current_m ON current_m.model_name = COALESCE(ml.actual_model, l.current_model_name)
+                    LEFT JOIN models current_m ON current_m.model_name = l.current_model_name
                     LEFT JOIN lane_model_policy cmp ON cmp.lane_id=l.lane_id AND cmp.model_id=current_m.model_id
                     WHERE (l.status IN ('ready', 'suspended') OR (l.proxy_auth_metadata->>'control_plane') = 'mw')
                       AND NOT EXISTS (
@@ -384,7 +450,6 @@ def pick_lane_for_model(
                     """,
                     (
                         settings.default_lease_stale_seconds,
-                        settings.default_lease_stale_seconds,
                         _RECENT_PROXY_ERROR_COOLDOWN_S,
                         pin_lane_type,
                         pin_lane_type,
@@ -394,6 +459,8 @@ def pick_lane_for_model(
                         list(excluded) or None,
                     ),
                 )
+        _apply_mw_effective_status(rows)
+
         def _status(row: dict) -> str:
             return str(row.get("effective_status") or row.get("status") or "")
 

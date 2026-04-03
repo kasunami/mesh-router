@@ -1335,107 +1335,123 @@ def api_mw_health_probe(host_id: str, service_id: str | None = None, lane_id: st
 
 @app.get("/api/lanes")
 def api_lanes() -> dict[str, Any]:
+    # Note: MW state (mw_*) may live in a separate DB (`MESH_ROUTER_MW_STATE_DATABASE_URL`).
+    # We intentionally compute MW lane readiness/current-model in Python to avoid cross-DB joins.
     with db.connect() as conn:
         with conn.cursor() as cur:
-            try:
-                cur.execute(
-                    """
-                    SELECT
-                      l.lane_id,
-                      h.host_id,
-                      h.host_name,
-                      l.lane_name,
-                      l.lane_type,
-                      l.backend_type,
-                      l.base_url,
-                      CASE
-                        WHEN (l.proxy_auth_metadata->>'control_plane') = 'mw' THEN
-                          CASE
-                            WHEN mh.last_heartbeat_at > now() - (%s * interval '1 second')
-                             AND ml.actual_state = 'running'
-                             AND ml.health_status = 'healthy'
-                            THEN 'ready'::lane_status
-                            ELSE 'offline'::lane_status
-                          END
-                        ELSE l.status
-                      END AS status,
-                      CASE
-                        WHEN (l.proxy_auth_metadata->>'control_plane') = 'mw' THEN ml.actual_model
-                        ELSE l.current_model_name
-                      END AS current_model_name,
-                      l.ram_budget_bytes,
-                      l.vram_budget_bytes,
-                      l.proxy_auth_mode,
-                      l.proxy_auth_metadata,
-                      l.suspension_reason,
-                      l.last_probe_at,
-                      l.last_ok_at,
-                      l.created_at,
-                      l.updated_at
-                    FROM lanes l
-                    JOIN hosts h ON h.host_id = l.host_id
-                    LEFT JOIN mw_hosts mh ON mh.host_id = (l.proxy_auth_metadata->>'mw_host_id')
-                    LEFT JOIN mw_lanes ml
-                      ON ml.host_id = (l.proxy_auth_metadata->>'mw_host_id')
-                     AND ml.lane_id = (l.proxy_auth_metadata->>'mw_lane_id')
-                    ORDER BY h.host_name, l.lane_name, l.base_url
-                    """,
-                    (settings.default_lease_stale_seconds,),
-                )
-            except Exception:
-                # MW tables may not exist in every environment.
-                cur.execute(
-                    """
-                    SELECT
-                      l.lane_id,
-                      h.host_id,
-                      h.host_name,
-                      l.lane_name,
-                      l.lane_type,
-                      l.backend_type,
-                      l.base_url,
-                      l.status,
-                      l.current_model_name,
-                      l.ram_budget_bytes,
-                      l.vram_budget_bytes,
-                      l.proxy_auth_mode,
-                      l.proxy_auth_metadata,
-                      l.suspension_reason,
-                      l.last_probe_at,
-                      l.last_ok_at,
-                      l.created_at,
-                      l.updated_at
-                    FROM lanes l
-                    JOIN hosts h ON h.host_id = l.host_id
-                    ORDER BY h.host_name, l.lane_name, l.base_url
-                    """
-                )
+            cur.execute(
+                """
+                SELECT
+                  l.lane_id,
+                  h.host_id,
+                  h.host_name,
+                  l.lane_name,
+                  l.lane_type,
+                  l.backend_type,
+                  l.base_url,
+                  l.status,
+                  l.current_model_name,
+                  l.ram_budget_bytes,
+                  l.vram_budget_bytes,
+                  l.proxy_auth_mode,
+                  l.proxy_auth_metadata,
+                  l.suspension_reason,
+                  l.last_probe_at,
+                  l.last_ok_at,
+                  l.created_at,
+                  l.updated_at
+                FROM lanes l
+                JOIN hosts h ON h.host_id = l.host_id
+                ORDER BY h.host_name, l.lane_name, l.base_url
+                """
+            )
             rows = cur.fetchall()
-    return {
-        "items": [
-            {
-                "lane_id": str(row["lane_id"]),
-                "host_id": str(row["host_id"]),
-                "host_name": str(row["host_name"]),
-                "lane_name": str(row["lane_name"]),
-                "lane_type": str(row["lane_type"]),
-                "backend_type": str(row.get("backend_type") or "llama"),
-                "base_url": str(row["base_url"]),
-                "status": str(row["status"]),
-                "current_model_name": str(row["current_model_name"]) if row.get("current_model_name") else None,
-                "ram_budget_bytes": int(row["ram_budget_bytes"]) if row.get("ram_budget_bytes") is not None else None,
-                "vram_budget_bytes": int(row["vram_budget_bytes"]) if row.get("vram_budget_bytes") is not None else None,
-                "proxy_auth_mode": str(row["proxy_auth_mode"]) if row.get("proxy_auth_mode") else None,
-                "proxy_auth_metadata": dict(row.get("proxy_auth_metadata") or {}),
-                "suspension_reason": str(row["suspension_reason"]) if row.get("suspension_reason") else None,
-                "last_probe_at": row["last_probe_at"].isoformat() if row.get("last_probe_at") else None,
-                "last_ok_at": row["last_ok_at"].isoformat() if row.get("last_ok_at") else None,
-                "created_at": row["created_at"].isoformat() if row.get("created_at") else None,
-                "updated_at": row["updated_at"].isoformat() if row.get("updated_at") else None,
-            }
-            for row in rows
-        ]
-    }
+
+    items = [
+        {
+            "lane_id": str(row["lane_id"]),
+            "host_id": str(row["host_id"]),
+            "host_name": str(row["host_name"]),
+            "lane_name": str(row["lane_name"]),
+            "lane_type": str(row["lane_type"]),
+            "backend_type": str(row.get("backend_type") or "llama"),
+            "base_url": str(row["base_url"]),
+            "status": str(row["status"]),
+            "current_model_name": str(row["current_model_name"]) if row.get("current_model_name") else None,
+            "ram_budget_bytes": int(row["ram_budget_bytes"]) if row.get("ram_budget_bytes") is not None else None,
+            "vram_budget_bytes": int(row["vram_budget_bytes"]) if row.get("vram_budget_bytes") is not None else None,
+            "proxy_auth_mode": str(row["proxy_auth_mode"]) if row.get("proxy_auth_mode") else None,
+            "proxy_auth_metadata": dict(row.get("proxy_auth_metadata") or {}),
+            "suspension_reason": str(row["suspension_reason"]) if row.get("suspension_reason") else None,
+            "last_probe_at": row["last_probe_at"].isoformat() if row.get("last_probe_at") else None,
+            "last_ok_at": row["last_ok_at"].isoformat() if row.get("last_ok_at") else None,
+            "created_at": row["created_at"].isoformat() if row.get("created_at") else None,
+            "updated_at": row["updated_at"].isoformat() if row.get("updated_at") else None,
+        }
+        for row in rows
+    ]
+
+    # Overlay readiness/current-model for MW-managed lanes.
+    mw_refs: list[tuple[int, str, str]] = []
+    for idx, item in enumerate(items):
+        meta = dict(item.get("proxy_auth_metadata") or {})
+        if str(meta.get("control_plane") or "") != "mw":
+            continue
+        mw_host_id = str(meta.get("mw_host_id") or "").strip()
+        mw_lane_id = str(meta.get("mw_lane_id") or "").strip()
+        if mw_host_id and mw_lane_id:
+            mw_refs.append((idx, mw_host_id, mw_lane_id))
+
+    if mw_refs:
+        try:
+            from datetime import timedelta
+
+            from .db import mw_state_db
+
+            stale_after = timedelta(seconds=int(settings.default_lease_stale_seconds))
+            now = datetime.now(UTC)
+            host_ids = sorted({h for _i, h, _l in mw_refs})
+            lane_ids = sorted({l for _i, _h, l in mw_refs})
+            hb: dict[str, datetime] = {}
+            lane_state: dict[tuple[str, str], dict[str, Any]] = {}
+            with mw_state_db.connect() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT host_id, last_heartbeat_at FROM mw_hosts WHERE host_id = ANY(%s)",
+                        (host_ids,),
+                    )
+                    for row in cur.fetchall():
+                        if row.get("last_heartbeat_at"):
+                            hb[str(row["host_id"])] = row["last_heartbeat_at"]
+                    cur.execute(
+                        """
+                        SELECT host_id, lane_id, actual_model, actual_state, health_status
+                        FROM mw_lanes
+                        WHERE host_id = ANY(%s) AND lane_id = ANY(%s)
+                        """,
+                        (host_ids, lane_ids),
+                    )
+                    for row in cur.fetchall():
+                        lane_state[(str(row["host_id"]), str(row["lane_id"]))] = dict(row)
+
+            for idx, mw_host_id, mw_lane_id in mw_refs:
+                item = items[idx]
+                last = hb.get(mw_host_id)
+                ls = lane_state.get((mw_host_id, mw_lane_id)) or {}
+                ready = bool(
+                    last
+                    and last > (now - stale_after)
+                    and str(ls.get("actual_state") or "") == "running"
+                    and str(ls.get("health_status") or "") == "healthy"
+                )
+                item["status"] = "ready" if ready else "offline"
+                if ls.get("actual_model"):
+                    item["current_model_name"] = str(ls.get("actual_model"))
+        except Exception:
+            # If MW state DB is unavailable, keep lane rows stable and rely on the core lane status.
+            pass
+
+    return {"items": items}
 
 
 @app.post("/api/lanes")

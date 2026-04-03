@@ -14,6 +14,7 @@ echo "verifying deploy hygiene"
 echo "  ns:     ${NS}"
 echo "  deploy: ${DEPLOY}"
 
+export DEPLOY_YAML
 DEPLOY_YAML="$(kubectl -n "${NS}" get deploy "${DEPLOY}" -o yaml)"
 
 unsafe=0
@@ -62,4 +63,3 @@ if [[ "${unsafe}" == "1" ]]; then
   exit 3
 fi
 echo "OK: deploy hygiene checks passed"
-

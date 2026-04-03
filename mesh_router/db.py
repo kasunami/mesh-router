@@ -28,6 +28,7 @@ class Db:
 
 
 db = Db(settings.database_url)
+mw_state_db = Db(settings.mw_state_database_url or settings.database_url)
 
 
 def init_db() -> None:
@@ -59,4 +60,3 @@ def q1(cur: psycopg.Cursor, sql: str, params: tuple[Any, ...] = ()) -> dict[str,
 def q(cur: psycopg.Cursor, sql: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
     cur.execute(sql, params)
     return list(cur.fetchall())
-
