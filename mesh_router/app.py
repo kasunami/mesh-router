@@ -3691,12 +3691,15 @@ def v1_chat_completions(
     response: Response,
     x_mesh_pin_worker: str | None = Header(default=None),
     x_mesh_pin_base_url: str | None = Header(default=None),
+    x_mesh_pin_lane_type: str | None = Header(default=None),
 ) -> Any:
     raw_payload = req.model_dump(by_alias=True)
     if x_mesh_pin_worker is not None:
         raw_payload["mesh_pin_worker"] = x_mesh_pin_worker
     if x_mesh_pin_base_url is not None:
         raw_payload["mesh_pin_base_url"] = x_mesh_pin_base_url
+    if x_mesh_pin_lane_type is not None:
+        raw_payload["mesh_pin_lane_type"] = x_mesh_pin_lane_type
     normalized = _normalize_route_request(route="chat", raw_payload=raw_payload)
     request_id = _create_router_request(
         route="chat",
@@ -3763,12 +3766,15 @@ def v1_embeddings(
     body: dict[str, Any] = Body(default_factory=dict),
     x_mesh_pin_worker: str | None = Header(default=None),
     x_mesh_pin_base_url: str | None = Header(default=None),
+    x_mesh_pin_lane_type: str | None = Header(default=None),
 ) -> dict[str, Any]:
     raw_payload = dict(body or {})
     if x_mesh_pin_worker is not None:
         raw_payload["mesh_pin_worker"] = x_mesh_pin_worker
     if x_mesh_pin_base_url is not None:
         raw_payload["mesh_pin_base_url"] = x_mesh_pin_base_url
+    if x_mesh_pin_lane_type is not None:
+        raw_payload["mesh_pin_lane_type"] = x_mesh_pin_lane_type
     normalized = _normalize_route_request(route="embeddings", raw_payload=raw_payload)
     request_id = _create_router_request(
         route="embeddings",
@@ -3812,12 +3818,15 @@ def v1_images_generations(
     response: Response,
     x_mesh_pin_worker: str | None = Header(default=None),
     x_mesh_pin_base_url: str | None = Header(default=None),
+    x_mesh_pin_lane_type: str | None = Header(default=None),
 ) -> dict[str, Any]:
     raw_payload = req.model_dump()
     if x_mesh_pin_worker is not None:
         raw_payload["mesh_pin_worker"] = x_mesh_pin_worker
     if x_mesh_pin_base_url is not None:
         raw_payload["mesh_pin_base_url"] = x_mesh_pin_base_url
+    if x_mesh_pin_lane_type is not None:
+        raw_payload["mesh_pin_lane_type"] = x_mesh_pin_lane_type
     normalized = _normalize_route_request(route="images", raw_payload=raw_payload)
     request_id = _create_router_request(
         route="images",
@@ -3862,6 +3871,7 @@ def legacy_embeddings(
     body: dict[str, Any] = Body(default_factory=dict),
     x_mesh_pin_worker: str | None = Header(default=None),
     x_mesh_pin_base_url: str | None = Header(default=None),
+    x_mesh_pin_lane_type: str | None = Header(default=None),
 ) -> dict[str, Any]:
     # Compatibility endpoint for legacy Ollama clients (like the current watchdog)
     # 1. Map 'prompt' to 'input' if needed (handled by _normalize_route_request)
@@ -3871,6 +3881,8 @@ def legacy_embeddings(
         raw_payload["mesh_pin_worker"] = x_mesh_pin_worker
     if x_mesh_pin_base_url is not None:
         raw_payload["mesh_pin_base_url"] = x_mesh_pin_base_url
+    if x_mesh_pin_lane_type is not None:
+        raw_payload["mesh_pin_lane_type"] = x_mesh_pin_lane_type
     normalized = _normalize_route_request(route="embeddings", raw_payload=raw_payload)
     request_id = _create_router_request(
         route="embeddings",
