@@ -190,7 +190,9 @@ def pick_lane_for_model(
                 rows = q(
                     cur,
                     """
-                    SELECT l.lane_id, h.host_name, l.base_url, l.lane_type, l.backend_type, l.current_model_name, m.tags AS current_model_tags,
+                    SELECT l.lane_id, h.host_name, l.base_url, l.lane_type, l.backend_type,
+                           COALESCE(ml.actual_model, l.current_model_name) AS current_model_name,
+                           m.tags AS current_model_tags,
                            cmp.max_ctx AS current_model_max_ctx
                     FROM lanes l
                     JOIN hosts h ON h.host_id = l.host_id
@@ -198,7 +200,7 @@ def pick_lane_for_model(
                     LEFT JOIN mw_lanes ml
                       ON ml.host_id = (l.proxy_auth_metadata->>'mw_host_id')
                      AND ml.lane_id = (l.proxy_auth_metadata->>'mw_lane_id')
-                    LEFT JOIN models m ON m.model_name = l.current_model_name
+                    LEFT JOIN models m ON m.model_name = COALESCE(ml.actual_model, l.current_model_name)
                     LEFT JOIN lane_model_policy cmp ON cmp.lane_id=l.lane_id AND cmp.model_id=m.model_id
                     WHERE h.host_name=%s
                       AND (
@@ -271,8 +273,14 @@ def pick_lane_for_model(
                 status_code=422,
             )
         if not matched:
-            raise RuntimeError(f"no READY lanes for pinned worker serving requested model: {model}")
-        r0 = matched[0]
+            # Pinned-worker semantics should be "place it on that host" even if the model isn't already loaded.
+            # For MW-managed lanes, the caller will best-effort `load_model` before streaming.
+            eligible = [row for row in rows if _context_is_sufficient(request_context_tokens, row.get("current_model_max_ctx"))]
+            if not eligible:
+                raise RuntimeError(f"no READY lanes for pinned worker: {pin_worker}")
+            r0 = eligible[0]
+        else:
+            r0 = matched[0]
         return LaneChoice(
             lane_id=str(r0["lane_id"]),
             worker_id=str(r0["host_name"]),
@@ -302,7 +310,7 @@ def pick_lane_for_model(
                           END
                         ELSE l.status::text
                       END AS effective_status,
-                      l.current_model_name,
+                      COALESCE(ml.actual_model, l.current_model_name) AS current_model_name,
                       cmp.max_ctx AS current_model_max_ctx,
                       current_m.tags AS current_model_tags,
                       COALESCE((
@@ -339,7 +347,7 @@ def pick_lane_for_model(
                     LEFT JOIN mw_lanes ml
                       ON ml.host_id = (l.proxy_auth_metadata->>'mw_host_id')
                      AND ml.lane_id = (l.proxy_auth_metadata->>'mw_lane_id')
-                    LEFT JOIN models current_m ON current_m.model_name = l.current_model_name
+                    LEFT JOIN models current_m ON current_m.model_name = COALESCE(ml.actual_model, l.current_model_name)
                     LEFT JOIN lane_model_policy cmp ON cmp.lane_id=l.lane_id AND cmp.model_id=current_m.model_id
                     WHERE (l.status IN ('ready', 'suspended') OR (l.proxy_auth_metadata->>'control_plane') = 'mw')
                       AND NOT EXISTS (
