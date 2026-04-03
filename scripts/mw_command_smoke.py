@@ -14,6 +14,7 @@ def main() -> int:
     p.add_argument("--host-id", required=True, help="MW host_id (e.g. static-deskix)")
     p.add_argument("--command", required=True, help="activate_profile|load_model|health_probe|...")
     p.add_argument("--payload", default="{}", help="JSON payload for the command")
+    p.add_argument("--timeout-seconds", type=int, default=None, help="Override MW wait timeout for this command")
     p.add_argument("--follow", action="store_true", help="If command returns pending/202, poll status until terminal or timeout")
     p.add_argument("--follow-timeout-s", type=int, default=180, help="Max seconds to poll when --follow is set")
     p.add_argument("--follow-interval-s", type=int, default=2, help="Poll interval seconds when --follow is set")
@@ -29,13 +30,28 @@ def main() -> int:
 
     url = f"{args.mr.rstrip('/')}/api/mw/commands"
     body = {"host_id": args.host_id, "message_type": args.command, "payload": payload, "wait": True}
+    if args.timeout_seconds is not None:
+        body["timeout_seconds"] = int(args.timeout_seconds)
     with httpx.Client(timeout=60.0) as client:
         resp = client.post(url, json=body)
         if resp.status_code >= 400:
             print(resp.text, file=sys.stderr)
             return 2
         print(resp.text)
-        if args.follow and resp.status_code == 202:
+        is_pending = resp.status_code == 202
+        if not is_pending:
+            try:
+                is_pending = bool(resp.json().get("pending"))
+            except Exception:
+                is_pending = False
+        if is_pending:
+            try:
+                rid = str(resp.json().get("request_id") or "").strip()
+            except Exception:
+                rid = ""
+            if rid:
+                print(f"NOTE: pending; poll: {args.mr.rstrip('/')}/api/mw/commands/{rid}", file=sys.stderr)
+        if args.follow and is_pending:
             try:
                 rid = str(resp.json().get("request_id") or "").strip()
             except Exception:
