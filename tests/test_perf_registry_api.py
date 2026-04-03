@@ -92,6 +92,7 @@ class PerfRegistryApiTests(unittest.TestCase):
                 "first_token_ms": 13.0,
                 "decode_tps": 95.0,
                 "ok": True,
+                "metadata": {"source": "unit-test"},
             },
         )
         self.assertEqual(resp.status_code, 200)
@@ -110,4 +111,3 @@ class PerfRegistryApiTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

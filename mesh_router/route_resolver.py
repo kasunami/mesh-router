@@ -7,6 +7,7 @@ from .config import settings
 from .db import db, mw_state_db
 from .perf_registry import get_expectation
 from .router import pick_lane_for_model
+from .mw_overlay import apply_mw_effective_status
 
 
 def _normalize_host_id(host_name: str) -> str:
@@ -80,28 +81,36 @@ def resolve_route(
     Returns: (choice_dict, perf_dict, reason, candidates_considered)
     """
     if host_name and lane_id:
+        row: dict[str, Any] | None
         with db.connect() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """
                     SELECT l.lane_id, l.lane_name, l.base_url, l.lane_type, l.backend_type, l.current_model_name,
+                           l.proxy_auth_metadata,
                            h.host_name
                     FROM lanes l JOIN hosts h ON h.host_id=l.host_id
                     WHERE l.lane_id=%s AND h.host_name=%s
                     """,
                     (lane_id, host_name),
                 )
-                row = cur.fetchone()
-                if not row:
-                    return None, None, "explicit lane not found", None
-                choice = {
-                    "lane_id": str(row["lane_id"]),
-                    "worker_id": str(row["host_name"]),
-                    "base_url": str(row["base_url"]),
-                    "lane_type": str(row.get("lane_type") or ""),
-                    "backend_type": str(row.get("backend_type") or "llama"),
-                    "current_model_name": row.get("current_model_name"),
-                }
+                fetched = cur.fetchone()
+                row = dict(fetched) if fetched else None
+        if not row:
+            return None, None, "explicit lane not found", None
+
+        # If lane is MW-managed, overlay the MW-derived actual model/readiness for truthfulness.
+        apply_mw_effective_status([row], mw_state_db=mw_state_db, stale_seconds=settings.default_lease_stale_seconds)
+
+        choice = {
+            "lane_id": str(row["lane_id"]),
+            "worker_id": str(row["host_name"]),
+            "base_url": str(row["base_url"]),
+            "lane_type": str(row.get("lane_type") or ""),
+            "backend_type": str(row.get("backend_type") or "llama"),
+            "current_model_name": row.get("current_model_name"),
+            "effective_status": row.get("effective_status"),
+        }
         perf = _perf_for_choice(choice, model=model, modality=modality)
         return choice, perf, None, 1
 

@@ -37,6 +37,19 @@ def _table_exists(*, cur: Any) -> bool:
 def insert_observation(*, cur: Any, obs: dict[str, Any]) -> None:
     if not _table_exists(cur=cur):
         raise RuntimeError(f"missing table: {_TABLE}")
+    try:
+        from psycopg.types.json import Jsonb  # type: ignore
+    except Exception:  # pragma: no cover
+        Jsonb = None  # type: ignore
+
+    payload = dict(obs)
+    md = payload.get("metadata")
+    if md is None:
+        md = {}
+    if Jsonb is not None:
+        payload["metadata"] = Jsonb(md)
+    else:
+        payload["metadata"] = md
     cur.execute(
         f"""
         INSERT INTO {_TABLE}(
@@ -77,7 +90,7 @@ def insert_observation(*, cur: Any, obs: dict[str, Any]) -> None:
           %(metadata)s
         )
         """,
-        obs,
+        payload,
     )
 
 
@@ -127,4 +140,3 @@ def get_expectation(
         decode_tps_p50=median(tps) if tps else None,
         total_ms_p50=median(total) if total else None,
     )
-
