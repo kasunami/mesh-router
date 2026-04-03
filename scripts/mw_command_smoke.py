@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
+import time
 
 import httpx
 
@@ -12,11 +14,12 @@ def main() -> int:
     p.add_argument("--host-id", required=True, help="MW host_id (e.g. static-deskix)")
     p.add_argument("--command", required=True, help="activate_profile|load_model|health_probe|...")
     p.add_argument("--payload", default="{}", help="JSON payload for the command")
+    p.add_argument("--follow", action="store_true", help="If command returns pending/202, poll status until terminal or timeout")
+    p.add_argument("--follow-timeout-s", type=int, default=180, help="Max seconds to poll when --follow is set")
+    p.add_argument("--follow-interval-s", type=int, default=2, help="Poll interval seconds when --follow is set")
     args = p.parse_args()
 
     try:
-        import json
-
         payload = json.loads(args.payload)
         if not isinstance(payload, dict):
             raise ValueError("payload must be a JSON object")
@@ -32,9 +35,31 @@ def main() -> int:
             print(resp.text, file=sys.stderr)
             return 2
         print(resp.text)
+        if args.follow and resp.status_code == 202:
+            try:
+                rid = str(resp.json().get("request_id") or "").strip()
+            except Exception:
+                rid = ""
+            if not rid:
+                print("pending response missing request_id; cannot follow", file=sys.stderr)
+                return 2
+            deadline = time.monotonic() + max(1, int(args.follow_timeout_s))
+            status_url = f"{args.mr.rstrip('/')}/api/mw/commands/{rid}"
+            while time.monotonic() < deadline:
+                time.sleep(max(1, int(args.follow_interval_s)))
+                status = client.get(status_url)
+                if status.status_code >= 400:
+                    print(status.text, file=sys.stderr)
+                    return 2
+                print(status.text)
+                payload_obj = status.json()
+                if not payload_obj.get("found"):
+                    continue
+                state = str(payload_obj.get("status") or "")
+                if state in {"completed", "failed", "rejected", "cancelled"}:
+                    return 0 if payload_obj.get("ok") is not False else 2
     return 0
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

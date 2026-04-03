@@ -159,6 +159,7 @@ class MWControlApiTests(unittest.TestCase):
             },
         )
         self.assertEqual(response.status_code, 202)
+        self.assertEqual(response.headers.get("location"), "/api/mw/commands/req-timeout-1")
         body = response.json()
         self.assertTrue(body["ok"])
         self.assertTrue(body["pending"])

@@ -151,10 +151,14 @@ def pick_lane_for_model(
                     cur,
                     """
                     SELECT l.lane_id, h.host_name, l.base_url, l.lane_type, l.backend_type,
+                           COALESCE(ml.actual_model, l.current_model_name) AS current_model_name,
                            cmp.max_ctx AS current_model_max_ctx
                     FROM lanes l
                     JOIN hosts h ON h.host_id=l.host_id
-                    LEFT JOIN models cm ON cm.model_name=l.current_model_name
+                    LEFT JOIN mw_lanes ml
+                      ON ml.host_id = (l.proxy_auth_metadata->>'mw_host_id')
+                     AND ml.lane_id = (l.proxy_auth_metadata->>'mw_lane_id')
+                    LEFT JOIN models cm ON cm.model_name=COALESCE(ml.actual_model, l.current_model_name)
                     LEFT JOIN lane_model_policy cmp ON cmp.lane_id=l.lane_id AND cmp.model_id=cm.model_id
                     WHERE h.host_name=%s AND l.base_url=%s
                       AND (%s::text IS NULL OR l.backend_type = %s::text)

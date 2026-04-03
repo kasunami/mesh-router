@@ -1246,7 +1246,15 @@ def api_mw_command(req: MWCommandRequest) -> MWCommandResponse:
     )
     if resp.pending:
         # Avoid false-negative operational behavior: the command was delivered but not yet observed as terminal.
-        return JSONResponse(status_code=202, content=resp.model_dump())
+        return JSONResponse(
+            status_code=202,
+            content=resp.model_dump(),
+            headers={
+                # Operator-friendly: point clients at the status endpoint for follow-up polling.
+                "Location": f"/api/mw/commands/{resp.request_id}",
+                "Retry-After": "2",
+            },
+        )
     return resp
 
 
@@ -1329,47 +1337,79 @@ def api_mw_health_probe(host_id: str, service_id: str | None = None, lane_id: st
 def api_lanes() -> dict[str, Any]:
     with db.connect() as conn:
         with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT
-                  l.lane_id,
-                  h.host_id,
-                  h.host_name,
-                  l.lane_name,
-                  l.lane_type,
-                  l.backend_type,
-                  l.base_url,
-                  CASE
-                    WHEN (l.proxy_auth_metadata->>'control_plane') = 'mw' THEN
+            try:
+                cur.execute(
+                    """
+                    SELECT
+                      l.lane_id,
+                      h.host_id,
+                      h.host_name,
+                      l.lane_name,
+                      l.lane_type,
+                      l.backend_type,
+                      l.base_url,
                       CASE
-                        WHEN mh.last_heartbeat_at > now() - (%s * interval '1 second')
-                         AND ml.actual_state = 'running'
-                         AND ml.health_status = 'healthy'
-                        THEN 'ready'::lane_status
-                        ELSE 'offline'::lane_status
-                      END
-                    ELSE l.status
-                  END AS status,
-                  l.current_model_name,
-                  l.ram_budget_bytes,
-                  l.vram_budget_bytes,
-                  l.proxy_auth_mode,
-                  l.proxy_auth_metadata,
-                  l.suspension_reason,
-                  l.last_probe_at,
-                  l.last_ok_at,
-                  l.created_at,
-                  l.updated_at
-                FROM lanes l
-                JOIN hosts h ON h.host_id = l.host_id
-                LEFT JOIN mw_hosts mh ON mh.host_id = (l.proxy_auth_metadata->>'mw_host_id')
-                LEFT JOIN mw_lanes ml
-                  ON ml.host_id = (l.proxy_auth_metadata->>'mw_host_id')
-                 AND ml.lane_id = (l.proxy_auth_metadata->>'mw_lane_id')
-                ORDER BY h.host_name, l.lane_name, l.base_url
-                """,
-                (settings.default_lease_stale_seconds,),
-            )
+                        WHEN (l.proxy_auth_metadata->>'control_plane') = 'mw' THEN
+                          CASE
+                            WHEN mh.last_heartbeat_at > now() - (%s * interval '1 second')
+                             AND ml.actual_state = 'running'
+                             AND ml.health_status = 'healthy'
+                            THEN 'ready'::lane_status
+                            ELSE 'offline'::lane_status
+                          END
+                        ELSE l.status
+                      END AS status,
+                      CASE
+                        WHEN (l.proxy_auth_metadata->>'control_plane') = 'mw' THEN ml.actual_model
+                        ELSE l.current_model_name
+                      END AS current_model_name,
+                      l.ram_budget_bytes,
+                      l.vram_budget_bytes,
+                      l.proxy_auth_mode,
+                      l.proxy_auth_metadata,
+                      l.suspension_reason,
+                      l.last_probe_at,
+                      l.last_ok_at,
+                      l.created_at,
+                      l.updated_at
+                    FROM lanes l
+                    JOIN hosts h ON h.host_id = l.host_id
+                    LEFT JOIN mw_hosts mh ON mh.host_id = (l.proxy_auth_metadata->>'mw_host_id')
+                    LEFT JOIN mw_lanes ml
+                      ON ml.host_id = (l.proxy_auth_metadata->>'mw_host_id')
+                     AND ml.lane_id = (l.proxy_auth_metadata->>'mw_lane_id')
+                    ORDER BY h.host_name, l.lane_name, l.base_url
+                    """,
+                    (settings.default_lease_stale_seconds,),
+                )
+            except Exception:
+                # MW tables may not exist in every environment.
+                cur.execute(
+                    """
+                    SELECT
+                      l.lane_id,
+                      h.host_id,
+                      h.host_name,
+                      l.lane_name,
+                      l.lane_type,
+                      l.backend_type,
+                      l.base_url,
+                      l.status,
+                      l.current_model_name,
+                      l.ram_budget_bytes,
+                      l.vram_budget_bytes,
+                      l.proxy_auth_mode,
+                      l.proxy_auth_metadata,
+                      l.suspension_reason,
+                      l.last_probe_at,
+                      l.last_ok_at,
+                      l.created_at,
+                      l.updated_at
+                    FROM lanes l
+                    JOIN hosts h ON h.host_id = l.host_id
+                    ORDER BY h.host_name, l.lane_name, l.base_url
+                    """
+                )
             rows = cur.fetchall()
     return {
         "items": [
