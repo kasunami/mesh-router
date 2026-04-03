@@ -75,3 +75,22 @@ To scan an archive model root:
 ```bash
 mesh-router archive-inventory /path/to/archive archive-id --provider packhub
 ```
+
+## APIs
+
+OpenAI-compatible subset:
+- `POST /v1/chat/completions` (SSE streaming supported)
+- `POST /v1/embeddings` (minimal)
+- `POST /v1/images/generations` (minimal)
+
+Control-plane / operator APIs:
+- Inventory/capability plane:
+  - `GET /api/inventory` — host → lanes → viable models (MW-managed lanes include MW-derived `effective_status` + `actual_model` overlay).
+- Routing:
+  - `POST /api/routes/resolve` — deterministic route resolution by explicit target or by tags (no LLM in the decision loop).
+- MW command control:
+  - `POST /api/mw/commands` — submit a control-plane command (returns `202 pending` when MW is still working).
+  - `GET /api/mw/commands/{request_id}` — poll command status (reads `mw_transitions` via the MW state DB handle when configured).
+- Performance expectations (MB-aligned, durable):
+  - `POST /api/perf/observations` — ingest an observation into `mw_perf_observations` (table lives in MW state DB; apply `sql/013_mw_perf_observations.sql`).
+  - `GET /api/perf/expectations` — fetch p50 expectations from recent observations.

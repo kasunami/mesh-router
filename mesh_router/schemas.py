@@ -238,6 +238,99 @@ class RestoreSplitModeResponse(BaseModel):
     actions: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class InventoryLane(BaseModel):
+    lane_id: str
+    lane_name: str
+    host_id: str
+    host_name: str
+    lane_type: str | None = None
+    backend_type: str | None = None
+    base_url: str | None = None
+    status: str
+    effective_status: str | None = None
+    current_model_name: str | None = None
+    proxy_auth_metadata: dict[str, Any] | None = None
+
+    # Capability hints (best-effort)
+    local_viable_models: list[LaneModelCandidate] = Field(default_factory=list)
+    remote_viable_models: list[LaneModelCandidate] = Field(default_factory=list)
+
+    model_config = {"extra": "allow"}
+
+
+class InventoryHost(BaseModel):
+    host_id: str
+    host_name: str
+    lanes: list[InventoryLane] = Field(default_factory=list)
+    tags: list[str] = Field(default_factory=list)
+    policy: dict[str, Any] | None = None
+
+    model_config = {"extra": "allow"}
+
+
+class InventoryResponse(BaseModel):
+    items: list[InventoryHost] = Field(default_factory=list)
+
+
+class PerfObservationIngestRequest(BaseModel):
+    host_id: str
+    lane_id: str
+    model_name: str
+    backend_type: str | None = None
+    lane_type: str | None = None
+    modality: Literal["chat", "embeddings", "images"] = "chat"
+
+    prompt_tokens: int | None = None
+    generated_tokens: int | None = None
+    first_token_ms: float | None = None
+    decode_tps: float | None = None
+    total_ms: float | None = None
+    was_cold: bool | None = None
+    ok: bool = True
+    error_kind: str | None = None
+    error_message: str | None = None
+    metadata: dict[str, Any] | None = None
+
+
+class PerfExpectationItem(BaseModel):
+    host_id: str
+    lane_id: str
+    model_name: str
+    modality: str
+    updated_at: str
+    sample_count: int
+    first_token_ms_p50: float | None = None
+    decode_tps_p50: float | None = None
+    total_ms_p50: float | None = None
+    staleness_s: float | None = None
+    source: Literal["observations"] = "observations"
+
+
+class PerfExpectationResponse(BaseModel):
+    items: list[PerfExpectationItem] = Field(default_factory=list)
+
+
+class RouteResolveRequest(BaseModel):
+    modality: Literal["chat", "embeddings", "images"] = "chat"
+    model: str | None = None
+    tags: list[str] = Field(default_factory=list)
+
+    # Explicit targeting mode (optional)
+    host_name: str | None = None
+    lane_id: str | None = None
+
+    # Policy gates
+    allow_opportunistic: bool = False
+
+
+class RouteResolveResponse(BaseModel):
+    ok: bool
+    reason: str | None = None
+    choice: dict[str, Any] | None = None
+    perf: PerfExpectationItem | None = None
+    candidates_considered: int | None = None
+
+
 class MWCommandRequest(BaseModel):
     host_id: str
     message_type: Literal[

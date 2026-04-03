@@ -7,6 +7,7 @@ from typing import Any
 
 from .db import db, mw_state_db, q
 from .config import settings
+from .mw_overlay import apply_mw_effective_status
 
 _RECENT_PROXY_ERROR_COOLDOWN_S = 900
 
@@ -146,85 +147,6 @@ def pick_lane_for_model(
     """
     excluded = {lane_id for lane_id in (exclude_lane_ids or set()) if lane_id}
 
-    def _apply_mw_effective_status(rows: list[dict[str, Any]]) -> None:
-        """
-        Enrich rows (from the router DB) with MW-derived readiness + current model when
-        lanes are MW-managed and MW state lives in a separate DB.
-        """
-        mw_pairs: list[tuple[str, str]] = []
-        for row in rows:
-            pam = row.get("proxy_auth_metadata") or {}
-            if not isinstance(pam, dict):
-                continue
-            if str(pam.get("control_plane") or "") != "mw":
-                continue
-            host_id = str(pam.get("mw_host_id") or "").strip()
-            lane_id = str(pam.get("mw_lane_id") or "").strip()
-            if host_id and lane_id:
-                mw_pairs.append((host_id, lane_id))
-        if not mw_pairs:
-            return
-
-        # Query MW state DB in one shot. If unavailable, leave rows unchanged.
-        facts: dict[tuple[str, str], dict[str, Any]] = {}
-        try:
-            with mw_state_db.connect() as conn:
-                with conn.cursor() as cur:
-                    values_sql = ",".join(["(%s,%s)"] * len(mw_pairs))
-                    params: list[Any] = []
-                    for host_id, lane_id in mw_pairs:
-                        params.extend([host_id, lane_id])
-                    cur.execute(
-                        f"""
-                        WITH wanted(host_id, lane_id) AS (VALUES {values_sql})
-                        SELECT
-                          w.host_id,
-                          w.lane_id,
-                          mh.last_heartbeat_at,
-                          ml.actual_state,
-                          ml.health_status,
-                          ml.actual_model
-                        FROM wanted w
-                        LEFT JOIN mw_hosts mh ON mh.host_id = w.host_id
-                        LEFT JOIN mw_lanes ml ON ml.host_id = w.host_id AND ml.lane_id = w.lane_id
-                        """,
-                        tuple(params),
-                    )
-                    for r in cur.fetchall():
-                        key = (str(r["host_id"]), str(r["lane_id"]))
-                        facts[key] = dict(r)
-        except Exception:
-            return
-
-        stale_seconds = settings.default_lease_stale_seconds
-        for row in rows:
-            pam = row.get("proxy_auth_metadata") or {}
-            if not isinstance(pam, dict):
-                continue
-            if str(pam.get("control_plane") or "") != "mw":
-                continue
-            host_id = str(pam.get("mw_host_id") or "").strip()
-            lane_id = str(pam.get("mw_lane_id") or "").strip()
-            if not host_id or not lane_id:
-                continue
-            f = facts.get((host_id, lane_id)) or {}
-            last_hb = f.get("last_heartbeat_at")
-            actual_state = str(f.get("actual_state") or "")
-            health_status = str(f.get("health_status") or "")
-            ready = False
-            try:
-                if last_hb is not None:
-                    # psycopg returns aware datetimes; compare via epoch seconds.
-                    age_s = (datetime.now(tz=timezone.utc) - last_hb).total_seconds()
-                    ready = age_s <= float(stale_seconds) and actual_state == "running" and health_status == "healthy"
-            except Exception:
-                ready = False
-            row["effective_status"] = "ready" if ready else "offline"
-            actual_model = str(f.get("actual_model") or "").strip()
-            if actual_model:
-                row["current_model_name"] = actual_model
-                row["current_model_tags"] = []
-
     if pin_worker and pin_base_url:
         with db.connect() as conn:
             with conn.cursor() as cur:
@@ -256,7 +178,7 @@ def pick_lane_for_model(
                 )
         if not rows:
             raise RuntimeError("pinned lane not found")
-        _apply_mw_effective_status(rows)
+        apply_mw_effective_status(rows, mw_state_db=mw_state_db, stale_seconds=settings.default_lease_stale_seconds)
         r0 = rows[0]
         return LaneChoice(
             lane_id=str(r0["lane_id"]),
@@ -320,7 +242,7 @@ def pick_lane_for_model(
                         list(excluded) or None,
                     ),
                 )
-        _apply_mw_effective_status(rows)
+        apply_mw_effective_status(rows, mw_state_db=mw_state_db, stale_seconds=settings.default_lease_stale_seconds)
         # Defensive: even if the SQL layer changes, pinning must never route to a different host.
         rows = [r for r in rows if str(r.get("host_name") or "") == str(pin_worker)]
 
@@ -465,7 +387,7 @@ def pick_lane_for_model(
                         list(excluded) or None,
                     ),
                 )
-        _apply_mw_effective_status(rows)
+        apply_mw_effective_status(rows, mw_state_db=mw_state_db, stale_seconds=settings.default_lease_stale_seconds)
         if settings.placement_prefer_mw_lanes:
             def _is_mw(row: dict) -> bool:
                 pam = row.get("proxy_auth_metadata") or {}

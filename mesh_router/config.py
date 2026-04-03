@@ -64,5 +64,13 @@ class Settings(BaseSettings):
     # candidates are eligible (reversible rollouts without per-request pinning).
     placement_prefer_mw_lanes: bool = False
 
+    # Routing policy: treat some hosts as opportunistic/preemptible by default.
+    # Requests can explicitly opt into opportunistic routing; otherwise MR prefers stable hosts.
+    opportunistic_hosts: str = "pupix1,tiffs-macbook,packpup1,packpup2"
+
+    # Perf observation ingestion guard. When set, POST /api/perf/observations requires
+    # X-Mesh-Internal-Token to match this value.
+    internal_ingest_token: str | None = None
+
 
 settings = Settings()

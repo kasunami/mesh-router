@@ -22,6 +22,9 @@ from pydantic import BaseModel
 
 from .config import settings
 from .db import db, mw_state_db
+from .inventory import fetch_lane_inventory, group_inventory_by_host
+from .perf_registry import get_expectation, insert_observation
+from .route_resolver import resolve_route
 from .router import pick_lane_for_model
 from .schemas import (
     ArchiveInventoryScanRequest,
@@ -46,6 +49,11 @@ from .schemas import (
     RouterRequestCancelRequest,
     RouterRequestSubmitRequest,
     SwapPreflightResponse,
+    InventoryResponse,
+    PerfExpectationResponse,
+    PerfObservationIngestRequest,
+    RouteResolveRequest,
+    RouteResolveResponse,
 )
 from .tokens import sign_token, verify_token
 from .viability import ViabilityLaneInfo, ViabilityModelInfo, check_viability, estimate_swap_time
@@ -1452,6 +1460,127 @@ def api_lanes() -> dict[str, Any]:
             pass
 
     return {"items": items}
+
+
+@app.get("/api/inventory", response_model=InventoryResponse)
+def api_inventory() -> InventoryResponse:
+    """
+    Capability/inventory plane (host → lanes → supported models), with MW-derived effective status/model overlay
+    for MW-managed lanes.
+    """
+    with db.connect() as conn:
+        with conn.cursor() as cur:
+            rows = fetch_lane_inventory(cur=cur)
+
+    hosts = group_inventory_by_host(rows)
+    items: list[dict[str, Any]] = []
+    for host in hosts:
+        lanes_out: list[dict[str, Any]] = []
+        for lane in host.get("lanes") or []:
+            viable = lane.pop("viable_models", []) or []
+            local = [m for m in viable if str(m.get("locality") or "") == "local"]
+            remote = [m for m in viable if str(m.get("locality") or "") == "remote"]
+            lane_out = {
+                "lane_id": str(lane.get("lane_id") or ""),
+                "lane_name": str(lane.get("lane_name") or ""),
+                "host_id": str(lane.get("host_id") or ""),
+                "host_name": str(lane.get("host_name") or ""),
+                "lane_type": str(lane.get("lane_type") or "") or None,
+                "backend_type": str(lane.get("backend_type") or "") or None,
+                "base_url": str(lane.get("base_url") or "") or None,
+                "status": str(lane.get("effective_status") or lane.get("status") or ""),
+                "effective_status": str(lane.get("effective_status") or "") or None,
+                "current_model_name": lane.get("current_model_name"),
+                "proxy_auth_metadata": dict(lane.get("proxy_auth_metadata") or {}),
+                "local_viable_models": local,
+                "remote_viable_models": remote,
+            }
+            lanes_out.append(lane_out)
+        items.append(
+            {
+                "host_id": str(host.get("host_id") or ""),
+                "host_name": str(host.get("host_name") or ""),
+                "lanes": lanes_out,
+                "tags": list(host.get("tags") or []),
+                "policy": dict(host.get("policy") or {}),
+            }
+        )
+    return InventoryResponse(items=items)
+
+
+@app.get("/api/perf/expectations", response_model=PerfExpectationResponse)
+def api_perf_expectations(
+    host_id: str,
+    lane_id: str,
+    model_name: str,
+    modality: Literal["chat", "embeddings", "images"] = "chat",
+) -> PerfExpectationResponse:
+    try:
+        with mw_state_db.connect() as conn:
+            with conn.cursor() as cur:
+                exp = get_expectation(cur=cur, host_id=host_id, lane_id=lane_id, model_name=model_name, modality=modality)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"mw_state_db unavailable: {exc}") from exc
+    if not exp:
+        return PerfExpectationResponse(items=[])
+    now = datetime.now(tz=UTC)
+    staleness_s = (now - exp.updated_at).total_seconds()
+    return PerfExpectationResponse(
+        items=[
+            {
+                "host_id": exp.host_id,
+                "lane_id": exp.lane_id,
+                "model_name": exp.model_name,
+                "modality": exp.modality,
+                "updated_at": exp.updated_at.isoformat(),
+                "sample_count": exp.sample_count,
+                "first_token_ms_p50": exp.first_token_ms_p50,
+                "decode_tps_p50": exp.decode_tps_p50,
+                "total_ms_p50": exp.total_ms_p50,
+                "staleness_s": staleness_s,
+                "source": "observations",
+            }
+        ]
+    )
+
+
+@app.post("/api/perf/observations")
+def api_perf_observations(
+    req: PerfObservationIngestRequest,
+    x_mesh_internal_token: str | None = Header(default=None, alias="x-mesh-internal-token"),
+) -> dict[str, Any]:
+    token = settings.internal_ingest_token
+    if token and (x_mesh_internal_token or "") != token:
+        raise HTTPException(status_code=403, detail="missing or invalid x-mesh-internal-token")
+    try:
+        with mw_state_db.connect() as conn:
+            with conn.cursor() as cur:
+                insert_observation(cur=cur, obs=req.model_dump())
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"failed to ingest observation: {exc}") from exc
+    return {"ok": True}
+
+
+@app.post("/api/routes/resolve", response_model=RouteResolveResponse)
+def api_routes_resolve(req: RouteResolveRequest) -> RouteResolveResponse:
+    choice, perf, reason, candidates_considered = resolve_route(
+        model=req.model,
+        modality=req.modality,
+        tags=req.tags,
+        host_name=req.host_name,
+        lane_id=req.lane_id,
+        allow_opportunistic=req.allow_opportunistic,
+    )
+    if not choice:
+        return RouteResolveResponse(ok=False, reason=reason, candidates_considered=candidates_considered)
+    return RouteResolveResponse(
+        ok=True,
+        choice=choice,
+        perf=perf,
+        candidates_considered=candidates_considered,
+    )
 
 
 @app.post("/api/lanes")
