@@ -7,6 +7,7 @@ import re
 import time
 import threading
 import uuid
+import random
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
@@ -75,6 +76,89 @@ def _mw_client() -> MeshWorkerCommandClient:
 
 def _normalize_mw_host_id(host_name: str) -> str:
     return (host_name or "").strip().lower().replace(" ", "-")
+
+
+def _maybe_record_perf_observation(
+    *,
+    host_name: str | None,
+    lane_id: str | None,
+    model_name: str | None,
+    modality: str,
+    backend_type: str | None = None,
+    lane_type: str | None = None,
+    elapsed_ms: int | None,
+    first_token_ms: float | None,
+    prompt_tokens: int | None,
+    completion_tokens: int | None,
+    decode_tps: float | None,
+    was_cold: bool | None = None,
+    ok: bool,
+    error_kind: str | None,
+    error_message: str | None,
+    metadata: dict[str, Any] | None = None,
+) -> None:
+    """
+    Best-effort perf observation ingestion from real traffic.
+
+    - Never raises (observations must not fail requests).
+    - Requires mw_perf_observations to exist in MW state DB.
+    """
+
+    if not settings.perf_auto_observe_enabled:
+        return
+    try:
+        sample_rate = float(settings.perf_auto_observe_sample_rate)
+    except Exception:
+        sample_rate = 1.0
+    if sample_rate < 1.0 and random.random() > max(0.0, sample_rate):
+        return
+    if not host_name or not lane_id or not model_name:
+        return
+    if elapsed_ms is None:
+        return
+    if elapsed_ms < int(settings.perf_auto_observe_min_elapsed_ms):
+        return
+    try:
+        if elapsed_ms > int(settings.perf_auto_observe_max_total_ms):
+            return
+    except Exception:
+        pass
+    if not ok and (error_kind or "") == "canceled":
+        # Avoid polluting the registry with user-initiated cancels.
+        return
+
+    md = dict(metadata or {})
+    md["source"] = "auto_observe"
+    try:
+        with mw_state_db.connect() as conn:
+            with conn.cursor() as cur:
+                insert_observation(
+                    cur=cur,
+                    obs={
+                        "host_id": host_name,
+                        "lane_id": lane_id,
+                        "model_name": model_name,
+                        "backend_type": backend_type or ("sd" if modality == "images" else "llama"),
+                        "lane_type": lane_type,
+                        "modality": modality,
+                        "prompt_tokens": prompt_tokens,
+                        "generated_tokens": completion_tokens,
+                        "first_token_ms": float(first_token_ms) if first_token_ms is not None else None,
+                        "decode_tps": float(decode_tps) if decode_tps is not None else None,
+                        "total_ms": float(elapsed_ms),
+                        "was_cold": was_cold,
+                        "ok": bool(ok),
+                        "error_kind": error_kind,
+                        "error_message": error_message,
+                        "metadata": md,
+                    },
+                )
+            conn.commit()
+    except Exception:
+        logger.exception(
+            "Failed to auto-ingest perf observation",
+            extra={"host_name": host_name, "lane_id": lane_id, "model_name": model_name, "modality": modality},
+        )
 
 
 def _mw_target_for_lane(*, cur: Any, lane_id: str) -> MwGrpcTarget | None:
@@ -3117,6 +3201,7 @@ def _execute_router_request(
     response_format = str(normalized.get("response_format") or "b64_json")
     backend_type = "sd" if route == "images" else "llama"
     request_context_tokens = _estimate_request_context_tokens(route=route, payload=request_payload)
+    downstream_model = model_name
 
     _touch_router_request(
         request_id=request_id,
@@ -3144,6 +3229,7 @@ def _execute_router_request(
     prompt_tokens: int | None = None
     completion_tokens: int | None = None if route == "chat" else 0
     started = time.time()
+    did_swap = False
 
     try:
         _acquire_excluded: set[str] = set()
@@ -3174,6 +3260,7 @@ def _execute_router_request(
                             swap_urgency="wait"
                         )
                     )
+                    did_swap = True
                 except Exception as swap_err:
                     logger.warning("Auto-swap failed for lane %s model %s: %s", choice.lane_id, model_name, swap_err)
                     raise RuntimeError(f"no READY lanes available serving {model_name} and auto-swap failed: {swap_err}")
@@ -3346,6 +3433,34 @@ def _execute_router_request(
         raise
     finally:
         elapsed_ms = int((time.time() - started) * 1000)
+        try:
+            _maybe_record_perf_observation(
+                host_name=str(choice.worker_id) if choice else None,
+                lane_id=str(lane_id) if lane_id else None,
+                model_name=str(model_name) if model_name else None,
+                modality=route,
+                backend_type=str(choice.backend_type) if choice else None,
+                lane_type=str(choice.lane_type) if choice else None,
+                elapsed_ms=elapsed_ms,
+                first_token_ms=None,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                decode_tps=tps,
+                ok=ok,
+                error_kind=None if ok else err_kind,
+                error_message=None if ok else err_msg,
+                metadata={
+                    "request_id": request_id,
+                    "route": route,
+                    "downstream_model": downstream_model,
+                    "actual_model": choice.current_model_name if choice else None,
+                    "pin_worker": pin_worker,
+                    "pin_base_url": pin_base_url,
+                    "pin_lane_type": pin_lane_type,
+                },
+            )
+        except Exception:
+            pass
         try:
             with db.connect() as conn:
                 with conn.cursor() as cur:

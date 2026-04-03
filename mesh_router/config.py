@@ -72,5 +72,13 @@ class Settings(BaseSettings):
     # X-Mesh-Internal-Token to match this value.
     internal_ingest_token: str | None = None
 
+    # Automatic perf observation ingestion from real traffic (best-effort, never blocks responses).
+    # Writes to mw_perf_observations in the MW state DB.
+    perf_auto_observe_enabled: bool = True
+    perf_auto_observe_sample_rate: float = 1.0
+    perf_auto_observe_min_elapsed_ms: int = 50
+    perf_auto_observe_max_total_ms: int = 300_000
+    perf_auto_observe_max_total_ms: int = 600_000
+
 
 settings = Settings()
