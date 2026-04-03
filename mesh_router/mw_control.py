@@ -14,6 +14,13 @@ class MWControlError(RuntimeError):
     pass
 
 
+class MWControlTimeout(MWControlError):
+    def __init__(self, message: str, *, request_id: str, timeout_seconds: int) -> None:
+        super().__init__(message)
+        self.request_id = request_id
+        self.timeout_seconds = timeout_seconds
+
+
 class MeshWorkerCommandClient:
     def __init__(
         self,
@@ -125,7 +132,18 @@ class MeshWorkerCommandClient:
             }
             if not wait:
                 return result
-            result["response"] = self._wait_for_response(consumer, request_id, timeout_seconds)
+            try:
+                result["response"] = self._wait_for_response(consumer, request_id, timeout_seconds)
+            except MWControlTimeout as exc:
+                # Avoid false-negative operational behavior: MW may still complete after a slow swap.
+                # Return a "pending" result and allow callers to poll `mw_transitions` (via MR endpoints).
+                return {
+                    **result,
+                    "ok": True,
+                    "pending": True,
+                    "warning": str(exc),
+                    "timeout_seconds": exc.timeout_seconds,
+                }
             payload_obj = (result["response"] or {}).get("payload", {}) if result.get("response") else {}
             result["ok"] = bool(payload_obj.get("ok", True))
             error_obj = payload_obj.get("error")
@@ -147,7 +165,7 @@ class MeshWorkerCommandClient:
     ) -> dict[str, Any]:
         if consumer is None:
             raise MWControlError("response wait requested without consumer")
-        timeout = timeout_seconds or settings.mw_command_timeout_seconds
+        timeout = int(timeout_seconds or settings.mw_command_timeout_seconds)
         deadline = time.time() + timeout
         terminal = {"completed", "failed", "cancelled", "rejected"}
         while time.time() < deadline:
@@ -169,4 +187,8 @@ class MeshWorkerCommandClient:
                     continue
             consumer.commit(asynchronous=False)
             return payload
-        raise MWControlError(f"timed out waiting for MeshWorker response for request_id={request_id}")
+        raise MWControlTimeout(
+            f"timed out waiting for MeshWorker response for request_id={request_id}",
+            request_id=request_id,
+            timeout_seconds=timeout,
+        )

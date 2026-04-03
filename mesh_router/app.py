@@ -16,7 +16,7 @@ from urllib.parse import urlparse
 
 import httpx
 from fastapi import Body, FastAPI, Header, HTTPException, Request, Response
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel
 
@@ -39,6 +39,7 @@ from .schemas import (
     ModelInfo,
     MWCommandRequest,
     MWCommandResponse,
+    MWCommandStatusResponse,
     ModelsResponse,
     RestoreSplitModeRequest,
     RestoreSplitModeResponse,
@@ -1223,14 +1224,80 @@ def api_mw_command(req: MWCommandRequest) -> MWCommandResponse:
         )
     except MWControlError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
-    return MWCommandResponse(
+
+    resp = MWCommandResponse(
         ok=bool(result.get("ok", False)),
+        pending=bool(result.get("pending", False)),
         host_id=req.host_id,
         request_id=str(result.get("request_id") or req.request_id or ""),
         message_type=req.message_type,
         result=dict(result.get("result") or {}),
         error=result.get("error"),
+        warning=str(result.get("warning")) if result.get("warning") else None,
+        timeout_seconds=int(result.get("timeout_seconds")) if result.get("timeout_seconds") is not None else None,
         response=dict(result.get("response") or {}) if result.get("response") else None,
+    )
+    if resp.pending:
+        # Avoid false-negative operational behavior: the command was delivered but not yet observed as terminal.
+        return JSONResponse(status_code=202, content=resp.model_dump())
+    return resp
+
+
+@app.get("/api/mw/commands/{request_id}", response_model=MWCommandStatusResponse)
+def api_mw_command_status(request_id: str) -> MWCommandStatusResponse:
+    rid = str(request_id).strip()
+    if not rid:
+        raise HTTPException(status_code=400, detail="missing request_id")
+    try:
+        with db.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT
+                      request_id,
+                      host_id,
+                      transition_type,
+                      status,
+                      current_phase,
+                      error_kind,
+                      error_message,
+                      started_at,
+                      completed_at,
+                      updated_at
+                    FROM mw_transitions
+                    WHERE request_id=%s::uuid
+                    LIMIT 1
+                    """,
+                    (rid,),
+                )
+                row = cur.fetchone()
+    except Exception as exc:
+        # MW tables may not exist in every environment; keep response stable.
+        raise HTTPException(status_code=503, detail=f"mw_transitions unavailable: {exc}") from exc
+
+    if not row:
+        return MWCommandStatusResponse(found=False, request_id=rid)
+
+    status = str(row.get("status") or "")
+    ok: bool | None = None
+    if status in {"completed"}:
+        ok = True
+    if status in {"failed", "rejected", "cancelled"}:
+        ok = False
+
+    return MWCommandStatusResponse(
+        found=True,
+        request_id=str(row["request_id"]),
+        host_id=str(row.get("host_id") or ""),
+        status=status or None,
+        transition_type=str(row.get("transition_type") or "") or None,
+        current_phase=str(row.get("current_phase") or "") or None,
+        ok=ok,
+        error_kind=str(row.get("error_kind") or "") or None,
+        error_message=str(row.get("error_message") or "") or None,
+        started_at=row["started_at"].isoformat() if row.get("started_at") else None,
+        completed_at=row["completed_at"].isoformat() if row.get("completed_at") else None,
+        updated_at=row["updated_at"].isoformat() if row.get("updated_at") else None,
     )
 
 

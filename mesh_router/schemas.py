@@ -257,9 +257,27 @@ class MWCommandRequest(BaseModel):
 
 class MWCommandResponse(BaseModel):
     ok: bool
+    pending: bool = False
     host_id: str
     request_id: str
     message_type: str
     result: dict[str, Any] = Field(default_factory=dict)
     error: str | None = None
+    warning: str | None = None
+    timeout_seconds: int | None = None
     response: dict[str, Any] | None = None
+
+
+class MWCommandStatusResponse(BaseModel):
+    found: bool
+    request_id: str
+    host_id: str | None = None
+    status: str | None = None
+    transition_type: str | None = None
+    current_phase: str | None = None
+    ok: bool | None = None
+    error_kind: str | None = None
+    error_message: str | None = None
+    started_at: str | None = None
+    completed_at: str | None = None
+    updated_at: str | None = None

@@ -21,6 +21,12 @@ if [[ "$(basename "${ROOT}")" != "mesh-router" ]]; then
   exit 2
 fi
 
+if ! git -C "${ROOT}" diff --quiet || ! git -C "${ROOT}" diff --cached --quiet; then
+  echo "fatal: git working tree is dirty; refusing to build an image from uncommitted changes" >&2
+  echo "hint: commit your changes first so the image tag uniquely maps to code" >&2
+  exit 2
+fi
+
 TAG="${1:-}"
 if [[ -z "${TAG}" ]]; then
   echo "usage: scripts/build_image.sh <image_tag>" >&2
@@ -35,6 +41,15 @@ echo "  repo_root: ${ROOT}"
 echo "  image:     ${IMAGE}"
 
 cd "${ROOT}"
-docker build --platform linux/amd64 -t "${IMAGE}" .
+NO_CACHE="${NO_CACHE:-0}"
+EXTRA_BUILD_FLAGS=()
+if [[ "${NO_CACHE}" == "1" ]]; then
+  EXTRA_BUILD_FLAGS+=(--no-cache)
+fi
+
+# Deploy hygiene:
+# - `--pull` reduces the risk of building on stale base layers.
+# - Prefer unique tags (git SHA) or digests in k8s.
+docker build --pull --platform linux/amd64 -t "${IMAGE}" "${EXTRA_BUILD_FLAGS[@]}" .
 
 echo "done"

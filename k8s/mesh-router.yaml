@@ -31,6 +31,12 @@ spec:
     metadata:
       labels:
         app: mesh-router
+      annotations:
+        # Deploy hygiene:
+        # - Prefer immutable digest refs (registry/repo@sha256:...) or unique tags (git SHA).
+        # - Bump this string on every deploy when applying a manifest directly (no GitOps),
+        #   so a rollout happens even if the tag string is accidentally reused.
+        mesh-router.openai.com/deploy-revision: "__SET_BY_DEPLOY__"
     spec:
       # Prefer packserv for control-plane services.
       nodeSelector:

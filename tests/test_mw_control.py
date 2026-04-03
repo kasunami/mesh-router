@@ -72,6 +72,31 @@ class MWControlApiTests(unittest.TestCase):
         self.assertEqual(body["message_type"], "load_model")
         self.assertEqual(body["result"]["echo"]["model_name"], "qwen3.5-4b")
 
+    def test_mw_command_timeout_returns_pending_202(self) -> None:
+        self.fake.next_result = {
+            "ok": True,
+            "pending": True,
+            "host_id": "static-deskix",
+            "request_id": "req-timeout-1",
+            "message_type": "activate_profile",
+            "warning": "timed out waiting for MeshWorker response",
+            "timeout_seconds": 60,
+        }
+        response = self.client.post(
+            "/api/mw/commands",
+            json={
+                "host_id": "static-deskix",
+                "message_type": "activate_profile",
+                "payload": {"profile_id": "split_default"},
+                "wait": True,
+            },
+        )
+        self.assertEqual(response.status_code, 202)
+        body = response.json()
+        self.assertTrue(body["ok"])
+        self.assertTrue(body["pending"])
+        self.assertEqual(body["request_id"], "req-timeout-1")
+
     def test_health_probe_shortcut_endpoint(self) -> None:
         response = self.client.post("/api/mw/hosts/static-deskix/health-probe?service_id=llama-gpu")
         self.assertEqual(response.status_code, 200)
