@@ -26,7 +26,7 @@ from .db import db, mw_state_db
 from .inventory import fetch_lane_inventory, group_inventory_by_host
 from .perf_registry import get_expectation, insert_observation
 from .route_resolver import resolve_route
-from .router import pick_lane_for_model
+from .router import LanePlacementError, pick_lane_for_model
 from .schemas import (
     ArchiveInventoryScanRequest,
     ChatCompletionRequest,
@@ -1142,13 +1142,13 @@ def _normalize_image_request(raw_payload: dict[str, Any]) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail=str(exc))
 
     width, height = _parse_image_size(req.size)
-    extra = req.model_extra or {}
     return {
         "route": "images",
         "requested_model_name": req.model,
-        "pin_worker": extra.get("mesh_pin_worker"),
-        "pin_base_url": extra.get("mesh_pin_base_url"),
-        "pin_lane_type": extra.get("mesh_pin_lane_type"),
+        "pin_worker": req.mesh_pin_worker,
+        "pin_base_url": req.mesh_pin_base_url,
+        "pin_lane_type": req.mesh_pin_lane_type,
+        "pin_lane_id": req.mesh_pin_lane_id,
         "response_format": req.response_format or "b64_json",
         "request_payload": {
             "prompt": req.prompt,
@@ -3153,6 +3153,7 @@ def _normalize_route_request(*, route: str, raw_payload: dict[str, Any]) -> dict
             "pin_worker": req.mesh_pin_worker,
             "pin_base_url": req.mesh_pin_base_url,
             "pin_lane_type": req.mesh_pin_lane_type,
+            "pin_lane_id": req.mesh_pin_lane_id,
             "request_payload": _downstream_payload(req),
         }
     if route_name == "embeddings":
@@ -3168,6 +3169,7 @@ def _normalize_route_request(*, route: str, raw_payload: dict[str, Any]) -> dict
         pin_worker = payload.get("mesh_pin_worker")
         pin_base_url = payload.get("mesh_pin_base_url")
         pin_lane_type = payload.get("mesh_pin_lane_type")
+        pin_lane_id = payload.get("mesh_pin_lane_id")
         for key in list(payload.keys()):
             if key.startswith("mesh_"):
                 payload.pop(key, None)
@@ -3177,6 +3179,7 @@ def _normalize_route_request(*, route: str, raw_payload: dict[str, Any]) -> dict
             "pin_worker": pin_worker,
             "pin_base_url": pin_base_url,
             "pin_lane_type": pin_lane_type,
+            "pin_lane_id": pin_lane_id,
             "request_payload": _strip_nones(payload),
         }
     if route_name == "images":
@@ -3197,6 +3200,7 @@ def _execute_router_request(
     pin_worker = normalized.get("pin_worker")
     pin_base_url = normalized.get("pin_base_url")
     pin_lane_type = normalized.get("pin_lane_type")
+    pin_lane_id = normalized.get("pin_lane_id")
     request_payload = dict(normalized["request_payload"])
     response_format = str(normalized.get("response_format") or "b64_json")
     backend_type = "sd" if route == "images" else "llama"
@@ -3242,8 +3246,13 @@ def _execute_router_request(
                     pin_worker=pin_worker,
                     pin_base_url=pin_base_url,
                     pin_lane_type=pin_lane_type,
+                    pin_lane_id=pin_lane_id,
                     exclude_lane_ids=_acquire_excluded or None,
                 )
+            except LanePlacementError as exc:
+                err_kind = "routing_error"
+                err_msg = str(exc)
+                raise
             except Exception as exc:
                 err_kind = "routing_error"
                 err_msg = str(exc)
@@ -3446,6 +3455,7 @@ def _execute_router_request(
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
                 decode_tps=tps,
+                was_cold=did_swap if route in {"chat", "embeddings"} else None,
                 ok=ok,
                 error_kind=None if ok else err_kind,
                 error_message=None if ok else err_msg,
@@ -3457,6 +3467,7 @@ def _execute_router_request(
                     "pin_worker": pin_worker,
                     "pin_base_url": pin_base_url,
                     "pin_lane_type": pin_lane_type,
+                    "pin_lane_id": pin_lane_id,
                 },
             )
         except Exception:
@@ -3550,6 +3561,7 @@ def _execute_router_request_streaming(
     pin_worker = normalized.get("pin_worker")
     pin_base_url = normalized.get("pin_base_url")
     pin_lane_type = normalized.get("pin_lane_type")
+    pin_lane_id = normalized.get("pin_lane_id")
     request_payload = dict(normalized["request_payload"])
     request_payload["stream"] = True
     request_context_tokens = _estimate_request_context_tokens(route=route, payload=request_payload)
@@ -3574,14 +3586,22 @@ def _execute_router_request_streaming(
     choice = None
 
     try:
-        choice = pick_lane_for_model(
-            model=model_name,
-            backend_type="llama",
-            request_context_tokens=request_context_tokens,
-            pin_worker=pin_worker,
-            pin_base_url=pin_base_url,
-            pin_lane_type=pin_lane_type,
-        )
+        try:
+            choice = pick_lane_for_model(
+                model=model_name,
+                backend_type="llama",
+                request_context_tokens=request_context_tokens,
+                pin_worker=pin_worker,
+                pin_base_url=pin_base_url,
+                pin_lane_type=pin_lane_type,
+                pin_lane_id=pin_lane_id,
+            )
+        except LanePlacementError as exc:
+            raise HTTPException(
+                status_code=int(getattr(exc, "status_code", 503)),
+                detail=str(exc),
+                headers={"X-Mesh-Request-Id": request_id},
+            ) from exc
 
         downstream_model = model_name
         with db.connect() as conn:
@@ -3710,6 +3730,9 @@ def _execute_router_request_streaming(
             err_kind: str | None = None
             err_msg: str | None = None
             done_sent = False
+            first_token_at: float | None = None
+            usage_prompt: int | None = None
+            usage_completion: int | None = None
             try:
                 if heartbeat_error:
                     raise RuntimeError(f"request heartbeat failed: {heartbeat_error.get('error')}")
@@ -3727,12 +3750,21 @@ def _execute_router_request_streaming(
                     ):
                         if _request_cancel_requested(request_id):
                             break
+                        try:
+                            if event.usage and getattr(event.usage, "prompt_tokens", None) is not None:
+                                usage_prompt = int(event.usage.prompt_tokens)
+                            if event.usage and getattr(event.usage, "completion_tokens", None) is not None:
+                                usage_completion = int(event.usage.completion_tokens)
+                        except Exception:
+                            pass
                         raw = bytes(event.raw_backend_payload or b"")
                         if raw:
                             if raw.strip() == b"[DONE]":
                                 done_sent = True
                                 yield b"data: [DONE]\n\n"
                                 break
+                            if first_token_at is None:
+                                first_token_at = time.time()
                             yield b"data: " + raw + b"\n\n"
                         if str(event.event_type or "") in {"completed"}:
                             break
@@ -3759,6 +3791,8 @@ def _execute_router_request_streaming(
                                 if chunk:
                                     if b"data: [DONE]" in chunk:
                                         done_sent = True
+                                    elif first_token_at is None:
+                                        first_token_at = time.time()
                                     yield chunk
                 ok = True
             except Exception as exc:
@@ -3780,6 +3814,13 @@ def _execute_router_request_streaming(
 
                 final_state = "released" if ok else ("canceled" if _request_cancel_requested(request_id) else "failed")
                 elapsed_ms = int((time.time() - started) * 1000)
+                first_token_ms: float | None = None
+                decode_tps: float | None = None
+                if first_token_at is not None:
+                    first_token_ms = max(0.0, (first_token_at - started) * 1000.0)
+                    if usage_completion is not None:
+                        denom_s = max(0.001, (time.time() - first_token_at))
+                        decode_tps = float(usage_completion) / float(denom_s)
                 try:
                     _touch_router_request(
                         request_id=request_id,
@@ -3791,6 +3832,39 @@ def _execute_router_request_streaming(
                     )
                 except Exception:
                     logger.exception("Failed to finalize streaming router request", extra={"request_id": request_id})
+                try:
+                    _maybe_record_perf_observation(
+                        host_name=str(getattr(mw_target, "host_id", "") or "") if mw_target is not None else (str(choice.worker_id) if choice else None),
+                        lane_id=str(lane_id) if lane_id else None,
+                        model_name=str(model_name) if model_name else None,
+                        modality=route,
+                        backend_type=str(choice.backend_type) if choice else None,
+                        lane_type=str(choice.lane_type) if choice else None,
+                        elapsed_ms=elapsed_ms,
+                        first_token_ms=first_token_ms,
+                        prompt_tokens=usage_prompt,
+                        completion_tokens=usage_completion,
+                        decode_tps=decode_tps,
+                        was_cold=None,
+                        ok=ok,
+                        error_kind=None if ok else (err_kind or "stream_error"),
+                        error_message=None if ok else (err_msg or "stream failed"),
+                        metadata={
+                            "request_id": request_id,
+                            "route": route,
+                            "downstream_model": downstream_model,
+                            "actual_model": choice.current_model_name if choice else None,
+                            "pin_worker": pin_worker,
+                            "pin_base_url": pin_base_url,
+                            "pin_lane_type": pin_lane_type,
+                            "pin_lane_id": pin_lane_id,
+                            "mw_managed": bool(mw_target is not None),
+                            "mw_target_host_id": getattr(mw_target, "host_id", None) if mw_target is not None else None,
+                            "mw_target_lane_id": getattr(mw_target, "lane_id", None) if mw_target is not None else None,
+                        },
+                    )
+                except Exception:
+                    pass
                 try:
                     if lease_id is not None:
                         _release_router_lease(lease_id=lease_id, ok=ok)
@@ -3815,9 +3889,9 @@ def _execute_router_request_streaming(
                                         model_id,
                                         None,
                                         elapsed_ms,
-                                        None,
-                                        None,
-                                        None,
+                                        decode_tps,
+                                        usage_prompt,
+                                        usage_completion,
                                         ok,
                                         None if ok else (err_kind or "stream_error"),
                                         None if ok else (err_msg or "stream failed"),
@@ -3841,7 +3915,13 @@ def _execute_router_request_streaming(
             error_kind="request_error",
             error_message=str(exc),
         )
-        raise HTTPException(status_code=502, detail=str(exc), headers={"X-Mesh-Request-Id": request_id}) from exc
+        status_code = int(getattr(exc, "status_code")) if isinstance(exc, LanePlacementError) else 502
+        headers = {"X-Mesh-Request-Id": request_id}
+        if lane_id:
+            headers["X-Mesh-Lane-Id"] = str(lane_id)
+        if choice and getattr(choice, "worker_id", None):
+            headers["X-Mesh-Worker-Id"] = str(choice.worker_id)
+        raise HTTPException(status_code=status_code, detail=str(exc), headers=headers) from exc
 
 
 @app.post("/api/router-requests")
@@ -3937,6 +4017,7 @@ def v1_chat_completions(
     x_mesh_pin_worker: str | None = Header(default=None),
     x_mesh_pin_base_url: str | None = Header(default=None),
     x_mesh_pin_lane_type: str | None = Header(default=None),
+    x_mesh_pin_lane_id: str | None = Header(default=None),
 ) -> Any:
     raw_payload = req.model_dump(by_alias=True)
     if x_mesh_pin_worker is not None:
@@ -3945,6 +4026,8 @@ def v1_chat_completions(
         raw_payload["mesh_pin_base_url"] = x_mesh_pin_base_url
     if x_mesh_pin_lane_type is not None:
         raw_payload["mesh_pin_lane_type"] = x_mesh_pin_lane_type
+    if x_mesh_pin_lane_id is not None:
+        raw_payload["mesh_pin_lane_id"] = x_mesh_pin_lane_id
     normalized = _normalize_route_request(route="chat", raw_payload=raw_payload)
     request_id = _create_router_request(
         route="chat",
@@ -3993,6 +4076,10 @@ def v1_chat_completions(
             if max_ctx is not None:
                 response.headers["X-Mesh-Model-Max-Ctx"] = str(max_ctx)
         return result
+    except HTTPException:
+        raise
+    except HTTPException:
+        raise
     except Exception as exc:
         row = _fetch_router_request(request_id)
         headers: dict[str, str] = {"X-Mesh-Request-Id": request_id}
@@ -4000,7 +4087,11 @@ def v1_chat_completions(
             headers["X-Mesh-Lane-Id"] = str(row["lane_id"])
         if row and row.get("worker_id"):
             headers["X-Mesh-Worker-Id"] = str(row["worker_id"])
-        status_code = 503 if "no READY lanes" in str(exc) or "lane busy" in str(exc) else 502
+        status_code = (
+            int(getattr(exc, "status_code"))
+            if isinstance(exc, LanePlacementError)
+            else (503 if "no READY lanes" in str(exc) or "lane busy" in str(exc) else 502)
+        )
         raise HTTPException(status_code=status_code, detail=str(exc), headers=headers)
 
 
@@ -4012,6 +4103,7 @@ def v1_embeddings(
     x_mesh_pin_worker: str | None = Header(default=None),
     x_mesh_pin_base_url: str | None = Header(default=None),
     x_mesh_pin_lane_type: str | None = Header(default=None),
+    x_mesh_pin_lane_id: str | None = Header(default=None),
 ) -> dict[str, Any]:
     raw_payload = dict(body or {})
     if x_mesh_pin_worker is not None:
@@ -4020,6 +4112,8 @@ def v1_embeddings(
         raw_payload["mesh_pin_base_url"] = x_mesh_pin_base_url
     if x_mesh_pin_lane_type is not None:
         raw_payload["mesh_pin_lane_type"] = x_mesh_pin_lane_type
+    if x_mesh_pin_lane_id is not None:
+        raw_payload["mesh_pin_lane_id"] = x_mesh_pin_lane_id
     normalized = _normalize_route_request(route="embeddings", raw_payload=raw_payload)
     request_id = _create_router_request(
         route="embeddings",
@@ -4046,6 +4140,8 @@ def v1_embeddings(
         if row and row.get("worker_id"):
             response.headers["X-Mesh-Worker-Id"] = str(row["worker_id"])
         return result
+    except HTTPException:
+        raise
     except Exception as exc:
         headers = {"X-Mesh-Request-Id": request_id}
         row = _fetch_router_request(request_id)
@@ -4053,7 +4149,11 @@ def v1_embeddings(
             headers["X-Mesh-Lane-Id"] = str(row["lane_id"])
         if row and row.get("worker_id"):
             headers["X-Mesh-Worker-Id"] = str(row["worker_id"])
-        status_code = 503 if "no READY lanes" in str(exc) or "lane busy" in str(exc) else 502
+        status_code = (
+            int(getattr(exc, "status_code"))
+            if isinstance(exc, LanePlacementError)
+            else (503 if "no READY lanes" in str(exc) or "lane busy" in str(exc) else 502)
+        )
         raise HTTPException(status_code=status_code, detail=str(exc), headers=headers)
 
 
@@ -4064,6 +4164,7 @@ def v1_images_generations(
     x_mesh_pin_worker: str | None = Header(default=None),
     x_mesh_pin_base_url: str | None = Header(default=None),
     x_mesh_pin_lane_type: str | None = Header(default=None),
+    x_mesh_pin_lane_id: str | None = Header(default=None),
 ) -> dict[str, Any]:
     raw_payload = req.model_dump()
     if x_mesh_pin_worker is not None:
@@ -4072,6 +4173,8 @@ def v1_images_generations(
         raw_payload["mesh_pin_base_url"] = x_mesh_pin_base_url
     if x_mesh_pin_lane_type is not None:
         raw_payload["mesh_pin_lane_type"] = x_mesh_pin_lane_type
+    if x_mesh_pin_lane_id is not None:
+        raw_payload["mesh_pin_lane_id"] = x_mesh_pin_lane_id
     normalized = _normalize_route_request(route="images", raw_payload=raw_payload)
     request_id = _create_router_request(
         route="images",
@@ -4105,7 +4208,11 @@ def v1_images_generations(
             headers["X-Mesh-Lane-Id"] = str(row["lane_id"])
         if row and row.get("worker_id"):
             headers["X-Mesh-Worker-Id"] = str(row["worker_id"])
-        status_code = 503 if "no READY lanes" in str(exc) or "lane busy" in str(exc) else 502
+        status_code = (
+            int(getattr(exc, "status_code"))
+            if isinstance(exc, LanePlacementError)
+            else (503 if "no READY lanes" in str(exc) or "lane busy" in str(exc) else 502)
+        )
         raise HTTPException(status_code=status_code, detail=str(exc), headers=headers)
 
 
@@ -4117,6 +4224,7 @@ def legacy_embeddings(
     x_mesh_pin_worker: str | None = Header(default=None),
     x_mesh_pin_base_url: str | None = Header(default=None),
     x_mesh_pin_lane_type: str | None = Header(default=None),
+    x_mesh_pin_lane_id: str | None = Header(default=None),
 ) -> dict[str, Any]:
     # Compatibility endpoint for legacy Ollama clients (like the current watchdog)
     # 1. Map 'prompt' to 'input' if needed (handled by _normalize_route_request)
@@ -4128,6 +4236,8 @@ def legacy_embeddings(
         raw_payload["mesh_pin_base_url"] = x_mesh_pin_base_url
     if x_mesh_pin_lane_type is not None:
         raw_payload["mesh_pin_lane_type"] = x_mesh_pin_lane_type
+    if x_mesh_pin_lane_id is not None:
+        raw_payload["mesh_pin_lane_id"] = x_mesh_pin_lane_id
     normalized = _normalize_route_request(route="embeddings", raw_payload=raw_payload)
     request_id = _create_router_request(
         route="embeddings",
@@ -4156,7 +4266,11 @@ def legacy_embeddings(
         headers = {"X-Mesh-Request-Id": request_id}
         if row and row.get("worker_id"):
             headers["X-Mesh-Worker-Id"] = str(row["worker_id"])
-        status_code = 503 if "no READY lanes" in str(exc) or "lane busy" in str(exc) else 502
+        status_code = (
+            int(getattr(exc, "status_code"))
+            if isinstance(exc, LanePlacementError)
+            else (503 if "no READY lanes" in str(exc) or "lane busy" in str(exc) else 502)
+        )
         raise HTTPException(status_code=status_code, detail=str(exc), headers=headers)
 
 

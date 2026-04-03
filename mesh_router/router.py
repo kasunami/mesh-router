@@ -134,6 +134,7 @@ def pick_lane_for_model(
     pin_worker: str | None = None,
     pin_base_url: str | None = None,
     pin_lane_type: str | None = None,
+    pin_lane_id: str | None = None,
     exclude_lane_ids: set[str] | None = None,
 ) -> LaneChoice:
     """
@@ -146,6 +147,78 @@ def pick_lane_for_model(
     load times, TPS, and error rates.
     """
     excluded = {lane_id for lane_id in (exclude_lane_ids or set()) if lane_id}
+
+    if pin_lane_id:
+        with db.connect() as conn:
+            with conn.cursor() as cur:
+                rows = q(
+                    cur,
+                    """
+                    SELECT l.lane_id, h.host_name, l.base_url, l.lane_type, l.backend_type,
+                           l.status,
+                           l.proxy_auth_metadata,
+                           l.current_model_name,
+                           cmp.max_ctx AS current_model_max_ctx
+                    FROM lanes l
+                    JOIN hosts h ON h.host_id = l.host_id
+                    LEFT JOIN models cm ON cm.model_name = l.current_model_name
+                    LEFT JOIN lane_model_policy cmp ON cmp.lane_id = l.lane_id AND cmp.model_id = cm.model_id
+                    WHERE l.lane_id=%s
+                      AND (%s::text IS NULL OR h.host_name=%s::text)
+                      AND (%s::text IS NULL OR l.base_url=%s::text)
+                      AND (%s::text IS NULL OR l.backend_type = %s::text)
+                      AND (%s::text IS NULL OR l.lane_type = %s::text)
+                      AND (%s::text[] IS NULL OR l.lane_id::text <> ALL(%s::text[]))
+                      AND (l.status='ready' OR (l.proxy_auth_metadata->>'control_plane')='mw')
+                      AND NOT EXISTS (
+                        SELECT 1 FROM router_requests rr
+                        WHERE rr.lane_id = l.lane_id
+                          AND rr.state = 'failed'
+                          AND rr.error_kind = 'proxy_error'
+                          AND rr.updated_at > now() - (%s * interval '1 second')
+                      )
+                      AND NOT EXISTS (
+                        SELECT 1 FROM router_leases rl
+                        WHERE rl.lane_id = l.lane_id
+                          AND rl.state = 'active'
+                          AND COALESCE(rl.last_heartbeat_at, rl.acquired_at) > now() - (%s * interval '1 second')
+                      )
+                    LIMIT 1
+                    """,
+                    (
+                        pin_lane_id,
+                        pin_worker,
+                        pin_worker,
+                        pin_base_url,
+                        pin_base_url,
+                        backend_type,
+                        backend_type,
+                        pin_lane_type,
+                        pin_lane_type,
+                        list(excluded) or None,
+                        list(excluded) or None,
+                        int(_RECENT_PROXY_ERROR_COOLDOWN_S),
+                        int(settings.default_lease_stale_seconds),
+                    ),
+                )
+        if not rows:
+            raise LanePlacementError("pinned lane_id not found or not eligible", status_code=404)
+        apply_mw_effective_status(rows, mw_state_db=mw_state_db, stale_seconds=settings.default_lease_stale_seconds)
+        r0 = rows[0]
+        if pin_lane_type and str(r0.get("lane_type") or "") != str(pin_lane_type):
+            raise LanePlacementError("pinned lane does not match requested lane_type", status_code=409)
+        eff = str(r0.get("effective_status") or r0.get("status") or "")
+        if eff != "ready":
+            raise LanePlacementError("pinned lane is not ready", status_code=409)
+        return LaneChoice(
+            lane_id=str(r0["lane_id"]),
+            worker_id=str(r0["host_name"]),
+            base_url=str(r0["base_url"]),
+            lane_type=str(r0["lane_type"]),
+            backend_type=str(r0.get("backend_type") or "llama"),
+            current_model_name=r0.get("current_model_name"),
+            current_model_max_ctx=int(r0["current_model_max_ctx"]) if r0.get("current_model_max_ctx") is not None else None,
+        )
 
     if pin_worker and pin_base_url:
         with db.connect() as conn:
