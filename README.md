@@ -98,3 +98,24 @@ Control-plane / operator APIs:
 Notes:
 - `perf.host_id` is canonicalized to MW-style ids (`Static-Deskix` → `static-deskix`) at ingest to avoid silent lookup mismatches during routing.
 - Tag-based route resolution ranks candidates using perf expectations when available (decode TPS / first-token latency for chat, total_ms for images); otherwise it falls back to deterministic defaults.
+
+## Requestor Routing Controls (OpenAI-compatible)
+
+OpenAI-compatible requests accept optional routing hints via request body *or* headers:
+
+- `mesh_pin_worker` / header `x-mesh-pin-worker`: prefer a specific host.
+- `mesh_pin_lane_type` / header `x-mesh-pin-lane-type`: prefer a lane type (`cpu|gpu|mlx|...`).
+- `mesh_pin_lane_id` / header `x-mesh-pin-lane-id`: **exact lane selection**. If set, MR will either route to that lane exactly or fail (no silent fallback).
+
+MR returns the resolved route as response headers:
+- `X-Mesh-Request-Id`, `X-Mesh-Worker-Id`, `X-Mesh-Lane-Id`, `X-Mesh-Model-Name`
+
+## Automatic Perf Observations
+
+MR records best-effort performance observations from real traffic into `mw_perf_observations` (MW state DB) when enabled:
+- `MESH_ROUTER_PERF_AUTO_OBSERVE_ENABLED` (default `true`)
+- `MESH_ROUTER_PERF_AUTO_OBSERVE_SAMPLE_RATE` (default `1.0`)
+- `MESH_ROUTER_PERF_AUTO_OBSERVE_MIN_ELAPSED_MS` (default `50`)
+- `MESH_ROUTER_PERF_AUTO_OBSERVE_MAX_TOTAL_MS` (default `300000`)
+
+Observations are best-effort and never block responses. Canceled requests are dropped; failed requests are recorded but excluded from expectations (`ok=false`).
