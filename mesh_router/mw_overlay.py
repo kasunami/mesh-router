@@ -4,6 +4,28 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 
+def _mw_effective_status_and_reason(
+    fact: dict[str, Any],
+    *,
+    stale_cutoff: datetime,
+) -> tuple[str, str | None]:
+    hb = fact.get("last_heartbeat_at")
+    actual_state = str(fact.get("actual_state") or "").strip()
+    health_status = str(fact.get("health_status") or "").strip()
+
+    if not fact:
+        return "offline", "mw_state_missing"
+    if not hb or not isinstance(hb, datetime):
+        return "offline", "stale_heartbeat"
+    if hb < stale_cutoff:
+        return "offline", "stale_heartbeat"
+    if actual_state not in {"running", "ready"}:
+        return "offline", "not_running"
+    if health_status != "healthy":
+        return "offline", "unhealthy"
+    return "ready", None
+
+
 def apply_mw_effective_status(
     rows: list[dict[str, Any]],
     *,
@@ -15,9 +37,10 @@ def apply_mw_effective_status(
     MW-managed and MW state lives in a separate DB.
 
     This is a *best-effort overlay*:
-    - If MW state DB is unavailable, rows are left unchanged.
+    - If MW state DB is unavailable, rows are marked offline with a reason.
     - Rows are modified in place with:
       - effective_status: "ready" | "offline" (when MW-managed lanes can be interpreted)
+      - readiness_reason: machine-readable exclusion reason when not ready
       - current_model_name: set to MW `actual_model` when present (for more truthful inventory)
     """
     mw_pairs: list[tuple[str, str]] = []
@@ -62,6 +85,14 @@ def apply_mw_effective_status(
                     key = (str(r["host_id"]), str(r["lane_id"]))
                     facts[key] = dict(r)
     except Exception:
+        for row in rows:
+            pam = row.get("proxy_auth_metadata") or {}
+            if not isinstance(pam, dict):
+                continue
+            if str(pam.get("control_plane") or "") != "mw":
+                continue
+            row["effective_status"] = "offline"
+            row["readiness_reason"] = "mw_state_unavailable"
         return
 
     now = datetime.now(tz=UTC)
@@ -77,19 +108,12 @@ def apply_mw_effective_status(
         if not host_id or not lane_id:
             continue
         f = facts.get((host_id, lane_id)) or {}
-        hb = f.get("last_heartbeat_at")
-        healthy = str(f.get("health_status") or "") == "healthy"
-        running = str(f.get("actual_state") or "") in {"running", "ready"}
-        if hb and isinstance(hb, datetime):
-            is_fresh = hb >= stale_cutoff
-        else:
-            is_fresh = False
-
-        if is_fresh and healthy and running:
-            row["effective_status"] = "ready"
-        else:
-            row["effective_status"] = "offline"
+        effective_status, readiness_reason = _mw_effective_status_and_reason(
+            f,
+            stale_cutoff=stale_cutoff,
+        )
+        row["effective_status"] = effective_status
+        row["readiness_reason"] = readiness_reason
 
         if f.get("actual_model"):
             row["current_model_name"] = f.get("actual_model")
-

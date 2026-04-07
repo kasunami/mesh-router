@@ -24,6 +24,7 @@ from pydantic import BaseModel
 from .config import settings
 from .db import db, mw_state_db
 from .inventory import fetch_lane_inventory, group_inventory_by_host
+from .mw_overlay import apply_mw_effective_status
 from .perf_registry import get_expectation, insert_observation
 from .route_resolver import resolve_route
 from .router import LanePlacementError, pick_lane_for_model
@@ -1528,63 +1529,16 @@ def api_lanes() -> dict[str, Any]:
         for row in rows
     ]
 
-    # Overlay readiness/current-model for MW-managed lanes.
-    mw_refs: list[tuple[int, str, str]] = []
-    for idx, item in enumerate(items):
-        meta = dict(item.get("proxy_auth_metadata") or {})
-        if str(meta.get("control_plane") or "") != "mw":
-            continue
-        mw_host_id = str(meta.get("mw_host_id") or "").strip()
-        mw_lane_id = str(meta.get("mw_lane_id") or "").strip()
-        if mw_host_id and mw_lane_id:
-            mw_refs.append((idx, mw_host_id, mw_lane_id))
-
-    if mw_refs:
-        try:
-            from datetime import timedelta
-
-            stale_after = timedelta(seconds=int(settings.default_lease_stale_seconds))
-            now = datetime.now(UTC)
-            host_ids = sorted({h for _i, h, _l in mw_refs})
-            lane_ids = sorted({l for _i, _h, l in mw_refs})
-            hb: dict[str, datetime] = {}
-            lane_state: dict[tuple[str, str], dict[str, Any]] = {}
-            with mw_state_db.connect() as conn:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        "SELECT host_id, last_heartbeat_at FROM mw_hosts WHERE host_id = ANY(%s)",
-                        (host_ids,),
-                    )
-                    for row in cur.fetchall():
-                        if row.get("last_heartbeat_at"):
-                            hb[str(row["host_id"])] = row["last_heartbeat_at"]
-                    cur.execute(
-                        """
-                        SELECT host_id, lane_id, actual_model, actual_state, health_status
-                        FROM mw_lanes
-                        WHERE host_id = ANY(%s) AND lane_id = ANY(%s)
-                        """,
-                        (host_ids, lane_ids),
-                    )
-                    for row in cur.fetchall():
-                        lane_state[(str(row["host_id"]), str(row["lane_id"]))] = dict(row)
-
-            for idx, mw_host_id, mw_lane_id in mw_refs:
-                item = items[idx]
-                last = hb.get(mw_host_id)
-                ls = lane_state.get((mw_host_id, mw_lane_id)) or {}
-                ready = bool(
-                    last
-                    and last > (now - stale_after)
-                    and str(ls.get("actual_state") or "") == "running"
-                    and str(ls.get("health_status") or "") == "healthy"
-                )
-                item["status"] = "ready" if ready else "offline"
-                if ls.get("actual_model"):
-                    item["current_model_name"] = str(ls.get("actual_model"))
-        except Exception:
-            # If MW state DB is unavailable, keep lane rows stable and rely on the core lane status.
-            pass
+    apply_mw_effective_status(
+        items,
+        mw_state_db=mw_state_db,
+        stale_seconds=settings.default_lease_stale_seconds,
+    )
+    for item in items:
+        if item.get("effective_status"):
+            item["status"] = str(item["effective_status"])
+        if "readiness_reason" not in item:
+            item["readiness_reason"] = None
 
     return {"items": items}
 
@@ -1617,6 +1571,7 @@ def api_inventory() -> InventoryResponse:
                 "base_url": str(lane.get("base_url") or "") or None,
                 "status": str(lane.get("effective_status") or lane.get("status") or ""),
                 "effective_status": str(lane.get("effective_status") or "") or None,
+                "readiness_reason": str(lane.get("readiness_reason") or "") or None,
                 "current_model_name": lane.get("current_model_name"),
                 "proxy_auth_metadata": dict(lane.get("proxy_auth_metadata") or {}),
                 "local_viable_models": local,

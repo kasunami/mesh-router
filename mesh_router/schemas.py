@@ -250,6 +250,7 @@ class InventoryLane(BaseModel):
     base_url: str | None = None
     status: str
     effective_status: str | None = None
+    readiness_reason: str | None = None
     current_model_name: str | None = None
     proxy_auth_metadata: dict[str, Any] | None = None
 

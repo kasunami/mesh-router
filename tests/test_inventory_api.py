@@ -117,6 +117,7 @@ class InventoryApiTests(unittest.TestCase):
         lane = host["lanes"][0]
         self.assertEqual(lane["lane_name"], "gpu")
         self.assertEqual(lane["status"], "ready")
+        self.assertIsNone(lane["readiness_reason"])
         self.assertEqual(lane["current_model_name"], "Qwen3.5-9B-Q4_K_M.gguf")
         self.assertEqual(len(lane["local_viable_models"]), 1)
         self.assertEqual(len(lane["remote_viable_models"]), 1)
@@ -124,4 +125,3 @@ class InventoryApiTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

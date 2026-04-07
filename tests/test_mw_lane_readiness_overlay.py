@@ -86,14 +86,13 @@ class MWLaneReadinessOverlayTests(unittest.TestCase):
                 "updated_at": None,
             }
         ]
-        # mw_hosts query + mw_lanes query
         now = datetime.now(tz=timezone.utc)
         mw_execute_rows = [
-            [{"host_id": "static-deskix", "last_heartbeat_at": now}],
             [
                 {
                     "host_id": "static-deskix",
                     "lane_id": "gpu",
+                    "last_heartbeat_at": now,
                     "actual_model": "Qwen3.5-9B-Q4_K_M.gguf",
                     "actual_state": "running",
                     "health_status": "healthy",
@@ -113,7 +112,55 @@ class MWLaneReadinessOverlayTests(unittest.TestCase):
         self.assertEqual(item["host_name"], "Static-Deskix")
         self.assertEqual(item["lane_name"], "gpu")
         self.assertEqual(item["status"], "ready")
+        self.assertIsNone(item["readiness_reason"])
         self.assertEqual(item["current_model_name"], "Qwen3.5-9B-Q4_K_M.gguf")
+
+    def test_api_lanes_reports_machine_readable_reason_when_mw_lane_not_running(self) -> None:
+        base_rows = [
+            {
+                "lane_id": "lane-1",
+                "host_id": "host-1",
+                "host_name": "Static-Deskix",
+                "lane_name": "gpu",
+                "lane_type": "gpu",
+                "backend_type": "llama",
+                "base_url": "http://10.0.0.99:11434",
+                "status": "ready",
+                "current_model_name": "Qwen3.5-9B-Q4_K_M.gguf",
+                "ram_budget_bytes": None,
+                "vram_budget_bytes": None,
+                "proxy_auth_mode": None,
+                "proxy_auth_metadata": {"control_plane": "mw", "mw_host_id": "static-deskix", "mw_lane_id": "gpu"},
+                "suspension_reason": None,
+                "last_probe_at": None,
+                "last_ok_at": None,
+                "created_at": None,
+                "updated_at": None,
+            }
+        ]
+        now = datetime.now(tz=timezone.utc)
+        mw_execute_rows = [
+            [
+                {
+                    "host_id": "static-deskix",
+                    "lane_id": "gpu",
+                    "last_heartbeat_at": now,
+                    "actual_model": "Qwen3.5-9B-Q4_K_M.gguf",
+                    "actual_state": "starting",
+                    "health_status": "healthy",
+                }
+            ],
+        ]
+
+        app_module.db = _FakeDb(_FakeCursor(execute_rows=[base_rows]))  # type: ignore[assignment]
+        app_module.mw_state_db = _FakeDb(_FakeCursor(execute_rows=mw_execute_rows))  # type: ignore[assignment]
+
+        client = TestClient(app_module.app)
+        resp = client.get("/api/lanes")
+        self.assertEqual(resp.status_code, 200)
+        item = resp.json()["items"][0]
+        self.assertEqual(item["status"], "offline")
+        self.assertEqual(item["readiness_reason"], "not_running")
 
 
 if __name__ == "__main__":
