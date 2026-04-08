@@ -316,6 +316,8 @@ def _mw_target_for_lane(*, cur: Any, lane_id: str) -> MwGrpcTarget | None:
         SELECT
           l.lane_id,
           l.lane_name,
+          l.lane_type,
+          l.backend_type,
           l.base_url,
           l.proxy_auth_metadata,
           h.host_name
@@ -338,6 +340,7 @@ def _mw_target_for_lane(*, cur: Any, lane_id: str) -> MwGrpcTarget | None:
     if inferred:
         mw_host_seen = False
         mw_lane_seen = False
+        fallback_lane_id: str | None = None
         try:
             with mw_state_db.connect() as conn:
                 with conn.cursor() as mw_cur:
@@ -351,6 +354,33 @@ def _mw_target_for_lane(*, cur: Any, lane_id: str) -> MwGrpcTarget | None:
                     seen = mw_cur.fetchone() or {}
                     mw_host_seen = bool(seen.get("host_exists"))
                     mw_lane_seen = bool(seen.get("lane_exists"))
+                    if mw_host_seen and not mw_lane_seen:
+                        mw_cur.execute(
+                            """
+                            SELECT lane_id, lane_type, backend_type, service_id
+                            FROM mw_lanes
+                            WHERE host_id=%s
+                            ORDER BY lane_id
+                            """,
+                            (inferred_host_id,),
+                        )
+                        candidate_rows = list(mw_cur.fetchall() or [])
+                        if len(candidate_rows) == 1:
+                            fallback_lane_id = str(candidate_rows[0].get("lane_id") or "").strip() or None
+                        else:
+                            desired_lane_type = str(row.get("lane_type") or "").strip().lower()
+                            desired_backend_type = str(row.get("backend_type") or "").strip().lower()
+                            preferred = None
+                            for candidate in candidate_rows:
+                                candidate_lane_type = str(candidate.get("lane_type") or "").strip().lower()
+                                candidate_backend_type = str(candidate.get("backend_type") or "").strip().lower()
+                                if desired_lane_type and candidate_lane_type == desired_lane_type:
+                                    preferred = candidate
+                                    break
+                                if desired_backend_type and candidate_backend_type == desired_backend_type:
+                                    preferred = candidate
+                            if preferred is not None:
+                                fallback_lane_id = str(preferred.get("lane_id") or "").strip() or None
         except Exception as exc:
             logger.warning(
                 "MW state lookup failed for inferred lane binding host=%s lane=%s: %s",
@@ -363,7 +393,7 @@ def _mw_target_for_lane(*, cur: Any, lane_id: str) -> MwGrpcTarget | None:
         meta = {
             "control_plane": "mw",
             "mw_host_id": inferred_host_id,
-            "mw_lane_id": inferred_lane_id,
+            "mw_lane_id": fallback_lane_id or inferred_lane_id,
             "mw_inferred": True,
         }
     base_url = str(row.get("base_url") or "")

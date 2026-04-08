@@ -19,6 +19,11 @@ class FakeCursor:
             return None
         return self._rows.pop(0)
 
+    def fetchall(self) -> list[dict]:
+        rows = list(self._rows)
+        self._rows.clear()
+        return rows
+
 
 class MwGrpcTargetTests(unittest.TestCase):
     def test_target_requires_control_plane_flag(self) -> None:
@@ -176,6 +181,72 @@ class MwGrpcTargetTests(unittest.TestCase):
         assert target is not None
         self.assertEqual(target.host_id, "pupix1")
         self.assertEqual(target.lane_id, "cpu")
+
+    def test_target_falls_back_to_unique_mw_lane_when_inferred_lane_is_missing(self) -> None:
+        class FakeMwCursor:
+            def __init__(self) -> None:
+                self._fetchone_calls = 0
+
+            def execute(self, sql: str, params: tuple) -> None:  # noqa: ARG002
+                return None
+
+            def fetchone(self) -> dict:
+                self._fetchone_calls += 1
+                if self._fetchone_calls == 1:
+                    return {"host_exists": True, "lane_exists": False}
+                return {}
+
+            def fetchall(self) -> list[dict]:
+                return [
+                    {
+                        "lane_id": "gpu",
+                        "lane_type": "mlx",
+                        "backend_type": "mlx",
+                        "service_id": "mlx-gateway",
+                    }
+                ]
+
+            def __enter__(self) -> "FakeMwCursor":
+                return self
+
+            def __exit__(self, exc_type, exc, tb) -> None:  # noqa: ANN001
+                return None
+
+        class FakeMwConn:
+            def cursor(self) -> FakeMwCursor:
+                return FakeMwCursor()
+
+            def __enter__(self) -> "FakeMwConn":
+                return self
+
+            def __exit__(self, exc_type, exc, tb) -> None:  # noqa: ANN001
+                return None
+
+        class FakeMwDb:
+            def connect(self) -> FakeMwConn:
+                return FakeMwConn()
+
+        cur = FakeCursor([
+            {
+                "lane_id": "lane-mlx",
+                "lane_name": "mlx",
+                "lane_type": "mlx",
+                "backend_type": "llama",
+                "base_url": "http://10.0.0.97:11435",
+                "proxy_auth_metadata": {},
+                "host_name": "tiffs-macbook",
+            }
+        ])
+        original_mw_state_db = app_module.mw_state_db
+        try:
+            app_module.mw_state_db = FakeMwDb()  # type: ignore[assignment]
+            target = app_module._mw_target_for_lane(cur=cur, lane_id="lane-mlx")  # type: ignore[attr-defined]
+        finally:
+            app_module.mw_state_db = original_mw_state_db  # type: ignore[assignment]
+        self.assertIsNotNone(target)
+        assert target is not None
+        self.assertEqual(target.host_id, "tiffs-macbook")
+        self.assertEqual(target.lane_id, "gpu")
 
 
 if __name__ == "__main__":
