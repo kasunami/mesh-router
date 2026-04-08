@@ -9,6 +9,11 @@ from .config import settings
 from .db import db, q
 
 
+def _is_recoverable_terminal_swap_suspension(reason: str | None) -> bool:
+    value = (reason or "").strip()
+    return value.startswith("swap:") and value.endswith((":failed", ":canceled"))
+
+
 def _probe_lane_health(base_url: str) -> tuple[bool, int | None, float, str | None]:
     """Probe the worker gateway health endpoint (no auth).
     Returns (ok, status_code, latency_ms, error_msg)
@@ -128,7 +133,7 @@ def probe_once() -> None:
             lanes = q(
                 cur,
                 """
-                SELECT lane_id, host_id, base_url, status
+                SELECT lane_id, host_id, base_url, status, suspension_reason
                 FROM lanes
                 WHERE lane_type != 'router'
                 ORDER BY base_url
@@ -156,6 +161,10 @@ def probe_once() -> None:
                 else:
                     new_status = "offline"
 
+                clear_recoverable_swap_suspension = ok and _is_recoverable_terminal_swap_suspension(
+                    lane.get("suspension_reason")
+                )
+
                 # Log to lane_probes
                 cur.execute(
                     """
@@ -167,17 +176,17 @@ def probe_once() -> None:
                 
                 # Update lane status.
                 # Preserve suspension_reason-based status (e.g. active swap in progress),
-                # BUT allow probe success to recover lanes stuck in 'error' state from a
-                # previously failed swap (suspension_reason = 'swap:UUID:failed').
+                # BUT allow a healthy probe to clear a stale terminal swap failure/cancel.
                 cur.execute(
                     """
                     UPDATE lanes
                     SET status=CASE
-                          WHEN COALESCE(suspension_reason, '') <> '' AND status != 'error' THEN status
+                          WHEN %s THEN %s::lane_status
+                          WHEN COALESCE(suspension_reason, '') <> '' THEN status
                           ELSE %s::lane_status
                         END,
                         suspension_reason=CASE
-                          WHEN %s AND status = 'error' THEN NULL
+                          WHEN %s THEN NULL
                           ELSE suspension_reason
                         END,
                         last_probe_at=now(),
@@ -186,7 +195,15 @@ def probe_once() -> None:
                         updated_at=now()
                     WHERE lane_id=%s
                     """,
-                    (new_status, ok, ok, (err or "probe_failed")[:240] if not ok else None, lane_id),
+                    (
+                        clear_recoverable_swap_suspension,
+                        new_status,
+                        new_status,
+                        clear_recoverable_swap_suspension,
+                        ok,
+                        (err or "probe_failed")[:240] if not ok else None,
+                        lane_id,
+                    ),
                 )
                 
                 # If ready, update host status too
