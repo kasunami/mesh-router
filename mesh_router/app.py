@@ -1810,32 +1810,12 @@ def api_inventory() -> InventoryResponse:
     for host in hosts:
         lanes_out: list[dict[str, Any]] = []
         for lane in host.get("lanes") or []:
-            viable = lane.pop("viable_models", []) or []
             lane_id = str(lane.get("lane_id") or "")
-            mw_authoritative = False
             with db.connect() as conn:
                 with conn.cursor() as cur:
-                    mw_authoritative = _mw_target_for_lane(cur=cur, lane_id=lane_id) is not None
-            filtered_viable = [
-                m for m in viable
-                if _should_include_candidate_for_capabilities(
-                    mw_authoritative=mw_authoritative,
-                    source_locality=str(m.get("locality") or ""),
-                )
-            ]
-            compatibility_filtered: list[dict[str, Any]] = []
-            for candidate in filtered_viable:
-                if _backend_compatibility_reason(
-                    model_name=str(candidate.get("model_name") or ""),
-                    tags=list(candidate.get("tags") or []),
-                    backend_type=lane.get("backend_type"),
-                    lane_type=lane.get("lane_type"),
-                ):
-                    continue
-                compatibility_filtered.append(candidate)
-            filtered_viable = compatibility_filtered
-            local = [m for m in filtered_viable if str(m.get("locality") or "") == "local"]
-            remote = [m for m in filtered_viable if str(m.get("locality") or "") == "remote"]
+                    _, capability_payload = _build_lane_capability_payload(cur, lane_id)
+            local = [candidate.model_dump() for candidate in capability_payload.local_viable_models]
+            remote = [candidate.model_dump() for candidate in capability_payload.remote_viable_models]
             lane_out = {
                 "lane_id": lane_id,
                 "lane_name": str(lane.get("lane_name") or ""),

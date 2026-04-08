@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 from mesh_router import app as app_module
 from mesh_router import inventory as inventory_module
+from mesh_router.schemas import LaneCapabilityResponse, LaneModelCandidate
 
 
 class _FakeCursor:
@@ -107,7 +108,16 @@ class InventoryApiTests(unittest.TestCase):
         inventory_module.mw_state_db = _FakeDb(_FakeCursor(fetchall_rows=[state_rows]))  # type: ignore[assignment]
 
         client = TestClient(app_module.app)
-        with mock.patch.object(app_module, "_mw_target_for_lane", return_value=object()):
+        capability_payload = LaneCapabilityResponse(
+            lane_id="lane-1",
+            capabilities=["chat", "inference"],
+            supported_models=["qwen3.5-9b"],
+            local_viable_models=[
+                LaneModelCandidate(model_name="qwen3.5-9b", tags=[], locality="local"),
+            ],
+            remote_viable_models=[],
+        )
+        with mock.patch.object(app_module, "_build_lane_capability_payload", return_value=({}, capability_payload)):
             resp = client.get("/api/inventory")
         self.assertEqual(resp.status_code, 200)
         body = resp.json()
@@ -149,13 +159,74 @@ class InventoryApiTests(unittest.TestCase):
         inventory_module.mw_state_db = _FakeDb(_FakeCursor(fetchall_rows=[[]]))  # type: ignore[assignment]
 
         client = TestClient(app_module.app)
-        with mock.patch.object(app_module, "_mw_target_for_lane", return_value=None):
+        capability_payload = LaneCapabilityResponse(
+            lane_id="lane-cpu",
+            capabilities=["chat", "inference"],
+            supported_models=["Falcon3-10B-Instruct-1.58bit"],
+            local_viable_models=[
+                LaneModelCandidate(
+                    model_name="Falcon3-10B-Instruct-1.58bit",
+                    tags=["bitnet", "cpu"],
+                    locality="local",
+                ),
+            ],
+            remote_viable_models=[],
+        )
+        with mock.patch.object(app_module, "_build_lane_capability_payload", return_value=({}, capability_payload)):
             resp = client.get("/api/inventory")
         self.assertEqual(resp.status_code, 200)
         lane = resp.json()["items"][0]["lanes"][0]
         self.assertEqual(
             [item["model_name"] for item in lane["local_viable_models"]],
             ["Falcon3-10B-Instruct-1.58bit"],
+        )
+
+    def test_api_inventory_uses_capability_payload_instead_of_raw_viability_rows(self) -> None:
+        base_rows = [
+            {
+                "lane_id": "lane-mlx",
+                "lane_name": "mlx",
+                "lane_type": "mlx",
+                "backend_type": "llama",
+                "base_url": "http://10.0.0.99:11435",
+                "status": "ready",
+                "proxy_auth_metadata": {},
+                "current_model_name": "Qwen3.5-9B-6bit",
+                "host_id": "host-1",
+                "host_name": "tiffs-macbook",
+                "viable_models": [
+                    {"model_name": "tokenizer.json", "tags": [], "locality": "local"},
+                    {"model_name": "Qwen3.5-9B-6bit", "tags": [], "locality": "local"},
+                ],
+            }
+        ]
+
+        app_module.db = _FakeDb(_FakeCursor(fetchall_rows=[base_rows]))  # type: ignore[assignment]
+        inventory_module.mw_state_db = _FakeDb(_FakeCursor(fetchall_rows=[[]]))  # type: ignore[assignment]
+
+        client = TestClient(app_module.app)
+        capability_payload = LaneCapabilityResponse(
+            lane_id="lane-mlx",
+            capabilities=["chat", "inference"],
+            supported_models=["Qwen3.5-9B-6bit"],
+            current_model="Qwen3.5-9B-6bit",
+            local_viable_models=[
+                LaneModelCandidate(
+                    model_name="Qwen3.5-9B-6bit",
+                    tags=[],
+                    locality="local",
+                    artifact_path="/Users/kasunami/models/Qwen3.5-9B-6bit",
+                ),
+            ],
+            remote_viable_models=[],
+        )
+        with mock.patch.object(app_module, "_build_lane_capability_payload", return_value=({}, capability_payload)):
+            resp = client.get("/api/inventory")
+        self.assertEqual(resp.status_code, 200)
+        lane = resp.json()["items"][0]["lanes"][0]
+        self.assertEqual(
+            [item["model_name"] for item in lane["local_viable_models"]],
+            ["Qwen3.5-9B-6bit"],
         )
 
 
