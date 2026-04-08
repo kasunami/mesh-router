@@ -39,6 +39,10 @@ def _candidate_mw_binding(row: dict[str, Any]) -> tuple[str, str, bool] | None:
     lane_name = str(row.get("lane_name") or "").strip()
     lane_type = str(row.get("lane_type") or "").strip().lower()
     inferred_lane_id = lane_name or (lane_type if lane_type in {"cpu", "gpu", "combined", "mlx"} else "")
+    # Legacy MR MLX rows often use lane_name="mlx" while MW publishes the live lane as lane_id="gpu"
+    # with lane_type="mlx". Prefer the MW lane id when we can infer that relationship.
+    if lane_type == "mlx" and inferred_lane_id == "mlx":
+        inferred_lane_id = "gpu"
     if host_id and inferred_lane_id:
         return host_id, inferred_lane_id, True
     return None
