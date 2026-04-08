@@ -803,6 +803,7 @@ def _ingest_artifacts(
     artifacts: list[Any],
     storage_scope: str,
     storage_provider: str | None,
+    root_path: str | None = None,
 ) -> list[dict[str, Any]]:
     ingested: list[dict[str, Any]] = []
     seen_paths: set[str] = set()
@@ -861,17 +862,32 @@ def _ingest_artifacts(
             }
         )
 
-    if seen_paths:
-        cur.execute(
-            """
-            UPDATE host_model_artifacts
-            SET present = false, updated_at = now()
-            WHERE host_id=%s
-              AND storage_scope=%s
-              AND local_path <> ALL(%s)
-            """,
-            (host_id, storage_scope, list(seen_paths)),
-        )
+    if root_path:
+        root_raw = str(root_path).rstrip("/")
+        root_prefix = f"{root_raw}/%"
+        if seen_paths:
+            cur.execute(
+                """
+                UPDATE host_model_artifacts
+                SET present = false, updated_at = now()
+                WHERE host_id=%s
+                  AND storage_scope=%s
+                  AND (local_path=%s OR local_path LIKE %s)
+                  AND local_path <> ALL(%s)
+                """,
+                (host_id, storage_scope, root_raw, root_prefix, list(seen_paths)),
+            )
+        else:
+            cur.execute(
+                """
+                UPDATE host_model_artifacts
+                SET present = false, updated_at = now()
+                WHERE host_id=%s
+                  AND storage_scope=%s
+                  AND (local_path=%s OR local_path LIKE %s)
+                """,
+                (host_id, storage_scope, root_raw, root_prefix),
+            )
     return ingested
 
 
@@ -5269,6 +5285,7 @@ def api_inventory_host_scan(req: HostInventoryScanRequest) -> dict[str, Any]:
                 artifacts=req.artifacts,
                 storage_scope="local",
                 storage_provider="local",
+                root_path=req.root_path,
             )
         conn.commit()
     return {
@@ -5300,6 +5317,7 @@ def api_inventory_archive_scan(req: ArchiveInventoryScanRequest) -> dict[str, An
                 artifacts=req.artifacts,
                 storage_scope="archive",
                 storage_provider=provider,
+                root_path=req.root_path,
             )
         conn.commit()
     return {

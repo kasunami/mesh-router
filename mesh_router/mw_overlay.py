@@ -147,6 +147,12 @@ def apply_mw_effective_status(
             f,
             stale_cutoff=stale_cutoff,
         )
+        row_backend = _normalize_router_backend_type(str(row.get("backend_type") or ""))
+        fact_backend = _normalize_router_backend_type(str(f.get("backend_type") or ""))
+        if not inferred and row_backend and fact_backend and row_backend != fact_backend:
+            row["effective_status"] = "offline"
+            row["readiness_reason"] = "backend_mismatch"
+            continue
         row["effective_status"] = effective_status
         row["readiness_reason"] = readiness_reason
 
