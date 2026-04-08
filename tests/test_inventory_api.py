@@ -124,6 +124,40 @@ class InventoryApiTests(unittest.TestCase):
         self.assertEqual(len(lane["local_viable_models"]), 1)
         self.assertEqual(len(lane["remote_viable_models"]), 0)
 
+    def test_api_inventory_filters_backend_incompatible_viable_models(self) -> None:
+        base_rows = [
+            {
+                "lane_id": "lane-cpu",
+                "lane_name": "cpu",
+                "lane_type": "cpu",
+                "backend_type": "bitnet",
+                "base_url": "http://10.0.0.99:11435",
+                "status": "ready",
+                "proxy_auth_metadata": {},
+                "current_model_name": "falcon3-10b",
+                "host_id": "host-1",
+                "host_name": "Static-Deskix",
+                "viable_models": [
+                    {"model_name": "Falcon3-10B-Instruct-1.58bit", "tags": ["bitnet", "cpu"], "locality": "local"},
+                    {"model_name": "Qwen3.5-4B-Q4_K_M.gguf", "tags": [], "locality": "local"},
+                    {"model_name": "flux1-schnell-Q4_K_S", "tags": [], "locality": "local"},
+                ],
+            }
+        ]
+
+        app_module.db = _FakeDb(_FakeCursor(fetchall_rows=[base_rows]))  # type: ignore[assignment]
+        inventory_module.mw_state_db = _FakeDb(_FakeCursor(fetchall_rows=[[]]))  # type: ignore[assignment]
+
+        client = TestClient(app_module.app)
+        with mock.patch.object(app_module, "_mw_target_for_lane", return_value=None):
+            resp = client.get("/api/inventory")
+        self.assertEqual(resp.status_code, 200)
+        lane = resp.json()["items"][0]["lanes"][0]
+        self.assertEqual(
+            [item["model_name"] for item in lane["local_viable_models"]],
+            ["Falcon3-10B-Instruct-1.58bit"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

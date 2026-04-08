@@ -1774,6 +1774,17 @@ def api_inventory() -> InventoryResponse:
                     source_locality=str(m.get("locality") or ""),
                 )
             ]
+            compatibility_filtered: list[dict[str, Any]] = []
+            for candidate in filtered_viable:
+                if _backend_compatibility_reason(
+                    model_name=str(candidate.get("model_name") or ""),
+                    tags=list(candidate.get("tags") or []),
+                    backend_type=lane.get("backend_type"),
+                    lane_type=lane.get("lane_type"),
+                ):
+                    continue
+                compatibility_filtered.append(candidate)
+            filtered_viable = compatibility_filtered
             local = [m for m in filtered_viable if str(m.get("locality") or "") == "local"]
             remote = [m for m in filtered_viable if str(m.get("locality") or "") == "remote"]
             lane_out = {
