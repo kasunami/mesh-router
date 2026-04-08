@@ -133,6 +133,33 @@ class PinWorkerPlacementTests(unittest.TestCase):
         self.assertEqual(choice.worker_id, "Static-Deskix")
         self.assertEqual(choice.lane_id, "lane-mw")
 
+    def test_pin_worker_treats_exact_artifact_request_as_loaded_when_alias_matches(self) -> None:
+        rows = [
+            {
+                "lane_id": "lane-cpu",
+                "host_name": "pupix1",
+                "base_url": "http://10.0.0.95:11435",
+                "lane_type": "cpu",
+                "backend_type": "llama",
+                "status": "ready",
+                "proxy_auth_metadata": {},
+                "current_model_name": "qwen3.5-4b",
+                "current_model_tags": ["Qwen3.5-4B-Q4_K_M.gguf", "general"],
+                "current_model_max_ctx": 8192,
+            }
+        ]
+
+        with mock.patch.object(router_module, "db", _Db()), mock.patch.object(router_module, "q", return_value=rows):
+            choice = router_module.pick_lane_for_model(
+                model="Qwen3.5-4B-Q4_K_M.gguf",
+                pin_worker="pupix1",
+                pin_lane_type="cpu",
+            )
+
+        self.assertEqual(choice.worker_id, "pupix1")
+        self.assertEqual(choice.lane_id, "lane-cpu")
+        self.assertEqual(choice.current_model_name, "qwen3.5-4b")
+
     def test_pin_worker_rejects_mw_lane_when_state_db_unavailable(self) -> None:
         rows = [
             {

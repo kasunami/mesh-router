@@ -486,11 +486,12 @@ def _model_request_matches_candidate(
         path_parts = re.split(r"[\\/]+", candidate_model_name)
         candidate_stem = path_parts[-1] if path_parts else candidate_model_name
         candidate_parent = path_parts[-2] if len(path_parts) >= 2 else ""
-        return (
+        if (
             candidate_model_name == requested_model_name
             or candidate_stem == requested_model_name
             or candidate_parent == requested_model_name
-        )
+        ):
+            return True
     request_keys = _model_lookup_keys(requested_model_name)
     if request_keys & _model_lookup_keys(candidate_model_name):
         return True
@@ -1745,10 +1746,22 @@ def api_inventory() -> InventoryResponse:
         lanes_out: list[dict[str, Any]] = []
         for lane in host.get("lanes") or []:
             viable = lane.pop("viable_models", []) or []
-            local = [m for m in viable if str(m.get("locality") or "") == "local"]
-            remote = [m for m in viable if str(m.get("locality") or "") == "remote"]
+            lane_id = str(lane.get("lane_id") or "")
+            mw_authoritative = False
+            with db.connect() as conn:
+                with conn.cursor() as cur:
+                    mw_authoritative = _mw_target_for_lane(cur=cur, lane_id=lane_id) is not None
+            filtered_viable = [
+                m for m in viable
+                if _should_include_candidate_for_capabilities(
+                    mw_authoritative=mw_authoritative,
+                    source_locality=str(m.get("locality") or ""),
+                )
+            ]
+            local = [m for m in filtered_viable if str(m.get("locality") or "") == "local"]
+            remote = [m for m in filtered_viable if str(m.get("locality") or "") == "remote"]
             lane_out = {
-                "lane_id": str(lane.get("lane_id") or ""),
+                "lane_id": lane_id,
                 "lane_name": str(lane.get("lane_name") or ""),
                 "host_id": str(lane.get("host_id") or ""),
                 "host_name": str(lane.get("host_name") or ""),

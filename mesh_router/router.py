@@ -116,11 +116,12 @@ def _model_matches_request(
         path_parts = re.split(r"[\\/]+", candidate)
         candidate_stem = path_parts[-1] if path_parts else candidate
         candidate_parent = path_parts[-2] if len(path_parts) >= 2 else ""
-        return (
+        if (
             candidate == requested_model
             or candidate_stem == requested_model
             or candidate_parent == requested_model
-        )
+        ):
+            return True
     request_keys = _model_lookup_keys(requested_model)
     if request_keys & _model_lookup_keys(candidate):
         return True

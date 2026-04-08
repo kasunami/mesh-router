@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import unittest
+from unittest import mock
 
 from fastapi.testclient import TestClient
 
@@ -106,7 +107,8 @@ class InventoryApiTests(unittest.TestCase):
         inventory_module.mw_state_db = _FakeDb(_FakeCursor(fetchall_rows=[state_rows]))  # type: ignore[assignment]
 
         client = TestClient(app_module.app)
-        resp = client.get("/api/inventory")
+        with mock.patch.object(app_module, "_mw_target_for_lane", return_value=object()):
+            resp = client.get("/api/inventory")
         self.assertEqual(resp.status_code, 200)
         body = resp.json()
         self.assertEqual(len(body["items"]), 1)
@@ -120,7 +122,7 @@ class InventoryApiTests(unittest.TestCase):
         self.assertIsNone(lane["readiness_reason"])
         self.assertEqual(lane["current_model_name"], "Qwen3.5-9B-Q4_K_M.gguf")
         self.assertEqual(len(lane["local_viable_models"]), 1)
-        self.assertEqual(len(lane["remote_viable_models"]), 1)
+        self.assertEqual(len(lane["remote_viable_models"]), 0)
 
 
 if __name__ == "__main__":
