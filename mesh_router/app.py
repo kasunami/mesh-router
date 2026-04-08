@@ -1508,6 +1508,47 @@ def _downstream_payload(req: ChatCompletionRequest) -> dict[str, Any]:
     return _strip_nones(raw)
 
 
+def _resolve_lane_downstream_alias(cur, *, lane_id: str, model_id: str) -> str | None:
+    cur.execute(
+        """
+        SELECT downstream_model_name
+        FROM lane_model_aliases
+        WHERE lane_id=%s AND model_id=%s
+        """,
+        (lane_id, model_id),
+    )
+    alias_row = cur.fetchone()
+    if alias_row and alias_row.get("downstream_model_name"):
+        return str(alias_row["downstream_model_name"])
+
+    lane_row = _resolve_lane(cur, lane_id)
+    host_row = _resolve_host(cur, str(lane_row["host_id"])) if lane_row else None
+    local_model_root = _local_model_root(host_row, lane_row)
+    host_id = str((lane_row or {}).get("host_id") or "").strip()
+    if not host_id:
+        return None
+    cur.execute(
+        """
+        SELECT local_path
+        FROM host_model_artifacts
+        WHERE host_id=%s AND model_id=%s AND present=true
+        ORDER BY char_length(local_path) ASC
+        """,
+        (host_id, model_id),
+    )
+    for row in cur.fetchall() or []:
+        local_path = str((row or {}).get("local_path") or "").strip()
+        if not local_path:
+            continue
+        if local_model_root and not _path_matches_local_model_root(
+            artifact_path=local_path,
+            local_model_root=local_model_root,
+        ):
+            continue
+        return local_path
+    return None
+
+
 def _resolve_downstream_model_for_lane(
     cur,
     *,
@@ -1532,20 +1573,21 @@ def _resolve_downstream_model_for_lane(
         current_model_name,
         current_model_tags,
     ):
+        cur.execute("SELECT model_id FROM models WHERE model_name=%s", (current_model_name,))
+        current_model_row = cur.fetchone()
+        if current_model_row and current_model_row.get("model_id"):
+            downstream_model = _resolve_lane_downstream_alias(
+                lane_id=lane_id,
+                model_id=str(current_model_row["model_id"]),
+            )
+            if downstream_model:
+                return downstream_model
         return current_model_name
 
     if model_id:
-        cur.execute(
-            """
-            SELECT downstream_model_name
-            FROM lane_model_aliases
-            WHERE lane_id=%s AND model_id=%s
-            """,
-            (lane_id, model_id),
-        )
-        alias_row = cur.fetchone()
-        if alias_row and alias_row.get("downstream_model_name"):
-            return str(alias_row["downstream_model_name"])
+        downstream_model = _resolve_lane_downstream_alias(lane_id=lane_id, model_id=model_id)
+        if downstream_model:
+            return downstream_model
 
     return requested_model_name
 

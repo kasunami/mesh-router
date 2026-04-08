@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from unittest import mock
 
 from mesh_router import app as app_module
 
@@ -99,6 +100,60 @@ class BackendCompatibilityTests(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         _sql, params = calls[0]
         self.assertEqual(params, ("lane-mlx", "/Users/kasunami/models", "/Users/kasunami/models/%"))
+
+    def test_resolve_downstream_model_for_lane_prefers_alias_for_current_model(self) -> None:
+        class _FakeCursor:
+            def __init__(self) -> None:
+                self._last_sql = ""
+
+            def execute(self, sql, params=None):  # noqa: ANN001
+                self._last_sql = sql
+
+            def fetchone(self):  # noqa: ANN001
+                if "FROM lanes l" in self._last_sql:
+                    return {"current_model_name": "Qwen3.5-9B-6bit", "current_model_tags": []}
+                if "SELECT model_id FROM models" in self._last_sql:
+                    return {"model_id": "model-1"}
+                return None
+
+        with mock.patch.object(
+            app_module,
+            "_resolve_lane_downstream_alias",
+            return_value="/Users/kasunami/models/Qwen3.5-9B-6bit",
+        ):
+            result = app_module._resolve_downstream_model_for_lane(  # type: ignore[attr-defined]
+                _FakeCursor(),
+                lane_id="lane-mlx",
+                requested_model_name="Qwen3.5-9B-6bit",
+                model_id="model-1",
+            )
+        self.assertEqual(result, "/Users/kasunami/models/Qwen3.5-9B-6bit")
+
+    def test_resolve_downstream_model_for_lane_uses_alias_for_non_current_model(self) -> None:
+        class _FakeCursor:
+            def __init__(self) -> None:
+                self._last_sql = ""
+
+            def execute(self, sql, params=None):  # noqa: ANN001
+                self._last_sql = sql
+
+            def fetchone(self):  # noqa: ANN001
+                if "FROM lanes l" in self._last_sql:
+                    return {"current_model_name": "Falcon3-10B-Instruct-1.58bit", "current_model_tags": []}
+                return None
+
+        with mock.patch.object(
+            app_module,
+            "_resolve_lane_downstream_alias",
+            return_value="/Users/kasunami/models/Qwen3.5-4B-MLX-4bit",
+        ):
+            result = app_module._resolve_downstream_model_for_lane(  # type: ignore[attr-defined]
+                _FakeCursor(),
+                lane_id="lane-mlx",
+                requested_model_name="Qwen3.5-4B-MLX-4bit",
+                model_id="model-2",
+            )
+        self.assertEqual(result, "/Users/kasunami/models/Qwen3.5-4B-MLX-4bit")
 
 
 if __name__ == "__main__":
