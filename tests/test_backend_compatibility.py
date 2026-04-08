@@ -84,6 +84,22 @@ class BackendCompatibilityTests(unittest.TestCase):
             )
         )
 
+    def test_prune_lane_model_viability_outside_local_root_uses_root_filter(self) -> None:
+        calls: list[tuple[str, tuple[object, ...] | None]] = []
+
+        class _FakeCursor:
+            def execute(self, sql, params=None):  # noqa: ANN001
+                calls.append((sql, params))
+
+        app_module._prune_lane_model_viability_outside_local_root(  # type: ignore[attr-defined]
+            _FakeCursor(),
+            lane_id="lane-mlx",
+            local_model_root="/Users/kasunami/models",
+        )
+        self.assertEqual(len(calls), 1)
+        _sql, params = calls[0]
+        self.assertEqual(params, ("lane-mlx", "/Users/kasunami/models", "/Users/kasunami/models/%"))
+
 
 if __name__ == "__main__":
     unittest.main()

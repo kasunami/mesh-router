@@ -152,6 +152,29 @@ def _path_matches_local_model_root(*, artifact_path: str | None, local_model_roo
     return normalized_path == normalized_root or normalized_path.startswith(f"{normalized_root}/")
 
 
+def _prune_lane_model_viability_outside_local_root(
+    cur: Any,
+    *,
+    lane_id: str,
+    local_model_root: str | None,
+) -> None:
+    if not local_model_root:
+        return
+    root_value = str(local_model_root).rstrip("/")
+    root_prefix = f"{root_value}/%"
+    cur.execute(
+        """
+        DELETE FROM lane_model_viability lmv
+        USING host_model_artifacts hma
+        WHERE lmv.lane_id=%s
+          AND lmv.source_locality='local'
+          AND lmv.artifact_id=hma.artifact_id
+          AND NOT (hma.local_path=%s OR hma.local_path LIKE %s)
+        """,
+        (lane_id, root_value, root_prefix),
+    )
+
+
 def _maybe_record_perf_observation(
     *,
     host_name: str | None,
@@ -1053,6 +1076,12 @@ def _build_lane_capability_payload(cur, lane_ref: str) -> tuple[dict[str, Any], 
     mw_authoritative = mw_target is not None
     host_row = _resolve_host(cur, resolved_host_id)
     local_model_root = _local_model_root(host_row, lane_row)
+    if mw_authoritative:
+        _prune_lane_model_viability_outside_local_root(
+            cur,
+            lane_id=resolved_lane_id,
+            local_model_root=local_model_root,
+        )
     cur.execute(
         """
         SELECT
