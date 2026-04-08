@@ -4,6 +4,46 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 
+def _normalize_router_backend_type(value: str | None) -> str:
+    raw = str(value or "").strip().lower()
+    if raw in {"llama.cpp", "llama"}:
+        return "llama"
+    if raw in {"bitnet.cpp", "bitnet"}:
+        return "bitnet"
+    if raw in {"stable-diffusion.cpp", "sd", "stable-diffusion"}:
+        return "sd"
+    if raw == "mlx":
+        return "mlx"
+    return raw
+
+
+def _normalize_mw_host_id(host_name: str | None) -> str:
+    return str(host_name or "").strip().lower().replace(" ", "-")
+
+
+def _candidate_mw_binding(row: dict[str, Any]) -> tuple[str, str, bool] | None:
+    pam = row.get("proxy_auth_metadata") or {}
+    if isinstance(pam, dict) and str(pam.get("control_plane") or "").strip().lower() == "mw":
+        host_id = str(pam.get("mw_host_id") or "").strip() or _normalize_mw_host_id(str(row.get("host_name") or ""))
+        lane_id = str(pam.get("mw_lane_id") or "").strip()
+        if not lane_id:
+            lane_name = str(row.get("lane_name") or "").strip()
+            lane_type = str(row.get("lane_type") or "").strip().lower()
+            lane_id = lane_name or (lane_type if lane_type in {"cpu", "gpu", "combined", "mlx"} else "")
+        if host_id and lane_id:
+            return host_id, lane_id, False
+        return None
+
+    # Legacy MR rows may not be explicitly tagged MW-managed even though MW publishes state for the host/lane.
+    host_id = _normalize_mw_host_id(str(row.get("host_name") or ""))
+    lane_name = str(row.get("lane_name") or "").strip()
+    lane_type = str(row.get("lane_type") or "").strip().lower()
+    inferred_lane_id = lane_name or (lane_type if lane_type in {"cpu", "gpu", "combined", "mlx"} else "")
+    if host_id and inferred_lane_id:
+        return host_id, inferred_lane_id, True
+    return None
+
+
 def _mw_effective_status_and_reason(
     fact: dict[str, Any],
     *,
@@ -45,15 +85,9 @@ def apply_mw_effective_status(
     """
     mw_pairs: list[tuple[str, str]] = []
     for row in rows:
-        pam = row.get("proxy_auth_metadata") or {}
-        if not isinstance(pam, dict):
-            continue
-        if str(pam.get("control_plane") or "") != "mw":
-            continue
-        host_id = str(pam.get("mw_host_id") or "").strip()
-        lane_id = str(pam.get("mw_lane_id") or "").strip()
-        if host_id and lane_id:
-            mw_pairs.append((host_id, lane_id))
+        binding = _candidate_mw_binding(row)
+        if binding is not None:
+            mw_pairs.append((binding[0], binding[1]))
     if not mw_pairs:
         return
 
@@ -74,7 +108,8 @@ def apply_mw_effective_status(
                       mh.last_heartbeat_at,
                       ml.actual_state,
                       ml.health_status,
-                      ml.actual_model
+                      ml.actual_model,
+                      ml.backend_type
                     FROM wanted w
                     LEFT JOIN mw_hosts mh ON mh.host_id = w.host_id
                     LEFT JOIN mw_lanes ml ON ml.host_id = w.host_id AND ml.lane_id = w.lane_id
@@ -86,10 +121,10 @@ def apply_mw_effective_status(
                     facts[key] = dict(r)
     except Exception:
         for row in rows:
-            pam = row.get("proxy_auth_metadata") or {}
-            if not isinstance(pam, dict):
+            binding = _candidate_mw_binding(row)
+            if binding is None:
                 continue
-            if str(pam.get("control_plane") or "") != "mw":
+            if binding[2]:
                 continue
             row["effective_status"] = "offline"
             row["readiness_reason"] = "mw_state_unavailable"
@@ -98,16 +133,16 @@ def apply_mw_effective_status(
     now = datetime.now(tz=UTC)
     stale_cutoff = now - timedelta(seconds=int(stale_seconds))
     for row in rows:
-        pam = row.get("proxy_auth_metadata") or {}
-        if not isinstance(pam, dict):
+        binding = _candidate_mw_binding(row)
+        if binding is None:
             continue
-        if str(pam.get("control_plane") or "") != "mw":
-            continue
-        host_id = str(pam.get("mw_host_id") or "").strip()
-        lane_id = str(pam.get("mw_lane_id") or "").strip()
-        if not host_id or not lane_id:
-            continue
+        host_id, lane_id, inferred = binding
         f = facts.get((host_id, lane_id)) or {}
+        if inferred and not any(
+            f.get(key) is not None
+            for key in ("last_heartbeat_at", "actual_state", "health_status", "actual_model", "backend_type")
+        ):
+            continue
         effective_status, readiness_reason = _mw_effective_status_and_reason(
             f,
             stale_cutoff=stale_cutoff,
@@ -117,3 +152,5 @@ def apply_mw_effective_status(
 
         if f.get("actual_model"):
             row["current_model_name"] = f.get("actual_model")
+        if f.get("backend_type"):
+            row["backend_type"] = _normalize_router_backend_type(str(f.get("backend_type") or ""))

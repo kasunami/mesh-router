@@ -400,9 +400,10 @@ def pick_lane_for_model(
                           ORDER BY m.model_name
                         )
                         FROM lane_model_viability lmv
+                        JOIN host_model_artifacts hma ON hma.artifact_id = lmv.artifact_id
                         JOIN models m ON m.model_id=lmv.model_id
                         LEFT JOIN lane_model_policy p ON p.lane_id=l.lane_id AND p.model_id=lmv.model_id
-                        WHERE lmv.lane_id=l.lane_id AND lmv.is_viable=true AND lmv.source_locality='local'
+                        WHERE lmv.lane_id=l.lane_id AND lmv.is_viable=true AND lmv.source_locality='local' AND COALESCE(hma.present, false)=true
                       ), '[]'::jsonb) as local_viable_models,
                       COALESCE((
                         SELECT jsonb_agg(
@@ -414,9 +415,10 @@ def pick_lane_for_model(
                           ORDER BY m.model_name
                         )
                         FROM lane_model_viability lmv
+                        JOIN host_model_artifacts hma ON hma.artifact_id = lmv.artifact_id
                         JOIN models m ON m.model_id=lmv.model_id
                         LEFT JOIN lane_model_policy p ON p.lane_id=l.lane_id AND p.model_id=lmv.model_id
-                        WHERE lmv.lane_id=l.lane_id AND lmv.is_viable=true AND lmv.source_locality='remote'
+                        WHERE lmv.lane_id=l.lane_id AND lmv.is_viable=true AND lmv.source_locality='remote' AND COALESCE(hma.present, false)=true
                       ), '[]'::jsonb) as remote_viable_models
                     FROM lanes l
                     JOIN hosts h ON h.host_id = l.host_id

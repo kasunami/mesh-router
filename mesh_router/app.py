@@ -24,7 +24,7 @@ from pydantic import BaseModel
 from .config import settings
 from .db import db, mw_state_db
 from .inventory import fetch_lane_inventory, group_inventory_by_host
-from .mw_overlay import apply_mw_effective_status
+from .mw_overlay import apply_mw_effective_status, _normalize_router_backend_type
 from .perf_registry import get_expectation, insert_observation
 from .route_resolver import resolve_route
 from .router import LanePlacementError, pick_lane_for_model
@@ -77,6 +77,56 @@ def _mw_client() -> MeshWorkerCommandClient:
 
 def _normalize_mw_host_id(host_name: str) -> str:
     return (host_name or "").strip().lower().replace(" ", "-")
+
+
+def _infer_mw_lane_id_for_row(row: dict[str, Any]) -> str | None:
+    lane_name = str(row.get("lane_name") or "").strip()
+    if lane_name:
+        return lane_name
+    lane_type = str(row.get("lane_type") or "").strip().lower()
+    if lane_type in {"cpu", "gpu", "combined", "mlx"}:
+        return lane_type
+    return None
+
+
+def _backend_compatibility_reason(
+    *,
+    model_name: str,
+    tags: list[str] | None,
+    backend_type: str | None,
+    lane_type: str | None,
+) -> str | None:
+    normalized_backend = _normalize_router_backend_type(backend_type)
+    normalized_lane_type = str(lane_type or "").strip().lower()
+    normalized_tags = set(_normalized_model_tags(tags))
+    lowered_model = str(model_name or "").strip().lower()
+
+    is_flux = (
+        lowered_model.startswith("flux")
+        or "flux" in normalized_tags
+        or "stable-diffusion" in normalized_tags
+        or "image" in normalized_tags
+    )
+    if is_flux:
+        if normalized_backend != "sd":
+            return "model requires stable-diffusion backend"
+        return None
+
+    is_bitnet = (
+        "bitnet" in normalized_tags
+        or "1.58bit" in lowered_model
+        or lowered_model.endswith("bit")
+    )
+    if is_bitnet:
+        if normalized_backend != "bitnet":
+            return "model requires bitnet backend"
+        if normalized_lane_type != "cpu":
+            return "bitnet models are cpu-only"
+        return None
+
+    if normalized_backend in {"sd", "bitnet"}:
+        return f"model is incompatible with backend {normalized_backend}"
+    return None
 
 
 def _maybe_record_perf_observation(
@@ -234,9 +284,33 @@ def _mw_target_for_lane(*, cur: Any, lane_id: str) -> MwGrpcTarget | None:
         return None
     meta = row.get("proxy_auth_metadata") or {}
     if not isinstance(meta, dict):
-        return None
+        meta = {}
     if str(meta.get("control_plane") or "").strip().lower() != "mw":
-        return None
+        inferred_host_id = _normalize_mw_host_id(str(row.get("host_name") or ""))
+        inferred_lane_id = _infer_mw_lane_id_for_row(row)
+        if not inferred_host_id or not inferred_lane_id:
+            return None
+        try:
+            with mw_state_db.connect() as conn:
+                with conn.cursor() as mw_cur:
+                    mw_cur.execute(
+                        """
+                        SELECT 1
+                        FROM mw_lanes
+                        WHERE host_id=%s AND lane_id=%s
+                        LIMIT 1
+                        """,
+                        (inferred_host_id, inferred_lane_id),
+                    )
+                    if not mw_cur.fetchone():
+                        return None
+        except Exception:
+            return None
+        meta = {
+            "control_plane": "mw",
+            "mw_host_id": inferred_host_id,
+            "mw_lane_id": inferred_lane_id,
+        }
     base_url = str(row.get("base_url") or "")
     parsed = urlparse(base_url)
     host = parsed.hostname
@@ -246,7 +320,7 @@ def _mw_target_for_lane(*, cur: Any, lane_id: str) -> MwGrpcTarget | None:
     endpoint = f"{host}:{port}"
     host_id = str(meta.get("mw_host_id") or _normalize_mw_host_id(str(row.get("host_name") or "")))
     lane_name = str(row.get("lane_name") or "").strip()
-    lane_id_str = str(meta.get("mw_lane_id") or lane_name)
+    lane_id_str = str(meta.get("mw_lane_id") or lane_name or _infer_mw_lane_id_for_row(row) or "")
     if not host_id or not lane_id_str:
         return None
     return MwGrpcTarget(endpoint=endpoint, host_id=host_id, lane_id=lane_id_str)
@@ -980,6 +1054,42 @@ def _build_lane_capability_payload(cur, lane_ref: str) -> tuple[dict[str, Any], 
         model_name = str(row["model_name"])
         artifact_id = str(row["artifact_id"])
         size_bytes = int(row["size_bytes"]) if row.get("size_bytes") is not None else None
+        compatibility_reason = _backend_compatibility_reason(
+            model_name=model_name,
+            tags=row.get("tags") or [],
+            backend_type=lane_row.get("backend_type"),
+            lane_type=lane_type,
+        )
+        source_locality = "local" if str(row["host_id"]) == resolved_host_id else "remote"
+        if compatibility_reason:
+            cur.execute(
+                """
+                INSERT INTO lane_model_viability (
+                  lane_id, model_id, artifact_id, source_locality,
+                  fits_memory, projected_free_bytes, required_memory_bytes,
+                  tps_estimate, tps_source, is_viable, reason, last_checked_at
+                )
+                VALUES (%s, %s, %s, %s, false, NULL, NULL, NULL, 'unknown', false, %s, now())
+                ON CONFLICT (lane_id, model_id, source_locality) DO UPDATE
+                SET artifact_id = EXCLUDED.artifact_id,
+                    fits_memory = EXCLUDED.fits_memory,
+                    projected_free_bytes = EXCLUDED.projected_free_bytes,
+                    required_memory_bytes = EXCLUDED.required_memory_bytes,
+                    tps_estimate = EXCLUDED.tps_estimate,
+                    tps_source = EXCLUDED.tps_source,
+                    is_viable = EXCLUDED.is_viable,
+                    reason = EXCLUDED.reason,
+                    last_checked_at = now()
+                """,
+                (
+                    resolved_lane_id,
+                    model_id,
+                    artifact_id,
+                    source_locality,
+                    compatibility_reason,
+                ),
+            )
+            continue
         tuning_profile = _tuning_profile_metrics(
             cur,
             host_id=resolved_host_id,
@@ -1021,7 +1131,6 @@ def _build_lane_capability_payload(cur, lane_ref: str) -> tuple[dict[str, Any], 
         if projected_free_bytes is not None:
             projected_free_bytes -= runtime_overhead
         fits_memory = projected_free_bytes is not None and projected_free_bytes >= reserved_headroom
-        source_locality = "local" if str(row["host_id"]) == resolved_host_id else "remote"
         if fits_memory and viability.is_viable:
             locality = source_locality
         elif fits_memory and viability.estimated_tps is None:
@@ -4530,6 +4639,7 @@ def api_lane_swap_model(lane_id: str, req: SwapModelRequest) -> dict[str, Any]:
     active_before_action: list[dict[str, Any]] = []
     suspension_reason = "exclusive swap profile active"
     swap_id: str | None = None
+    mw_target: MwGrpcTarget | None = None
     host_id: str | None = None
     host_name: str | None = None
     target_lane_slot: str | None = None
@@ -4628,6 +4738,7 @@ def api_lane_swap_model(lane_id: str, req: SwapModelRequest) -> dict[str, Any]:
                 (preflight.model_name, preflight.artifact_path),
             )
             artifact_row = cur.fetchone()
+            mw_target = _mw_target_for_lane(cur=cur, lane_id=str(preflight.lane_id))
             swap_id = _create_lane_swap(
                 cur,
                 lane_id=str(preflight.lane_id),
@@ -4724,14 +4835,35 @@ def api_lane_swap_model(lane_id: str, req: SwapModelRequest) -> dict[str, Any]:
                 }
                 ok = True
         if not ok:
-            _, payload = _build_swap_gateway_payload(
-                lane_state=lane_state,
-                preflight=preflight,
-                artifact_row=artifact_row,
-                requested_model_name=req.model_name,
-                swap_id=swap_id,
-            )
-            data = _call_lane_swap_gateway(base_url=base_url, payload=payload)
+            if mw_target is not None and settings.mw_control_enabled:
+                result = _mw_client().send_command(
+                    host_id=mw_target.host_id,
+                    message_type="load_model",
+                    payload={"lane_id": mw_target.lane_id, "model_name": preflight.model_name},
+                    wait=True,
+                    timeout_seconds=max(30, settings.mw_command_timeout_seconds),
+                )
+                if not bool(result.get("ok", False)):
+                    raise HTTPException(status_code=409, detail=str(result.get("error") or "MW load_model failed"))
+                data = {
+                    "ok": True,
+                    "model_name": preflight.model_name,
+                    "model_path": preflight.artifact_path,
+                    "model_alias": preflight.model_name,
+                    "copy_time_ms": 0,
+                    "load_time_ms": 0,
+                    "ready_time_ms": 0,
+                    "control_plane": "mw",
+                }
+            else:
+                _, payload = _build_swap_gateway_payload(
+                    lane_state=lane_state,
+                    preflight=preflight,
+                    artifact_row=artifact_row,
+                    requested_model_name=req.model_name,
+                    swap_id=swap_id,
+                )
+                data = _call_lane_swap_gateway(base_url=base_url, payload=payload)
             ok = True
     except HTTPException as exc_http:
         err_kind = "swap_http_error"

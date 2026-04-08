@@ -36,9 +36,10 @@ def fetch_lane_inventory(*, cur: Any) -> list[dict[str, Any]]:
               ORDER BY m.model_name
             )
             FROM lane_model_viability lmv
+            JOIN host_model_artifacts hma ON hma.artifact_id = lmv.artifact_id
             JOIN models m ON m.model_id=lmv.model_id
             LEFT JOIN lane_model_policy p ON p.lane_id=l.lane_id AND p.model_id=lmv.model_id
-            WHERE lmv.lane_id=l.lane_id AND lmv.is_viable=true
+            WHERE lmv.lane_id=l.lane_id AND lmv.is_viable=true AND COALESCE(hma.present, false)=true
           ), '[]'::jsonb) as viable_models
         FROM lanes l
         JOIN hosts h ON h.host_id = l.host_id
@@ -73,4 +74,3 @@ def group_inventory_by_host(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         else:
             h["tags"].append("stable")
     return list(by_host.values())
-

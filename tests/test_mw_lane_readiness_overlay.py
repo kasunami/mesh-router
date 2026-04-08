@@ -162,6 +162,55 @@ class MWLaneReadinessOverlayTests(unittest.TestCase):
         self.assertEqual(item["status"], "offline")
         self.assertEqual(item["readiness_reason"], "not_running")
 
+    def test_api_lanes_infers_mw_for_legacy_cpu_lane_without_metadata(self) -> None:
+        base_rows = [
+            {
+                "lane_id": "lane-cpu",
+                "host_id": "host-1",
+                "host_name": "pupix1",
+                "lane_name": "cpu",
+                "lane_type": "cpu",
+                "backend_type": "llama",
+                "base_url": "http://10.0.0.95:11435",
+                "status": "ready",
+                "current_model_name": "Falcon3-10B-Instruct-1.58bit",
+                "ram_budget_bytes": None,
+                "vram_budget_bytes": None,
+                "proxy_auth_mode": None,
+                "proxy_auth_metadata": {},
+                "suspension_reason": None,
+                "last_probe_at": None,
+                "last_ok_at": None,
+                "created_at": None,
+                "updated_at": None,
+            }
+        ]
+        now = datetime.now(tz=timezone.utc)
+        mw_execute_rows = [
+            [
+                {
+                    "host_id": "pupix1",
+                    "lane_id": "cpu",
+                    "last_heartbeat_at": now,
+                    "actual_model": "qwen3.5-4b",
+                    "actual_state": "running",
+                    "health_status": "healthy",
+                    "backend_type": "llama.cpp",
+                }
+            ],
+        ]
+
+        app_module.db = _FakeDb(_FakeCursor(execute_rows=[base_rows]))  # type: ignore[assignment]
+        app_module.mw_state_db = _FakeDb(_FakeCursor(execute_rows=mw_execute_rows))  # type: ignore[assignment]
+
+        client = TestClient(app_module.app)
+        resp = client.get("/api/lanes")
+        self.assertEqual(resp.status_code, 200)
+        item = resp.json()["items"][0]
+        self.assertEqual(item["status"], "ready")
+        self.assertEqual(item["current_model_name"], "qwen3.5-4b")
+        self.assertEqual(item["backend_type"], "llama")
+
 
 if __name__ == "__main__":
     unittest.main()
