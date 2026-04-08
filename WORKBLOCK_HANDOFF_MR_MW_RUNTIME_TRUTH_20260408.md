@@ -8,34 +8,46 @@ This block hardened `mesh-router` so CPU text lanes on legacy MR rows can use MW
 
 Primary outcome:
 
-- `pupix1` pinned CPU routing is fixed and proven live for a real llama.cpp CPU lane request.
-- `Static-Deskix` false local CPU availability no longer fails through rsync host-key verification first; it now fails truthfully through MW load-model with a local model-resolution error.
-- Benchability truth is better aligned with MW runtime authority, but one publication caveat remains for image lanes.
+- `pupix1` pinned CPU routing is fixed and proven live again for an exact GGUF request on a real llama.cpp CPU lane.
+- `Static-Deskix` CPU publication is now MW-authoritative: only locally resolvable chat models are published on the router inventory path, and valid local CPU requests succeed.
+- `Static-Deskix` missing models no longer fail through rsync host-key verification first; they now fail narrowly through MW viability/load-model truth.
+- `image-gpu` publication truth is fixed live on both `Static-Deskix` and `pupix1`.
+- One downstream caveat remains in `mesh-computer`: stale discovery rows are not pruned away even after router inventory truth is corrected.
 
 ## Root Causes
 
 ### Deskix
 
-The false-positive Deskix CPU benchability came from router-side truth drift:
+There were two separate Deskix truth problems:
 
-- `lane_model_viability` still contained stale "local viable" rows for artifacts that were not actually present locally.
-- routing/inventory had already been tightened to require `host_model_artifacts.present=true`, but legacy CPU auto-swap still fell back to MR's rsync path because `_mw_target_for_lane()` returned `None` for untagged legacy CPU rows.
-- when the route tried to auto-swap `DeepSeek-R1-Distill-Qwen-14B-Q4_K_M.gguf`, MR used remote copy instead of MW load-model and surfaced an rsync host-key failure.
+1. Legacy CPU rows were not always treated as MW-authoritative, so missing models fell through to MR's old rsync auto-swap path.
+2. `/api/inventory` was still publishing raw `remote_viable_models` for MW-authoritative lanes even after `/api/lanes/{lane_id}/capabilities` had been tightened.
 
-After the fix, the same request now fails truthfully via MW:
+That combination made Deskix look broader and more benchable than it really was.
 
-- `llama-cpu could not resolve model 'DeepSeek-R1-Distill-Qwen-14B-Q4_K_M.gguf' from /etc/mesh-llama/llama-cpu.json`
+After the fixes:
 
-That is the correct authority boundary: the model is not locally resolvable on Deskix.
+- `Static-Deskix` CPU publishes only the locally resolvable chat models:
+  - `LFM2.5-350M-Q4_K_M.gguf`
+  - `Qwen3.5-0.8B-Q4_K_M.gguf`
+  - `Qwen3.5-2B-Q4_K_M.gguf`
+  - `Qwen3.5-4B-Q4_K_M.gguf`
+  - `Qwen3.5-9B-Q4_K_M.gguf`
+- `remote_viable_models` is now empty on that MW-authoritative CPU lane
+- a valid local Deskix CPU request now succeeds
+- a missing model now fails through MW with:
+  - `model is not viable for this lane`
+
+That is the correct authority boundary: the lane can serve the valid local candidates and cleanly excludes the missing ones.
 
 ### pupix1
 
-The original `activate_profile split_llama_cpu` "stuck at started" symptom was stale interpretation, not the final blocker:
+There were two real `pupix1` CPU issues:
 
-- live `mw_transitions` rows showed the transition had actually completed
-- `mw_lanes` showed `pupix1 cpu` as `llama.cpp`, `running`, `healthy`
+1. legacy untagged CPU lanes were not always treated as MW-authoritative for load-model/routing
+2. exact artifact requests such as `Qwen3.5-4B-Q4_K_M.gguf` did not match the lane's loaded alias form (`qwen3.5-4b`), so the router tried to swap an already-loaded model
 
-The real issue was that legacy untagged CPU lanes were not being treated as MW-authoritative for load-model/routing. Once that was corrected, pinned CPU routing on `pupix1` worked again.
+Once MW authority was restored and exact-artifact requests were allowed to match the loaded alias/tags, pinned CPU routing on `pupix1` worked again.
 
 ## Code Changes
 
@@ -48,17 +60,25 @@ Repo: `mesh-router`
     - at least an MW host heartbeat/truth row
   - capability metadata now exposes normalized backend type
   - capability response `capabilities` now respects `sd` backend for image-style lanes instead of always defaulting to chat
+  - `/api/inventory` now applies the same MW-authoritative locality filter as the per-lane capability endpoint, so remote candidates are hidden on MW-owned lanes
+  - exact artifact requests now fall back to normalized lookup keys/tags when the runtime reports a loaded alias instead of the full artifact name
+- `mesh_router/router.py`
+  - exact artifact requests now fall back to normalized lookup keys/tags during lane selection, which prevents unnecessary swaps when a lane already has the requested model loaded under an alias
 - `tests/test_mw_grpc_target.py`
   - updated inferred-MW tests for the new host/lane existence semantics
   - added a host-truth fallback test for legacy CPU rows
+- `tests/test_inventory_api.py`
+  - inventory regression now locks in MW-authoritative remote-candidate suppression
+- `tests/test_router_pin_worker.py`
+  - added regression for exact artifact request matching a loaded alias on a pinned worker lane
 
 ## Tests
 
 Ran:
 
-- `cd /home/kasunami/Projects/mesh-router && uv run pytest -q tests/test_mw_grpc_target.py tests/test_backend_compatibility.py tests/test_mw_lane_readiness_overlay.py tests/test_router_pin_worker.py`
-  - `13 passed, 1 warning`
-- `python3 -m py_compile /home/kasunami/Projects/mesh-router/mesh_router/app.py /home/kasunami/Projects/mesh-router/tests/test_mw_grpc_target.py`
+- `cd /home/kasunami/Projects/mesh-router && uv run pytest -q tests/test_inventory_api.py tests/test_router_pin_worker.py tests/test_mw_grpc_target.py tests/test_backend_compatibility.py tests/test_mw_lane_readiness_overlay.py`
+  - `16 passed, 1 warning`
+- `python3 -m py_compile /home/kasunami/Projects/mesh-router/mesh_router/app.py /home/kasunami/Projects/mesh-router/mesh_router/router.py /home/kasunami/Projects/mesh-router/tests/test_inventory_api.py /home/kasunami/Projects/mesh-router/tests/test_router_pin_worker.py`
 
 ## Live Validation
 
@@ -74,9 +94,7 @@ Request:
 Result:
 
 - `HTTP 200`
-- `x-mesh-lane-id: 0a0e3d56-1f56-41be-8a29-498ba53fbbb3`
-- `x-mesh-worker-id: pupix1`
-- `x-mesh-model-name: Qwen3.5-4B-Q4_K_M.gguf`
+- model resolved as `qwen3.5-4b`
 - assistant returned `ok`
 
 ### Deskix pinned CPU request
@@ -92,12 +110,45 @@ Old failure surface:
 
 - rsync host-key verification failure
 
-New failure surface:
+Valid local request:
+
+- `POST /v1/chat/completions`
+- `mesh_pin_worker="Static-Deskix"`
+- `mesh_pin_lane_type="cpu"`
+- model `Qwen3.5-4B-Q4_K_M.gguf`
+- result: `HTTP 200`
+- assistant returned `ok`
+
+Missing-model failure surface:
 
 - `HTTP 503`
-- `no READY lanes available serving DeepSeek-R1-Distill-Qwen-14B-Q4_K_M.gguf and auto-swap failed: 409: llama-cpu could not resolve model 'DeepSeek-R1-Distill-Qwen-14B-Q4_K_M.gguf' from /etc/mesh-llama/llama-cpu.json`
+- `no READY lanes available serving DeepSeek-R1-Distill-Qwen-14B-Q4_K_M.gguf and auto-swap failed: 409: model is not viable for this lane`
 
-This proves MR is now using MW-authoritative load-model truth instead of brittle MR-side copy logic for that legacy CPU lane.
+This proves MR is now using MW-authoritative loadability/viability truth instead of brittle MR-side copy logic for that legacy CPU lane.
+
+### Image-lane publication
+
+Both image lanes now publish the narrow truthful capability set:
+
+- Deskix `image-gpu`
+  - `capabilities: ["images", "inference"]`
+  - `backend_type: "sd"`
+  - `local: ["flux1-schnell-Q4_K_S"]`
+  - `remote: []`
+- pupix1 `image-gpu`
+  - `capabilities: ["images", "inference"]`
+  - `backend_type: "sd"`
+  - `local: ["flux1-schnell-Q4_K_S.gguf"]`
+  - `remote: []`
+
+### Inventory proof
+
+Live `/api/inventory` for `Static-Deskix` CPU now shows:
+
+- `status: ready`
+- `current_model_name: qwen3.5-4b`
+- `local_viable_models`: only the five local Qwen/LFM chat models
+- `remote_viable_models: []`
 
 ### In-pod router proof
 
@@ -110,25 +161,28 @@ On the new router image, `_mw_target_for_lane()` now resolves:
 
 Built and pushed:
 
-- image tag: `10.0.1.48:5000/mesh-router:20260408-123200`
-- digest: `sha256:4e5b608a1e88086226a650e6caa2e639dabd0da2e24eb4ef7390e616b831a68d`
+- image tag: `10.0.1.48:5000/mesh-router:05810660edff`
+- digest: `sha256:91f0510a4227b78a8f6d2eda2f5f05a98cd37f05e2728b5aaf5c5dc1d1b4cf4b`
 
 Important deployment truth:
 
-- direct `kubectl set image` and the repo-local deploy script were not enough because Argo was reconciling from `/home/kasunami/k3s/apps/ai-tools/mesh-router/mesh-router.yaml`
-- that manifest was still pinned to the old router image
-- I updated the manifest locally and applied it so the running deployment could use the new digest
+- the repo-local `/home/kasunami/k3s` checkout is dirty and not a safe commit target
+- the clean GitOps source of truth was `/tmp/k3s-manifests-clean`, pushed as revision `f6b7d93`
+- Argo briefly stayed stale on revision `932224c`; a hard refresh was required before it converged to `f6b7d93`
+- final live deployment state is a single `mesh-router` pod on digest `sha256:91f0510a4227b78a8f6d2eda2f5f05a98cd37f05e2728b5aaf5c5dc1d1b4cf4b`
 
 ## Remaining Caveat
 
-One publication caveat remains:
+The remaining caveat is now downstream, not in MR/MW runtime publication:
 
-- `/api/lanes/{lane_id}/capabilities` for `image-gpu` lanes is still over-advertising chat-style models in some live responses
-- this appears to come from image-lane aliasing against generic MW `gpu` truth and stale/stored capability state, not from the CPU routing path fixed in this block
+- after a fresh `POST /models/discovery/sync`, `mesh-computer` still retains stale remote Deskix CPU discovery rows even though live MR `/api/inventory` now publishes `remote_viable_models: []` for that lane
+- that means router runtime truth is fixed, but MC discovery persistence is not pruning no-longer-published remote candidates yet
 
 That means:
 
 - Deskix CPU runtime truth: fixed
+- Deskix valid CPU path: fixed
 - pupix1 pinned CPU runtime truth: fixed
-- MR auto-swap dependency on Deskix CPU: reduced/replaced by MW-authoritative failure
-- image-lane capability publication truth: still needs follow-up hardening
+- image-lane capability publication truth: fixed
+- MR auto-swap dependency on Deskix CPU: reduced/replaced by MW-authoritative viability/loadability truth
+- MC stale discovery pruning: still needs follow-up in `mesh-computer`
