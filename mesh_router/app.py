@@ -133,6 +133,12 @@ def _backend_compatibility_reason(
     return None
 
 
+def _should_include_candidate_for_capabilities(*, mw_authoritative: bool, source_locality: str) -> bool:
+    if not mw_authoritative:
+        return True
+    return source_locality == "local"
+
+
 def _maybe_record_perf_observation(
     *,
     host_name: str | None,
@@ -1013,6 +1019,8 @@ def _build_lane_capability_payload(cur, lane_ref: str) -> tuple[dict[str, Any], 
     resolved_lane_id = str(lane_row["lane_id"])
     resolved_host_id = str(lane_row["host_id"])
     lane_type = str(lane_row["lane_type"])
+    mw_target = _mw_target_for_lane(cur=cur, lane_id=resolved_lane_id)
+    mw_authoritative = mw_target is not None
     host_row = _resolve_host(cur, resolved_host_id)
     cur.execute(
         """
@@ -1074,6 +1082,11 @@ def _build_lane_capability_payload(cur, lane_ref: str) -> tuple[dict[str, Any], 
             lane_type=lane_type,
         )
         source_locality = "local" if str(row["host_id"]) == resolved_host_id else "remote"
+        if not _should_include_candidate_for_capabilities(
+            mw_authoritative=mw_authoritative,
+            source_locality=source_locality,
+        ):
+            continue
         if compatibility_reason:
             cur.execute(
                 """
@@ -1227,6 +1240,51 @@ def _build_lane_capability_payload(cur, lane_ref: str) -> tuple[dict[str, Any], 
         candidates_by_model[model_name] = candidate
 
     supported_models = sorted(candidates_by_model.keys())
+
+    current_model_name = str(lane_row.get("current_model_name") or "").strip()
+    if mw_authoritative and current_model_name and current_model_name not in candidates_by_model:
+        compatibility_reason = _backend_compatibility_reason(
+            model_name=current_model_name,
+            tags=[],
+            backend_type=lane_row.get("backend_type"),
+            lane_type=lane_type,
+        )
+        if compatibility_reason is None:
+            current_model_max_ctx = None
+            cur.execute(
+                """
+                SELECT p.max_ctx
+                FROM models m
+                LEFT JOIN lane_model_policy p ON p.lane_id=%s AND p.model_id=m.model_id
+                WHERE m.model_name=%s
+                LIMIT 1
+                """,
+                (resolved_lane_id, current_model_name),
+            )
+            current_policy = cur.fetchone() or {}
+            try:
+                if current_policy.get("max_ctx") is not None:
+                    current_model_max_ctx = int(current_policy["max_ctx"])
+            except Exception:
+                current_model_max_ctx = None
+            candidates_by_model[current_model_name] = LaneModelCandidate(
+                model_name=current_model_name,
+                tags=[],
+                locality="local",
+                artifact_path=None,
+                artifact_host=str(host_row["host_name"]) if host_row else None,
+                artifact_provider="mw_runtime",
+                estimated_tps=None,
+                estimated_swap_ms=0,
+                swap_strategy="already_loaded",
+                reason=None,
+                size_bytes=None,
+                required_memory_bytes=None,
+                projected_free_bytes=None,
+                max_context_tokens=current_model_max_ctx,
+            )
+            supported_models = sorted(candidates_by_model.keys())
+
     for candidate in sorted(candidates_by_model.values(), key=lambda item: item.model_name.lower()):
         if candidate.locality == "local":
             local_viable.append(candidate)
@@ -1248,6 +1306,7 @@ def _build_lane_capability_payload(cur, lane_ref: str) -> tuple[dict[str, Any], 
         "backend_type": normalized_backend or lane_row.get("backend_type"),
         "lane_name": str(lane_row["lane_name"]),
         "host_name": str(host_row["host_name"]) if host_row else None,
+        "mw_authoritative": mw_authoritative,
         "memory_summary": {
             "usable_memory_bytes": lane_row.get("usable_memory_bytes"),
             "ram_budget_bytes": lane_row.get("ram_budget_bytes"),

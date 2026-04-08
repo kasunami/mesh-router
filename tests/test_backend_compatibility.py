@@ -33,6 +33,26 @@ class BackendCompatibilityTests(unittest.TestCase):
         )
         self.assertIsNone(reason)
 
+    def test_mw_authoritative_capabilities_hide_remote_candidates(self) -> None:
+        self.assertFalse(
+            app_module._should_include_candidate_for_capabilities(  # type: ignore[attr-defined]
+                mw_authoritative=True,
+                source_locality="remote",
+            )
+        )
+        self.assertTrue(
+            app_module._should_include_candidate_for_capabilities(  # type: ignore[attr-defined]
+                mw_authoritative=True,
+                source_locality="local",
+            )
+        )
+        self.assertTrue(
+            app_module._should_include_candidate_for_capabilities(  # type: ignore[attr-defined]
+                mw_authoritative=False,
+                source_locality="remote",
+            )
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
