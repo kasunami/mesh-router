@@ -24,7 +24,11 @@ from pydantic import BaseModel
 from .config import settings
 from .db import db, mw_state_db
 from .inventory import fetch_lane_inventory, group_inventory_by_host
-from .mw_overlay import apply_mw_effective_status, _normalize_router_backend_type
+from .mw_overlay import (
+    _candidate_mw_binding,
+    apply_mw_effective_status,
+    _normalize_router_backend_type,
+)
 from .perf_registry import get_expectation, insert_observation
 from .route_resolver import resolve_route
 from .router import LanePlacementError, pick_lane_for_model
@@ -285,31 +289,40 @@ def _mw_target_for_lane(*, cur: Any, lane_id: str) -> MwGrpcTarget | None:
     meta = row.get("proxy_auth_metadata") or {}
     if not isinstance(meta, dict):
         meta = {}
-    if str(meta.get("control_plane") or "").strip().lower() != "mw":
-        inferred_host_id = _normalize_mw_host_id(str(row.get("host_name") or ""))
-        inferred_lane_id = _infer_mw_lane_id_for_row(row)
-        if not inferred_host_id or not inferred_lane_id:
-            return None
+    binding = _candidate_mw_binding(row)
+    if binding is None:
+        return None
+    inferred_host_id, inferred_lane_id, inferred = binding
+    if inferred:
+        mw_host_seen = False
+        mw_lane_seen = False
         try:
             with mw_state_db.connect() as conn:
                 with conn.cursor() as mw_cur:
                     mw_cur.execute(
                         """
-                        SELECT 1
-                        FROM mw_lanes
-                        WHERE host_id=%s AND lane_id=%s
-                        LIMIT 1
+                        SELECT EXISTS(SELECT 1 FROM mw_hosts WHERE host_id=%s) AS host_exists,
+                               EXISTS(SELECT 1 FROM mw_lanes WHERE host_id=%s AND lane_id=%s) AS lane_exists
                         """,
-                        (inferred_host_id, inferred_lane_id),
+                        (inferred_host_id, inferred_host_id, inferred_lane_id),
                     )
-                    if not mw_cur.fetchone():
-                        return None
-        except Exception:
+                    seen = mw_cur.fetchone() or {}
+                    mw_host_seen = bool(seen.get("host_exists"))
+                    mw_lane_seen = bool(seen.get("lane_exists"))
+        except Exception as exc:
+            logger.warning(
+                "MW state lookup failed for inferred lane binding host=%s lane=%s: %s",
+                inferred_host_id,
+                inferred_lane_id,
+                exc,
+            )
+        if not mw_lane_seen and not mw_host_seen:
             return None
         meta = {
             "control_plane": "mw",
             "mw_host_id": inferred_host_id,
             "mw_lane_id": inferred_lane_id,
+            "mw_inferred": True,
         }
     base_url = str(row.get("base_url") or "")
     parsed = urlparse(base_url)
@@ -1222,12 +1235,17 @@ def _build_lane_capability_payload(cur, lane_ref: str) -> tuple[dict[str, Any], 
         else:
             unverified.append(candidate)
 
-    capabilities = ["chat"]
-    if lane_type in ("cpu", "gpu", "mlx"):
-        capabilities.append("inference")
+    normalized_backend = _normalize_router_backend_type(lane_row.get("backend_type"))
+    if normalized_backend == "sd":
+        capabilities = ["images", "inference"]
+    else:
+        capabilities = ["chat"]
+        if lane_type in ("cpu", "gpu", "mlx"):
+            capabilities.append("inference")
 
     metadata = {
         "lane_type": lane_type,
+        "backend_type": normalized_backend or lane_row.get("backend_type"),
         "lane_name": str(lane_row["lane_name"]),
         "host_name": str(host_row["host_name"]) if host_row else None,
         "memory_summary": {

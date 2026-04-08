@@ -85,7 +85,56 @@ class MwGrpcTargetTests(unittest.TestCase):
                 return None
 
             def fetchone(self) -> dict:
-                return {"exists": 1}
+                return {"host_exists": True, "lane_exists": True}
+
+            def __enter__(self) -> "FakeMwCursor":
+                return self
+
+            def __exit__(self, exc_type, exc, tb) -> None:  # noqa: ANN001
+                return None
+
+        class FakeMwConn:
+            def cursor(self) -> FakeMwCursor:
+                return FakeMwCursor()
+
+            def __enter__(self) -> "FakeMwConn":
+                return self
+
+            def __exit__(self, exc_type, exc, tb) -> None:  # noqa: ANN001
+                return None
+
+        class FakeMwDb:
+            def connect(self) -> FakeMwConn:
+                return FakeMwConn()
+
+        cur = FakeCursor([
+            {
+                "lane_id": "lane-cpu",
+                "lane_name": "cpu",
+                "lane_type": "cpu",
+                "base_url": "http://10.0.1.95:21435",
+                "proxy_auth_metadata": {},
+                "host_name": "pupix1",
+            }
+        ])
+        original_mw_state_db = app_module.mw_state_db
+        try:
+            app_module.mw_state_db = FakeMwDb()  # type: ignore[assignment]
+            target = app_module._mw_target_for_lane(cur=cur, lane_id="lane-cpu")  # type: ignore[attr-defined]
+        finally:
+            app_module.mw_state_db = original_mw_state_db  # type: ignore[assignment]
+        self.assertIsNotNone(target)
+        assert target is not None
+        self.assertEqual(target.host_id, "pupix1")
+        self.assertEqual(target.lane_id, "cpu")
+
+    def test_target_infers_mw_for_legacy_cpu_lane_when_host_exists(self) -> None:
+        class FakeMwCursor:
+            def execute(self, sql: str, params: tuple) -> None:  # noqa: ARG002
+                return None
+
+            def fetchone(self) -> dict:
+                return {"host_exists": True, "lane_exists": False}
 
             def __enter__(self) -> "FakeMwCursor":
                 return self
