@@ -76,3 +76,51 @@ def test_explicit_image_lane_stays_offline_when_underlying_mw_lane_is_in_text_ba
     assert rows[0]["readiness_reason"] == "backend_mismatch"
     assert rows[0]["backend_type"] == "sd"
     assert rows[0]["current_model_name"] == "flux1-schnell-Q4_K_S"
+
+
+def test_inferred_gpu_lane_stays_offline_when_explicit_image_lane_owns_same_mw_binding():
+    now = datetime.now(tz=timezone.utc)
+    rows = [
+        {
+            "lane_id": "gpu-lane",
+            "lane_name": "gpu",
+            "lane_type": "gpu",
+            "backend_type": "llama",
+            "host_name": "pupix1",
+            "proxy_auth_metadata": {},
+            "status": "suspended",
+            "current_model_name": "LFM2.5-350M-Q4_K_M.gguf",
+        },
+        {
+            "lane_id": "image-lane",
+            "lane_name": "image-gpu",
+            "lane_type": "gpu",
+            "backend_type": "sd",
+            "host_name": "pupix1",
+            "proxy_auth_metadata": {"control_plane": "mw", "mw_host_id": "pupix1", "mw_lane_id": "gpu"},
+            "status": "offline",
+            "current_model_name": "flux1-schnell-Q4_K_S",
+        },
+    ]
+    mw_rows = [
+        {
+            "host_id": "pupix1",
+            "lane_id": "gpu",
+            "last_heartbeat_at": now,
+            "actual_state": "running",
+            "health_status": "healthy",
+            "actual_model": "flux1-schnell-Q4_K_S",
+            "backend_type": "stable-diffusion.cpp",
+        }
+    ]
+
+    apply_mw_effective_status(rows, mw_state_db=_FakeDb(mw_rows), stale_seconds=45)
+
+    assert rows[0]["effective_status"] == "offline"
+    assert rows[0]["readiness_reason"] == "backend_mismatch"
+    assert rows[0]["backend_type"] == "llama"
+    assert rows[0]["current_model_name"] == "LFM2.5-350M-Q4_K_M.gguf"
+    assert rows[1]["effective_status"] == "ready"
+    assert rows[1]["readiness_reason"] is None
+    assert rows[1]["backend_type"] == "sd"
+    assert rows[1]["current_model_name"] == "flux1-schnell-Q4_K_S"

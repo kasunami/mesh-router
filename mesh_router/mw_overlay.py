@@ -92,6 +92,13 @@ def apply_mw_effective_status(
         return
 
     facts: dict[tuple[str, str], dict[str, Any]] = {}
+    explicit_bindings: set[tuple[str, str]] = set()
+    for row in rows:
+        binding = _candidate_mw_binding(row)
+        if binding is None:
+            continue
+        if not binding[2]:
+            explicit_bindings.add((binding[0], binding[1]))
     try:
         with mw_state_db.connect() as conn:
             with conn.cursor() as cur:
@@ -149,6 +156,11 @@ def apply_mw_effective_status(
         )
         row_backend = _normalize_router_backend_type(str(row.get("backend_type") or ""))
         fact_backend = _normalize_router_backend_type(str(f.get("backend_type") or ""))
+        shared_explicit_binding = inferred and (host_id, lane_id) in explicit_bindings
+        if shared_explicit_binding and row_backend and fact_backend and row_backend != fact_backend:
+            row["effective_status"] = "offline"
+            row["readiness_reason"] = "backend_mismatch"
+            continue
         if not inferred and row_backend and fact_backend and row_backend != fact_backend:
             row["effective_status"] = "offline"
             row["readiness_reason"] = "backend_mismatch"
