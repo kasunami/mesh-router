@@ -915,7 +915,7 @@ def _tuning_profile_metrics(
 def _resolve_lane(cur, lane_ref: str) -> dict[str, Any]:
     cur.execute(
         """
-        SELECT lane_id, host_id, lane_name, lane_type, base_url, current_model_name,
+        SELECT lane_id, host_id, lane_name, lane_type, backend_type, base_url, current_model_name,
                default_model_name,
                ram_budget_bytes, vram_budget_bytes, usable_memory_bytes,
                runtime_overhead_bytes, reserved_headroom_bytes
