@@ -139,6 +139,19 @@ def _should_include_candidate_for_capabilities(*, mw_authoritative: bool, source
     return source_locality == "local"
 
 
+def _path_matches_local_model_root(*, artifact_path: str | None, local_model_root: str | None) -> bool:
+    if not local_model_root:
+        return True
+    path_value = str(artifact_path or "").strip()
+    root_value = str(local_model_root or "").strip()
+    if not path_value or not root_value:
+        return False
+
+    normalized_path = path_value.rstrip("/")
+    normalized_root = root_value.rstrip("/")
+    return normalized_path == normalized_root or normalized_path.startswith(f"{normalized_root}/")
+
+
 def _maybe_record_perf_observation(
     *,
     host_name: str | None,
@@ -1039,6 +1052,7 @@ def _build_lane_capability_payload(cur, lane_ref: str) -> tuple[dict[str, Any], 
     mw_target = _mw_target_for_lane(cur=cur, lane_id=resolved_lane_id)
     mw_authoritative = mw_target is not None
     host_row = _resolve_host(cur, resolved_host_id)
+    local_model_root = _local_model_root(host_row, lane_row)
     cur.execute(
         """
         SELECT
@@ -1102,6 +1116,11 @@ def _build_lane_capability_payload(cur, lane_ref: str) -> tuple[dict[str, Any], 
         if not _should_include_candidate_for_capabilities(
             mw_authoritative=mw_authoritative,
             source_locality=source_locality,
+        ):
+            continue
+        if source_locality == "local" and not _path_matches_local_model_root(
+            artifact_path=row.get("local_path"),
+            local_model_root=local_model_root,
         ):
             continue
         if compatibility_reason:
@@ -1332,6 +1351,7 @@ def _build_lane_capability_payload(cur, lane_ref: str) -> tuple[dict[str, Any], 
             "reserved_headroom_bytes": reserved_headroom,
         },
         "archive_providers": sorted(ARCHIVE_PROVIDERS),
+        "local_model_root": local_model_root,
     }
 
     response = LaneCapabilityResponse(
@@ -1348,7 +1368,7 @@ def _build_lane_capability_payload(cur, lane_ref: str) -> tuple[dict[str, Any], 
         "lane": lane_row,
         "host": host_row,
         "lane_info": lane_info,
-        "local_model_root": _local_model_root(host_row, lane_row),
+        "local_model_root": local_model_root,
     }, response
 
 def _strip_nones(value: Any) -> Any:

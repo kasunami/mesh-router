@@ -53,6 +53,28 @@ class BackendCompatibilityTests(unittest.TestCase):
             )
         )
 
+    def test_path_matches_local_model_root_accepts_model_dir_and_children(self) -> None:
+        self.assertTrue(
+            app_module._path_matches_local_model_root(  # type: ignore[attr-defined]
+                artifact_path="/Users/kasunami/models/Qwen3.5-9B-6bit",
+                local_model_root="/Users/kasunami/models",
+            )
+        )
+        self.assertTrue(
+            app_module._path_matches_local_model_root(  # type: ignore[attr-defined]
+                artifact_path="/Users/kasunami/models/Qwen3.5-9B-6bit/config.json",
+                local_model_root="/Users/kasunami/models",
+            )
+        )
+
+    def test_path_matches_local_model_root_rejects_other_local_roots(self) -> None:
+        self.assertFalse(
+            app_module._path_matches_local_model_root(  # type: ignore[attr-defined]
+                artifact_path="/Users/kasunami/mlx-model-bank/blobs/abcdef",
+                local_model_root="/Users/kasunami/models",
+            )
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
