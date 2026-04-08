@@ -119,7 +119,7 @@ class BackendCompatibilityTests(unittest.TestCase):
         with mock.patch.object(
             app_module,
             "_resolve_lane_downstream_alias",
-            return_value="/Users/kasunami/models/Qwen3.5-9B-6bit",
+            side_effect=lambda cur, *, lane_id, model_id: "/Users/kasunami/models/Qwen3.5-9B-6bit",
         ):
             result = app_module._resolve_downstream_model_for_lane(  # type: ignore[attr-defined]
                 _FakeCursor(),
@@ -145,7 +145,7 @@ class BackendCompatibilityTests(unittest.TestCase):
         with mock.patch.object(
             app_module,
             "_resolve_lane_downstream_alias",
-            return_value="/Users/kasunami/models/Qwen3.5-4B-MLX-4bit",
+            side_effect=lambda cur, *, lane_id, model_id: "/Users/kasunami/models/Qwen3.5-4B-MLX-4bit",
         ):
             result = app_module._resolve_downstream_model_for_lane(  # type: ignore[attr-defined]
                 _FakeCursor(),

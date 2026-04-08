@@ -1577,6 +1577,7 @@ def _resolve_downstream_model_for_lane(
         current_model_row = cur.fetchone()
         if current_model_row and current_model_row.get("model_id"):
             downstream_model = _resolve_lane_downstream_alias(
+                cur,
                 lane_id=lane_id,
                 model_id=str(current_model_row["model_id"]),
             )
@@ -1585,7 +1586,7 @@ def _resolve_downstream_model_for_lane(
         return current_model_name
 
     if model_id:
-        downstream_model = _resolve_lane_downstream_alias(lane_id=lane_id, model_id=model_id)
+        downstream_model = _resolve_lane_downstream_alias(cur, lane_id=lane_id, model_id=model_id)
         if downstream_model:
             return downstream_model
 
