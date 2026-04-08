@@ -1829,8 +1829,12 @@ def api_inventory() -> InventoryResponse:
                 "readiness_reason": str(lane.get("readiness_reason") or "") or None,
                 "current_model_name": lane.get("current_model_name"),
                 "proxy_auth_metadata": dict(lane.get("proxy_auth_metadata") or {}),
+                "capabilities": list(capability_payload.capabilities or []),
+                "supported_models": list(capability_payload.supported_models or []),
                 "local_viable_models": local,
                 "remote_viable_models": remote,
+                "unverified_models": [candidate.model_dump() for candidate in capability_payload.unverified_models],
+                "capability_metadata": dict(capability_payload.metadata or {}),
             }
             lanes_out.append(lane_out)
         items.append(

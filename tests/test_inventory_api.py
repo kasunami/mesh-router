@@ -131,6 +131,8 @@ class InventoryApiTests(unittest.TestCase):
         self.assertEqual(lane["status"], "ready")
         self.assertIsNone(lane["readiness_reason"])
         self.assertEqual(lane["current_model_name"], "Qwen3.5-9B-Q4_K_M.gguf")
+        self.assertEqual(lane["capabilities"], ["chat", "inference"])
+        self.assertEqual(lane["supported_models"], ["qwen3.5-9b"])
         self.assertEqual(len(lane["local_viable_models"]), 1)
         self.assertEqual(len(lane["remote_viable_models"]), 0)
 
