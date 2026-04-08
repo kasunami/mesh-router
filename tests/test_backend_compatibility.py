@@ -33,6 +33,15 @@ class BackendCompatibilityTests(unittest.TestCase):
         )
         self.assertIsNone(reason)
 
+    def test_standard_quantized_mlx_model_is_not_misclassified_as_bitnet(self) -> None:
+        reason = app_module._backend_compatibility_reason(  # type: ignore[attr-defined]
+            model_name="/Users/kasunami/models/Qwen3.5-9B-6bit",
+            tags=["qwen3.5:9b"],
+            backend_type="llama",
+            lane_type="mlx",
+        )
+        self.assertIsNone(reason)
+
     def test_mw_authoritative_capabilities_hide_remote_candidates(self) -> None:
         self.assertFalse(
             app_module._should_include_candidate_for_capabilities(  # type: ignore[attr-defined]

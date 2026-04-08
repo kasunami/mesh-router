@@ -118,8 +118,8 @@ def _backend_compatibility_reason(
 
     is_bitnet = (
         "bitnet" in normalized_tags
+        or "bitnet" in lowered_model
         or "1.58bit" in lowered_model
-        or lowered_model.endswith("bit")
     )
     if is_bitnet:
         if normalized_backend != "bitnet":
