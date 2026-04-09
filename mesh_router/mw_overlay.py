@@ -120,7 +120,8 @@ def apply_mw_effective_status(
                       ml.actual_state,
                       ml.health_status,
                       ml.actual_model,
-                      ml.backend_type
+                      ml.backend_type,
+                      ml.metadata
                     FROM wanted w
                     LEFT JOIN mw_hosts mh ON mh.host_id = w.host_id
                     LEFT JOIN mw_lanes ml ON ml.host_id = w.host_id AND ml.lane_id = w.lane_id
@@ -176,3 +177,10 @@ def apply_mw_effective_status(
             row["current_model_name"] = f.get("actual_model")
         if f.get("backend_type"):
             row["backend_type"] = _normalize_router_backend_type(str(f.get("backend_type") or ""))
+        metadata = f.get("metadata") or {}
+        if isinstance(metadata, dict):
+            try:
+                if metadata.get("actual_model_max_ctx") is not None:
+                    row["current_model_max_ctx"] = int(metadata["actual_model_max_ctx"])
+            except (TypeError, ValueError):
+                pass

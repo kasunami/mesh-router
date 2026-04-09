@@ -180,7 +180,13 @@ def _upsert_lanes(cur: Any, *, host_id: str, lane_states: Iterable[dict[str, Any
                 actual_state,
                 health_status,
                 last_healthy_at,
-                Jsonb({"source": "mw_state_snapshot", "active_mode": l.get("active_mode")}),
+                Jsonb(
+                    {
+                        "source": "mw_state_snapshot",
+                        "active_mode": l.get("active_mode"),
+                        "actual_model_max_ctx": l.get("actual_model_max_ctx"),
+                    }
+                ),
             ),
         )
 

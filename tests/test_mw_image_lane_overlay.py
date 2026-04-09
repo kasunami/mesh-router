@@ -124,3 +124,38 @@ def test_inferred_gpu_lane_stays_offline_when_explicit_image_lane_owns_same_mw_b
     assert rows[1]["readiness_reason"] is None
     assert rows[1]["backend_type"] == "sd"
     assert rows[1]["current_model_name"] == "flux1-schnell-Q4_K_S"
+
+
+def test_mw_overlay_sets_current_model_max_ctx_from_mw_metadata():
+    now = datetime.now(tz=timezone.utc)
+    rows = [
+        {
+            "lane_id": "cpu-lane",
+            "lane_name": "cpu",
+            "lane_type": "cpu",
+            "backend_type": "bitnet",
+            "host_name": "Static-Deskix",
+            "proxy_auth_metadata": {"control_plane": "mw", "mw_host_id": "static-deskix", "mw_lane_id": "cpu"},
+            "status": "ready",
+            "current_model_name": "falcon3-10b",
+            "current_model_max_ctx": 2048,
+        }
+    ]
+    mw_rows = [
+        {
+            "host_id": "static-deskix",
+            "lane_id": "cpu",
+            "last_heartbeat_at": now,
+            "actual_state": "running",
+            "health_status": "healthy",
+            "actual_model": "falcon3-10b",
+            "backend_type": "bitnet.cpp",
+            "metadata": {"actual_model_max_ctx": 32768},
+        }
+    ]
+
+    apply_mw_effective_status(rows, mw_state_db=_FakeDb(mw_rows), stale_seconds=45)
+
+    assert rows[0]["effective_status"] == "ready"
+    assert rows[0]["current_model_name"] == "falcon3-10b"
+    assert rows[0]["current_model_max_ctx"] == 32768
