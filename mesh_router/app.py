@@ -478,6 +478,11 @@ def _model_lookup_keys(model_name: str | None) -> set[str]:
     if not raw:
         return set()
 
+    def _add_variant(keys: set[str], value: str) -> None:
+        cleaned = value.strip().lower()
+        if cleaned:
+            keys.add(cleaned)
+
     keys = {raw.lower()}
     stem = raw.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
     keys.add(stem.lower())
@@ -493,15 +498,15 @@ def _model_lookup_keys(model_name: str | None) -> set[str]:
     keys.add(normalized)
 
     dequantized = re.sub(r"[-_.]q\d+(?:[-_.]k(?:[-_.][a-z0-9]+)?)?$", "", normalized)
+    _add_variant(keys, dequantized)
+    debitted = re.sub(r"[-_.](?:\d+(?:\.\d+)?bit|fp8)$", "", normalized)
+    _add_variant(keys, debitted)
     if dequantized:
-        keys.add(dequantized)
-    debitted = re.sub(r"[-_.](?:\d+bit|fp8)$", "", normalized)
-    if debitted:
-        keys.add(debitted)
-    if dequantized:
-        dequantized_debitted = re.sub(r"[-_.](?:\d+bit|fp8)$", "", dequantized)
-        if dequantized_debitted:
-            keys.add(dequantized_debitted)
+        dequantized_debitted = re.sub(r"[-_.](?:\d+(?:\.\d+)?bit|fp8)$", "", dequantized)
+        _add_variant(keys, dequantized_debitted)
+    for value in list(keys):
+        stripped = re.sub(r"[-_.](?:instruct|instruction|chat|it)$", "", value)
+        _add_variant(keys, stripped)
 
     return {key for key in keys if key}
 

@@ -160,6 +160,33 @@ class PinWorkerPlacementTests(unittest.TestCase):
         self.assertEqual(choice.lane_id, "lane-cpu")
         self.assertEqual(choice.current_model_name, "qwen3.5-4b")
 
+    def test_pin_worker_treats_canonical_falcon_request_as_loaded_when_alias_matches(self) -> None:
+        rows = [
+            {
+                "lane_id": "lane-cpu",
+                "host_name": "Static-Deskix",
+                "base_url": "http://10.0.0.99:11435",
+                "lane_type": "cpu",
+                "backend_type": "bitnet",
+                "status": "ready",
+                "proxy_auth_metadata": {},
+                "current_model_name": "falcon3-10b",
+                "current_model_tags": [],
+                "current_model_max_ctx": 32768,
+            }
+        ]
+
+        with mock.patch.object(router_module, "db", _Db()), mock.patch.object(router_module, "q", return_value=rows):
+            choice = router_module.pick_lane_for_model(
+                model="Falcon3-10B-Instruct-1.58bit",
+                pin_worker="Static-Deskix",
+                pin_lane_type="cpu",
+            )
+
+        self.assertEqual(choice.worker_id, "Static-Deskix")
+        self.assertEqual(choice.lane_id, "lane-cpu")
+        self.assertEqual(choice.current_model_name, "falcon3-10b")
+
     def test_pin_worker_rejects_mw_lane_when_state_db_unavailable(self) -> None:
         rows = [
             {
