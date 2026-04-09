@@ -63,6 +63,14 @@ class BackendCompatibilityTests(unittest.TestCase):
             )
         )
 
+    def test_mw_runtime_candidate_tags_include_backend_and_lane_hints(self) -> None:
+        self.assertEqual(
+            app_module._mw_runtime_candidate_tags(  # type: ignore[attr-defined]
+                lane_row={"backend_type": "bitnet", "lane_type": "cpu"}
+            ),
+            ["bitnet", "cpu", "bitnet"],
+        )
+
     def test_path_matches_local_model_root_accepts_model_dir_and_children(self) -> None:
         self.assertTrue(
             app_module._path_matches_local_model_root(  # type: ignore[attr-defined]
@@ -154,6 +162,143 @@ class BackendCompatibilityTests(unittest.TestCase):
                 model_id="model-2",
             )
         self.assertEqual(result, "/Users/kasunami/models/Qwen3.5-4B-MLX-4bit")
+
+    def test_mw_effective_lane_row_for_capabilities_prefers_mw_backend_and_model_truth(self) -> None:
+        lane_row = {
+            "lane_id": "lane-cpu",
+            "lane_name": "cpu",
+            "lane_type": "cpu",
+            "backend_type": "llama",
+            "current_model_name": "LFM2.5-350M-Q4_K_M.gguf",
+            "desired_model_name": None,
+            "proxy_auth_metadata": {"control_plane": "mw", "mw_host_id": "static-deskix", "mw_lane_id": "cpu"},
+        }
+        host_row = {"host_name": "Static-Deskix"}
+        with mock.patch.object(
+            app_module,
+            "apply_mw_effective_status",
+            side_effect=lambda rows, **kwargs: rows[0].update(
+                {
+                    "backend_type": "bitnet",
+                    "current_model_name": "falcon3-10b",
+                    "desired_model_name": "falcon3-10b",
+                    "current_backend_type": "bitnet",
+                    "desired_backend_type": "bitnet",
+                }
+            ),
+        ):
+            result = app_module._mw_effective_lane_row_for_capabilities(  # type: ignore[attr-defined]
+                lane_row=lane_row,
+                host_row=host_row,
+            )
+        self.assertEqual(result["host_name"], "Static-Deskix")
+        self.assertEqual(result["backend_type"], "bitnet")
+        self.assertEqual(result["current_model_name"], "falcon3-10b")
+        self.assertEqual(result["desired_model_name"], "falcon3-10b")
+
+    def test_build_lane_capability_payload_uses_mw_effective_row_for_active_falcon_candidate(self) -> None:
+        class _FakeCursor:
+            def __init__(self) -> None:
+                self._last_sql = ""
+                self._params = None
+
+            def execute(self, sql, params=None):  # noqa: ANN001
+                self._last_sql = sql
+                self._params = params
+
+            def fetchone(self):  # noqa: ANN001
+                if "FROM hosts WHERE host_id" in self._last_sql:
+                    return {"host_id": "host-1", "host_name": "Static-Deskix", "local_model_root": "/home/kasunami/models"}
+                if "SELECT p.max_ctx" in self._last_sql:
+                    return {"max_ctx": 32768}
+                return None
+
+            def fetchall(self):  # noqa: ANN001
+                if "FROM host_model_artifacts hma" in self._last_sql:
+                    return [
+                        {
+                            "artifact_id": "artifact-1",
+                            "host_id": "host-1",
+                            "host_name": "Static-Deskix",
+                            "storage_scope": "host",
+                            "storage_provider": "local",
+                            "local_path": "/home/kasunami/models/LFM2.5-350M-Q4_K_M.gguf",
+                            "size_bytes": 267060512,
+                            "present": True,
+                            "model_id": "model-1",
+                            "model_name": "LFM2.5-350M-Q4_K_M.gguf",
+                            "tags": [],
+                            "required_ram_bytes": None,
+                            "required_vram_bytes": None,
+                            "allowed": True,
+                            "max_ctx": None,
+                        }
+                    ]
+                return []
+
+        with mock.patch.object(
+            app_module,
+            "_resolve_lane",
+            return_value={
+                "lane_id": "lane-cpu",
+                "host_id": "host-1",
+                "lane_name": "cpu",
+                "lane_type": "cpu",
+                "backend_type": "llama",
+                "base_url": "http://10.0.0.99:11435",
+                "current_model_name": "LFM2.5-350M-Q4_K_M.gguf",
+                "proxy_auth_metadata": {"control_plane": "mw", "mw_host_id": "static-deskix", "mw_lane_id": "cpu"},
+                "usable_memory_bytes": 12884901888,
+                "ram_budget_bytes": 12884901888,
+                "runtime_overhead_bytes": 0,
+                "reserved_headroom_bytes": 1073741824,
+            },
+        ), mock.patch.object(
+            app_module,
+            "_mw_target_for_lane",
+            return_value=object(),
+        ), mock.patch.object(
+            app_module,
+            "_resolve_host",
+            return_value={"host_id": "host-1", "host_name": "Static-Deskix", "ram_ai_budget_bytes": 12884901888, "local_model_root": "/home/kasunami/models"},
+        ), mock.patch.object(
+            app_module,
+            "_mw_effective_lane_row_for_capabilities",
+            return_value={
+                "lane_id": "lane-cpu",
+                "host_id": "host-1",
+                "lane_name": "cpu",
+                "lane_type": "cpu",
+                "backend_type": "bitnet",
+                "current_model_name": "falcon3-10b",
+                "desired_model_name": "falcon3-10b",
+                "current_backend_type": "bitnet",
+                "desired_backend_type": "bitnet",
+                "usable_memory_bytes": 12884901888,
+                "ram_budget_bytes": 12884901888,
+                "runtime_overhead_bytes": 0,
+                "reserved_headroom_bytes": 1073741824,
+                "current_model_max_ctx": 32768,
+            },
+        ), mock.patch.object(
+            app_module,
+            "_local_model_root",
+            return_value="/home/kasunami/models",
+        ), mock.patch.object(
+            app_module,
+            "_prune_lane_model_viability_outside_local_root",
+            return_value=None,
+        ), mock.patch.object(
+            app_module,
+            "_historical_swap_ms",
+            return_value=0,
+        ):
+            _state, payload = app_module._build_lane_capability_payload(_FakeCursor(), "lane-cpu")  # type: ignore[attr-defined]
+        self.assertIn("falcon3-10b", payload.supported_models)
+        self.assertEqual(payload.current_model, "falcon3-10b")
+        falcon = next(item for item in payload.local_viable_models if item.model_name == "falcon3-10b")
+        self.assertEqual(falcon.artifact_provider, "mw_runtime")
+        self.assertEqual(falcon.estimated_swap_ms, 0)
 
 
 if __name__ == "__main__":

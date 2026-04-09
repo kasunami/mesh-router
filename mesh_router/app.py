@@ -139,6 +139,19 @@ def _should_include_candidate_for_capabilities(*, mw_authoritative: bool, source
     return source_locality == "local"
 
 
+def _mw_runtime_candidate_tags(*, lane_row: dict[str, Any]) -> list[str]:
+    tags: list[str] = []
+    backend = _normalize_router_backend_type(lane_row.get("backend_type"))
+    lane_type = str(lane_row.get("lane_type") or "").strip().lower()
+    if backend:
+        tags.append(backend)
+    if lane_type:
+        tags.append(lane_type)
+    if backend == "bitnet":
+        tags.append("bitnet")
+    return tags
+
+
 def _path_matches_local_model_root(*, artifact_path: str | None, local_model_root: str | None) -> bool:
     if not local_model_root:
         return True
@@ -409,6 +422,17 @@ def _mw_target_for_lane(*, cur: Any, lane_id: str) -> MwGrpcTarget | None:
     if not host_id or not lane_id_str:
         return None
     return MwGrpcTarget(endpoint=endpoint, host_id=host_id, lane_id=lane_id_str)
+
+
+def _mw_effective_lane_row_for_capabilities(*, lane_row: dict[str, Any], host_row: dict[str, Any] | None) -> dict[str, Any]:
+    candidate = dict(lane_row)
+    candidate["host_name"] = str((host_row or {}).get("host_name") or candidate.get("host_name") or "")
+    apply_mw_effective_status(
+        [candidate],
+        mw_state_db=mw_state_db,
+        stale_seconds=settings.default_lease_stale_seconds,
+    )
+    return candidate
 
 
 def _configure_tracing(app: FastAPI) -> bool:
@@ -1106,10 +1130,11 @@ def _build_lane_capability_payload(cur, lane_ref: str) -> tuple[dict[str, Any], 
     lane_row = _resolve_lane(cur, lane_ref)
     resolved_lane_id = str(lane_row["lane_id"])
     resolved_host_id = str(lane_row["host_id"])
-    lane_type = str(lane_row["lane_type"])
     mw_target = _mw_target_for_lane(cur=cur, lane_id=resolved_lane_id)
     mw_authoritative = mw_target is not None
     host_row = _resolve_host(cur, resolved_host_id)
+    lane_row = _mw_effective_lane_row_for_capabilities(lane_row=lane_row, host_row=host_row)
+    lane_type = str(lane_row["lane_type"])
     local_model_root = _local_model_root(host_row, lane_row)
     if mw_authoritative:
         _prune_lane_model_viability_outside_local_root(
@@ -1343,9 +1368,10 @@ def _build_lane_capability_payload(cur, lane_ref: str) -> tuple[dict[str, Any], 
 
     current_model_name = str(lane_row.get("current_model_name") or "").strip()
     if mw_authoritative and current_model_name and current_model_name not in candidates_by_model:
+        runtime_tags = _mw_runtime_candidate_tags(lane_row=lane_row)
         compatibility_reason = _backend_compatibility_reason(
             model_name=current_model_name,
-            tags=[],
+            tags=runtime_tags,
             backend_type=lane_row.get("backend_type"),
             lane_type=lane_type,
         )
@@ -1369,7 +1395,7 @@ def _build_lane_capability_payload(cur, lane_ref: str) -> tuple[dict[str, Any], 
                 current_model_max_ctx = None
             candidates_by_model[current_model_name] = LaneModelCandidate(
                 model_name=current_model_name,
-                tags=[],
+                tags=runtime_tags,
                 locality="local",
                 artifact_path=None,
                 artifact_host=str(host_row["host_name"]) if host_row else None,
