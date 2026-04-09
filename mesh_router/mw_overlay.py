@@ -119,6 +119,7 @@ def apply_mw_effective_status(
                       mh.last_heartbeat_at,
                       ml.actual_state,
                       ml.health_status,
+                      ml.desired_model,
                       ml.actual_model,
                       ml.backend_type,
                       ml.metadata
@@ -159,14 +160,18 @@ def apply_mw_effective_status(
             f,
             stale_cutoff=stale_cutoff,
         )
+        metadata = f.get("metadata") or {}
         row_backend = _normalize_router_backend_type(str(row.get("backend_type") or ""))
         fact_backend = _normalize_router_backend_type(str(f.get("backend_type") or ""))
+        metadata_backend = ""
+        if isinstance(metadata, dict):
+            metadata_backend = _normalize_router_backend_type(str(metadata.get("current_backend_type") or ""))
         shared_explicit_binding = inferred and (host_id, lane_id) in explicit_bindings
-        if shared_explicit_binding and row_backend and fact_backend and row_backend != fact_backend:
+        if shared_explicit_binding and row_backend and fact_backend and row_backend != fact_backend and not metadata_backend:
             row["effective_status"] = "offline"
             row["readiness_reason"] = "backend_mismatch"
             continue
-        if not inferred and row_backend and fact_backend and row_backend != fact_backend:
+        if not inferred and row_backend and fact_backend and row_backend != fact_backend and not metadata_backend:
             row["effective_status"] = "offline"
             row["readiness_reason"] = "backend_mismatch"
             continue
@@ -175,12 +180,27 @@ def apply_mw_effective_status(
 
         if f.get("actual_model"):
             row["current_model_name"] = f.get("actual_model")
-        if f.get("backend_type"):
-            row["backend_type"] = _normalize_router_backend_type(str(f.get("backend_type") or ""))
-        metadata = f.get("metadata") or {}
+        if f.get("desired_model"):
+            row["desired_model_name"] = f.get("desired_model")
+        current_backend_type = metadata_backend or fact_backend
+        if current_backend_type:
+            row["backend_type"] = current_backend_type
         if isinstance(metadata, dict):
             try:
                 if metadata.get("actual_model_max_ctx") is not None:
                     row["current_model_max_ctx"] = int(metadata["actual_model_max_ctx"])
             except (TypeError, ValueError):
                 pass
+            for key in (
+                "current_backend_type",
+                "desired_backend_type",
+                "backend_swap_required",
+                "model_swap_required",
+                "backend_swap_eta_ms",
+                "model_swap_eta_ms",
+                "total_swap_eta_ms",
+                "eta_source",
+                "eta_complete",
+            ):
+                if key in metadata:
+                    row[key] = metadata.get(key)
