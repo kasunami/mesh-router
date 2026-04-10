@@ -232,32 +232,45 @@ def pick_lane_for_model(
                 rows = q(
                     cur,
                     """
-                    SELECT l.lane_id, h.host_name, l.base_url, l.lane_type, l.backend_type,
+                    SELECT l.lane_id, l.lane_name, h.host_name, l.base_url, l.lane_type, l.backend_type,
                            l.status,
                            l.proxy_auth_metadata,
                            l.current_model_name,
+                           m.tags AS current_model_tags,
                            cmp.max_ctx AS current_model_max_ctx
                     FROM lanes l
                     JOIN hosts h ON h.host_id=l.host_id
                     LEFT JOIN models cm ON cm.model_name=l.current_model_name
+                    LEFT JOIN models m ON m.model_name=l.current_model_name
                     LEFT JOIN lane_model_policy cmp ON cmp.lane_id=l.lane_id AND cmp.model_id=cm.model_id
-                    WHERE h.host_name=%s AND l.base_url=%s
+                    WHERE h.host_name=%s
+                      AND (l.status IN ('ready', 'suspended') OR (l.proxy_auth_metadata->>'control_plane')='mw')
                       AND (%s::text IS NULL OR l.backend_type = %s::text)
+                      AND (%s::text IS NULL OR l.lane_type::text = %s::text)
                       AND (%s::text[] IS NULL OR l.lane_id::text <> ALL(%s::text[]))
-                    LIMIT 1
+                    ORDER BY
+                      CASE l.lane_type WHEN 'gpu' THEN 0 WHEN 'mlx' THEN 1 WHEN 'cpu' THEN 2 ELSE 9 END,
+                      l.base_url ASC
+                    LIMIT 20
                     """,
                     (
                         pin_worker,
-                        pin_base_url,
                         backend_type,
                         backend_type,
+                        pin_lane_type,
+                        pin_lane_type,
                         list(excluded) or None,
                         list(excluded) or None,
                     ),
                 )
+        apply_mw_effective_status(rows, mw_state_db=mw_state_db, stale_seconds=settings.default_lease_stale_seconds)
+        rows = [
+            r for r in rows
+            if str(r.get("host_name") or "") == str(pin_worker)
+            and str(r.get("base_url") or "") == str(pin_base_url)
+        ]
         if not rows:
             raise RuntimeError("pinned lane not found")
-        apply_mw_effective_status(rows, mw_state_db=mw_state_db, stale_seconds=settings.default_lease_stale_seconds)
         r0 = rows[0]
         return LaneChoice(
             lane_id=str(r0["lane_id"]),

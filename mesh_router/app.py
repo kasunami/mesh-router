@@ -3472,10 +3472,12 @@ def api_lane_lease_status(lane_id: str) -> dict[str, Any]:
             active = _list_active_router_leases(cur, [lane_id])
             cur.execute(
                 """
-                SELECT lane_id, lane_name, lane_type, base_url, status, suspension_reason, current_model_name,
+                SELECT l.lane_id, l.lane_name, l.lane_type, l.base_url, l.status, l.suspension_reason, l.current_model_name,
+                       h.host_name,
                        proxy_auth_metadata, backend_type
-                FROM lanes
-                WHERE lane_id=%s
+                FROM lanes l
+                JOIN hosts h ON h.host_id = l.host_id
+                WHERE l.lane_id=%s
                 """,
                 (lane_id,),
             )

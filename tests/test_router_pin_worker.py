@@ -187,6 +187,80 @@ class PinWorkerPlacementTests(unittest.TestCase):
         self.assertEqual(choice.lane_id, "lane-cpu")
         self.assertEqual(choice.current_model_name, "falcon3-10b")
 
+    def test_pin_worker_base_url_matches_effective_mw_port(self) -> None:
+        rows = [
+            {
+                "lane_id": "lane-combined",
+                "lane_name": "combined",
+                "host_name": "pupix1",
+                "base_url": "http://10.0.0.95:11436",
+                "lane_type": "other",
+                "backend_type": "llama",
+                "status": "suspended",
+                "proxy_auth_metadata": {"control_plane": "mw", "mw_host_id": "pupix1", "mw_lane_id": "combined"},
+                "current_model_name": "gemma-4-26B-A4B-it-Q4_K_M",
+                "current_model_tags": [],
+                "current_model_max_ctx": None,
+            }
+        ]
+
+        state_rows = [
+            {
+                "host_id": "pupix1",
+                "lane_id": "combined",
+                "last_heartbeat_at": datetime.now(tz=timezone.utc),
+                "actual_state": "running",
+                "health_status": "healthy",
+                "actual_model": "Qwen3.5-27B-Q4_K_M",
+                "backend_type": "llama.cpp",
+                "listen_port": 21436,
+            }
+        ]
+
+        class _StateCur:
+            def execute(self, *args, **kwargs):  # noqa: ANN001
+                return None
+
+            def fetchall(self):  # noqa: ANN001
+                return state_rows
+
+            def __enter__(self):  # noqa: ANN001
+                return self
+
+            def __exit__(self, exc_type, exc, tb):  # noqa: ANN001
+                return False
+
+        class _StateConn:
+            def cursor(self):  # noqa: ANN001
+                return _StateCur()
+
+            def __enter__(self):  # noqa: ANN001
+                return self
+
+            def __exit__(self, exc_type, exc, tb):  # noqa: ANN001
+                return False
+
+        class _StateDb:
+            def connect(self):  # noqa: ANN001
+                return _StateConn()
+
+        with (
+            mock.patch.object(router_module, "db", _Db()),
+            mock.patch.object(router_module, "mw_state_db", _StateDb()),
+            mock.patch.object(router_module, "q", return_value=rows),
+        ):
+            choice = router_module.pick_lane_for_model(
+                model="Qwen3.5-27B-Q4_K_M",
+                pin_worker="pupix1",
+                pin_base_url="http://10.0.0.95:21436",
+                pin_lane_type="other",
+            )
+
+        self.assertEqual(choice.worker_id, "pupix1")
+        self.assertEqual(choice.lane_id, "lane-combined")
+        self.assertEqual(choice.base_url, "http://10.0.0.95:21436")
+        self.assertEqual(choice.current_model_name, "Qwen3.5-27B-Q4_K_M")
+
     def test_pin_worker_rejects_mw_lane_when_state_db_unavailable(self) -> None:
         rows = [
             {
