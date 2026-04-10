@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from urllib.parse import urlparse, urlunparse
 
 
 def _normalize_router_backend_type(value: str | None) -> str:
@@ -70,6 +71,32 @@ def _mw_effective_status_and_reason(
     return "ready", None
 
 
+def _base_url_with_listen_port(base_url: str | None, *, listen_port: Any) -> str | None:
+    raw_url = str(base_url or "").strip()
+    if not raw_url:
+        return None
+    try:
+        port = int(listen_port)
+    except (TypeError, ValueError):
+        return None
+    if port <= 0:
+        return None
+    parsed = urlparse(raw_url)
+    hostname = parsed.hostname
+    if not hostname or not parsed.scheme:
+        return None
+    if ":" in hostname and not hostname.startswith("["):
+        host = f"[{hostname}]"
+    else:
+        host = hostname
+    if parsed.username:
+        auth = parsed.username
+        if parsed.password:
+            auth = f"{auth}:{parsed.password}"
+        host = f"{auth}@{host}"
+    return urlunparse(parsed._replace(netloc=f"{host}:{port}"))
+
+
 def apply_mw_effective_status(
     rows: list[dict[str, Any]],
     *,
@@ -122,10 +149,13 @@ def apply_mw_effective_status(
                       ml.desired_model,
                       ml.actual_model,
                       ml.backend_type,
-                      ml.metadata
+                      ml.metadata,
+                      ml.service_id,
+                      ms.listen_port
                     FROM wanted w
                     LEFT JOIN mw_hosts mh ON mh.host_id = w.host_id
                     LEFT JOIN mw_lanes ml ON ml.host_id = w.host_id AND ml.lane_id = w.lane_id
+                    LEFT JOIN mw_services ms ON ms.host_id = ml.host_id AND ms.service_id = ml.service_id
                     """,
                     tuple(params),
                 )
@@ -204,3 +234,6 @@ def apply_mw_effective_status(
             ):
                 if key in metadata:
                     row[key] = metadata.get(key)
+        effective_base_url = _base_url_with_listen_port(row.get("base_url"), listen_port=f.get("listen_port"))
+        if effective_base_url:
+            row["base_url"] = effective_base_url

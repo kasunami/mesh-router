@@ -231,6 +231,48 @@ class InventoryApiTests(unittest.TestCase):
             ["Qwen3.5-9B-6bit"],
         )
 
+    def test_api_lane_lease_status_uses_mw_effective_lane_truth(self) -> None:
+        now = datetime.now(tz=timezone.utc)
+        cursor = _FakeCursor(
+            fetchall_rows=[[]],
+            fetchone_rows=[
+                {
+                    "lane_id": "lane-combined",
+                    "lane_name": "combined",
+                    "lane_type": "other",
+                    "base_url": "http://10.0.0.95:11436",
+                    "status": "suspended",
+                    "suspension_reason": "swap:abc:queued",
+                    "current_model_name": "gemma-4-26B-A4B-it-Q4_K_M",
+                    "proxy_auth_metadata": {"control_plane": "mw", "mw_host_id": "pupix1", "mw_lane_id": "combined"},
+                    "backend_type": "llama",
+                }
+            ],
+        )
+        state_rows = [
+            {
+                "host_id": "pupix1",
+                "lane_id": "combined",
+                "last_heartbeat_at": now,
+                "actual_state": "running",
+                "health_status": "healthy",
+                "actual_model": "Qwen3.5-27B-Q4_K_M",
+                "backend_type": "llama.cpp",
+                "listen_port": 21436,
+            }
+        ]
+
+        app_module.db = _FakeDb(cursor)  # type: ignore[assignment]
+        app_module.mw_state_db = _FakeDb(_FakeCursor(fetchall_rows=[state_rows]))  # type: ignore[assignment]
+
+        client = TestClient(app_module.app)
+        resp = client.get("/api/lanes/lane-combined/lease-status")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body["lane_status"], "ready")
+        self.assertEqual(body["current_model"], "Qwen3.5-27B-Q4_K_M")
+        self.assertEqual(body["base_url"], "http://10.0.0.95:21436")
+
 
 if __name__ == "__main__":
     unittest.main()

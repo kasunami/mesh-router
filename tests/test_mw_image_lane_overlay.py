@@ -207,3 +207,38 @@ def test_mw_overlay_overrides_active_backend_and_eta_fields_from_mw_metadata():
     assert rows[0]["total_swap_eta_ms"] == 0
     assert rows[0]["eta_source"] == "mw_state_snapshot"
     assert rows[0]["eta_complete"] is True
+
+
+def test_mw_overlay_rewrites_base_url_port_from_live_mw_service_port():
+    now = datetime.now(tz=timezone.utc)
+    rows = [
+        {
+            "lane_id": "combined-row",
+            "lane_name": "combined",
+            "lane_type": "other",
+            "backend_type": "llama",
+            "host_name": "pupix1",
+            "proxy_auth_metadata": {"control_plane": "mw", "mw_host_id": "pupix1", "mw_lane_id": "combined"},
+            "status": "suspended",
+            "base_url": "http://10.0.0.95:11436",
+            "current_model_name": "gemma-4-26B-A4B-it-Q4_K_M",
+        }
+    ]
+    mw_rows = [
+        {
+            "host_id": "pupix1",
+            "lane_id": "combined",
+            "last_heartbeat_at": now,
+            "actual_state": "running",
+            "health_status": "healthy",
+            "actual_model": "Qwen3.5-27B-Q4_K_M",
+            "backend_type": "llama.cpp",
+            "listen_port": 21436,
+        }
+    ]
+
+    apply_mw_effective_status(rows, mw_state_db=_FakeDb(mw_rows), stale_seconds=45)
+
+    assert rows[0]["effective_status"] == "ready"
+    assert rows[0]["current_model_name"] == "Qwen3.5-27B-Q4_K_M"
+    assert rows[0]["base_url"] == "http://10.0.0.95:21436"

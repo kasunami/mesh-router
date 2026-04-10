@@ -3472,7 +3472,8 @@ def api_lane_lease_status(lane_id: str) -> dict[str, Any]:
             active = _list_active_router_leases(cur, [lane_id])
             cur.execute(
                 """
-                SELECT lane_id, lane_name, lane_type, base_url, status, suspension_reason, current_model_name
+                SELECT lane_id, lane_name, lane_type, base_url, status, suspension_reason, current_model_name,
+                       proxy_auth_metadata, backend_type
                 FROM lanes
                 WHERE lane_id=%s
                 """,
@@ -3481,17 +3482,23 @@ def api_lane_lease_status(lane_id: str) -> dict[str, Any]:
             lane = cur.fetchone()
     if not lane:
         raise HTTPException(status_code=404, detail="lane not found")
+    lane_row = dict(lane)
+    apply_mw_effective_status(
+        [lane_row],
+        mw_state_db=mw_state_db,
+        stale_seconds=settings.default_lease_stale_seconds,
+    )
 
     active_summary = _summarize_active_leases(active)
     latest = active_summary[-1] if active_summary else None
     return {
-        "lane_id": str(lane["lane_id"]),
-        "lane_name": str(lane.get("lane_name") or ""),
-        "lane_type": str(lane.get("lane_type") or ""),
-        "base_url": str(lane.get("base_url") or ""),
-        "lane_status": str(lane.get("status") or ""),
-        "suspension_reason": lane.get("suspension_reason"),
-        "current_model": lane.get("current_model_name"),
+        "lane_id": str(lane_row["lane_id"]),
+        "lane_name": str(lane_row.get("lane_name") or ""),
+        "lane_type": str(lane_row.get("lane_type") or ""),
+        "base_url": str(lane_row.get("base_url") or ""),
+        "lane_status": str(lane_row.get("effective_status") or lane_row.get("status") or ""),
+        "suspension_reason": lane_row.get("suspension_reason"),
+        "current_model": lane_row.get("current_model_name"),
         "lease_active": bool(active_summary),
         "active_lease_count": len(active_summary),
         "active_leases": active_summary,
