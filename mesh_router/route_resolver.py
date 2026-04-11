@@ -160,7 +160,7 @@ def resolve_route(
         try:
             choice_obj = pick_lane_for_model(
                 model=cand_model,
-                backend_type="sd" if modality == "images" else None,
+                backend_type="sd" if modality == "images" else "llama" if modality == "chat" else None,
                 pin_worker=host_name,
                 exclude_lane_ids=excluded_lane_ids,
             )
