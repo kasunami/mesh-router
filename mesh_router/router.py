@@ -65,6 +65,29 @@ def _normalized_model_tags(tags: list[str] | None) -> set[str]:
     return out
 
 
+def _normalize_backend_type(value: str | None) -> str:
+    raw = str(value or "").strip().lower()
+    if raw in {"llama.cpp", "llama"}:
+        return "llama"
+    if raw in {"bitnet.cpp", "bitnet"}:
+        return "bitnet"
+    if raw in {"stable-diffusion.cpp", "stable-diffusion", "sd"}:
+        return "sd"
+    if raw == "mlx":
+        return "mlx"
+    return raw
+
+
+def _backend_matches_request(row: dict[str, Any], backend_type: str | None) -> bool:
+    requested = _normalize_backend_type(backend_type)
+    if not requested:
+        return True
+    actual = _normalize_backend_type(str(row.get("backend_type") or ""))
+    if actual:
+        return actual == requested
+    return requested == "llama"
+
+
 def _model_lookup_keys(model_name: str | None) -> set[str]:
     raw = (model_name or "").strip()
     if not raw:
@@ -213,6 +236,8 @@ def pick_lane_for_model(
         r0 = rows[0]
         if pin_lane_type and str(r0.get("lane_type") or "") != str(pin_lane_type):
             raise LanePlacementError("pinned lane does not match requested lane_type", status_code=409)
+        if not _backend_matches_request(r0, backend_type):
+            raise LanePlacementError("pinned lane does not match requested backend", status_code=409)
         eff = str(r0.get("effective_status") or r0.get("status") or "")
         if eff != "ready":
             raise LanePlacementError("pinned lane is not ready", status_code=409)
@@ -268,6 +293,7 @@ def pick_lane_for_model(
             r for r in rows
             if str(r.get("host_name") or "") == str(pin_worker)
             and str(r.get("base_url") or "") == str(pin_base_url)
+            and _backend_matches_request(r, backend_type)
         ]
         if not rows:
             raise RuntimeError("pinned lane not found")
@@ -336,7 +362,11 @@ def pick_lane_for_model(
                 )
         apply_mw_effective_status(rows, mw_state_db=mw_state_db, stale_seconds=settings.default_lease_stale_seconds)
         # Defensive: even if the SQL layer changes, pinning must never route to a different host.
-        rows = [r for r in rows if str(r.get("host_name") or "") == str(pin_worker)]
+        rows = [
+            r for r in rows
+            if str(r.get("host_name") or "") == str(pin_worker)
+            and _backend_matches_request(r, backend_type)
+        ]
 
         def _status(row: dict) -> str:
             return str(row.get("effective_status") or row.get("status") or "ready")
@@ -482,6 +512,7 @@ def pick_lane_for_model(
                     ),
                 )
         apply_mw_effective_status(rows, mw_state_db=mw_state_db, stale_seconds=settings.default_lease_stale_seconds)
+        rows = [row for row in rows if _backend_matches_request(row, backend_type)]
         if settings.placement_prefer_mw_lanes:
             def _is_mw(row: dict) -> bool:
                 pam = row.get("proxy_auth_metadata") or {}
