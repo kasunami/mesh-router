@@ -152,6 +152,61 @@ class PreferMwLanePlacementTests(unittest.TestCase):
         self.assertEqual(choice.lane_id, "chat-lane")
         self.assertEqual(choice.worker_id, "packhub02")
 
+    def test_policy_disallowed_viability_is_not_swappable(self) -> None:
+        rows = [
+            {
+                "lane_id": "disallowed-gpu",
+                "host_name": "Static-Mobile-2",
+                "base_url": "http://10.0.0.132:21436",
+                "lane_type": "gpu",
+                "backend_type": "llama",
+                "status": "ready",
+                "proxy_auth_metadata": {"control_plane": "mw", "mw_host_id": "static-mobile-2", "mw_lane_id": "lfm"},
+                "current_model_name": "LFM2.5-350M-Q4_K_M.gguf",
+                "current_model_tags": [],
+                "current_model_max_ctx": 8192,
+                "local_viable_models": [
+                    {
+                        "model_name": "Qwen3.5-0.8B-Q4_K_M.gguf",
+                        "tags": [],
+                        "max_ctx": 8192,
+                        "allowed": False,
+                    }
+                ],
+                "remote_viable_models": [],
+            },
+            {
+                "lane_id": "allowed-cpu",
+                "host_name": "packhub02",
+                "base_url": "http://10.0.0.4:11434",
+                "lane_type": "cpu",
+                "backend_type": "llama",
+                "status": "ready",
+                "proxy_auth_metadata": {},
+                "current_model_name": "Qwen3.5-4B-Q4_K_M.gguf",
+                "current_model_tags": [],
+                "current_model_max_ctx": 8192,
+                "local_viable_models": [
+                    {
+                        "model_name": "Qwen3.5-0.8B-Q4_K_M.gguf",
+                        "tags": [],
+                        "max_ctx": 8192,
+                        "allowed": True,
+                    }
+                ],
+                "remote_viable_models": [],
+            },
+        ]
+
+        with (
+            mock.patch.object(router_module, "db", _Db()),
+            mock.patch.object(router_module, "q", return_value=rows),
+        ):
+            choice = router_module.pick_lane_for_model(model="qwen3.5-0.8b")
+
+        self.assertEqual(choice.lane_id, "allowed-cpu")
+        self.assertEqual(choice.worker_id, "packhub02")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -88,6 +88,10 @@ def _backend_matches_request(row: dict[str, Any], backend_type: str | None) -> b
     return requested == "llama"
 
 
+def _model_item_allowed(item: dict[str, Any]) -> bool:
+    return item.get("allowed") is not False
+
+
 def _model_lookup_keys(model_name: str | None) -> set[str]:
     raw = (model_name or "").strip()
     if not raw:
@@ -439,7 +443,8 @@ def pick_lane_for_model(
                           jsonb_build_object(
                             'model_name', m.model_name,
                             'tags', COALESCE(m.tags, '{}'::text[]),
-                            'max_ctx', p.max_ctx
+                            'max_ctx', p.max_ctx,
+                            'allowed', COALESCE(p.allowed, true)
                           )
                           ORDER BY m.model_name
                         )
@@ -447,14 +452,19 @@ def pick_lane_for_model(
                         JOIN host_model_artifacts hma ON hma.artifact_id = lmv.artifact_id
                         JOIN models m ON m.model_id=lmv.model_id
                         LEFT JOIN lane_model_policy p ON p.lane_id=l.lane_id AND p.model_id=lmv.model_id
-                        WHERE lmv.lane_id=l.lane_id AND lmv.is_viable=true AND lmv.source_locality='local' AND COALESCE(hma.present, false)=true
+                        WHERE lmv.lane_id=l.lane_id
+                          AND lmv.is_viable=true
+                          AND lmv.source_locality='local'
+                          AND COALESCE(hma.present, false)=true
+                          AND (p.allowed IS DISTINCT FROM false)
                       ), '[]'::jsonb) as local_viable_models,
                       COALESCE((
                         SELECT jsonb_agg(
                           jsonb_build_object(
                             'model_name', m.model_name,
                             'tags', COALESCE(m.tags, '{}'::text[]),
-                            'max_ctx', p.max_ctx
+                            'max_ctx', p.max_ctx,
+                            'allowed', COALESCE(p.allowed, true)
                           )
                           ORDER BY m.model_name
                         )
@@ -462,7 +472,11 @@ def pick_lane_for_model(
                         JOIN host_model_artifacts hma ON hma.artifact_id = lmv.artifact_id
                         JOIN models m ON m.model_id=lmv.model_id
                         LEFT JOIN lane_model_policy p ON p.lane_id=l.lane_id AND p.model_id=lmv.model_id
-                        WHERE lmv.lane_id=l.lane_id AND lmv.is_viable=true AND lmv.source_locality='remote' AND COALESCE(hma.present, false)=true
+                        WHERE lmv.lane_id=l.lane_id
+                          AND lmv.is_viable=true
+                          AND lmv.source_locality='remote'
+                          AND COALESCE(hma.present, false)=true
+                          AND (p.allowed IS DISTINCT FROM false)
                       ), '[]'::jsonb) as remote_viable_models
                     FROM lanes l
                     JOIN hosts h ON h.host_id = l.host_id
@@ -581,12 +595,14 @@ def pick_lane_for_model(
         swappable = [
             row for row in swappable_rows
             if any(
-                _model_matches_request(model, item.get("model_name"), item.get("tags") or [])
+                _model_item_allowed(item)
+                and _model_matches_request(model, item.get("model_name"), item.get("tags") or [])
                 and _context_is_sufficient(request_context_tokens, item.get("max_ctx"))
                 for item in (row.get("local_viable_models") or [])
             )
             or any(
-                _model_matches_request(model, item.get("model_name"), item.get("tags") or [])
+                _model_item_allowed(item)
+                and _model_matches_request(model, item.get("model_name"), item.get("tags") or [])
                 and _context_is_sufficient(request_context_tokens, item.get("max_ctx"))
                 for item in (row.get("remote_viable_models") or [])
             )
@@ -595,11 +611,13 @@ def pick_lane_for_model(
             row for row in swappable_rows
             if (
                 any(
-                    _model_matches_request(model, item.get("model_name"), item.get("tags") or [])
+                    _model_item_allowed(item)
+                    and _model_matches_request(model, item.get("model_name"), item.get("tags") or [])
                     for item in (row.get("local_viable_models") or [])
                 )
                 or any(
-                    _model_matches_request(model, item.get("model_name"), item.get("tags") or [])
+                    _model_item_allowed(item)
+                    and _model_matches_request(model, item.get("model_name"), item.get("tags") or [])
                     for item in (row.get("remote_viable_models") or [])
                 )
             )
@@ -626,7 +644,7 @@ def pick_lane_for_model(
             for row in context_limited:
                 for group in ("local_viable_models", "remote_viable_models"):
                     for item in row.get(group) or []:
-                        if _model_matches_request(model, item.get("model_name"), item.get("tags") or []):
+                        if _model_item_allowed(item) and _model_matches_request(model, item.get("model_name"), item.get("tags") or []):
                             item_max_ctx = item.get("max_ctx")
                             if item_max_ctx is not None:
                                 max_available_ctx = max(max_available_ctx, int(item_max_ctx))
