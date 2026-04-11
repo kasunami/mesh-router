@@ -477,6 +477,7 @@ def pick_lane_for_model(
                           AND lmv.source_locality='remote'
                           AND COALESCE(hma.present, false)=true
                           AND (p.allowed IS DISTINCT FROM false)
+                          AND jsonb_array_length(COALESCE(h.model_store_paths, '[]'::jsonb)) > 0
                       ), '[]'::jsonb) as remote_viable_models
                     FROM lanes l
                     JOIN hosts h ON h.host_id = l.host_id

@@ -198,14 +198,18 @@ class PreferMwLanePlacementTests(unittest.TestCase):
             },
         ]
 
+        q_mock = mock.Mock(return_value=rows)
         with (
             mock.patch.object(router_module, "db", _Db()),
-            mock.patch.object(router_module, "q", return_value=rows),
+            mock.patch.object(router_module, "q", q_mock),
         ):
             choice = router_module.pick_lane_for_model(model="qwen3.5-0.8b")
 
         self.assertEqual(choice.lane_id, "allowed-cpu")
         self.assertEqual(choice.worker_id, "packhub02")
+        query_text = q_mock.call_args.args[1]
+        self.assertIn("p.allowed IS DISTINCT FROM false", query_text)
+        self.assertIn("jsonb_array_length(COALESCE(h.model_store_paths", query_text)
 
 
 if __name__ == "__main__":
