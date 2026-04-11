@@ -96,6 +96,51 @@ class StreamingMwTests(unittest.TestCase):
             self.assertTrue(any("data:" in line for line in lines))
             self.assertTrue(any("[DONE]" in line for line in lines))
 
+    def test_chat_non_streaming_uses_mw_grpc_when_enabled(self) -> None:
+        app_module._mw_client.cache_clear()
+        sent_commands = []
+        fake_mw_client = SimpleNamespace(send_command=lambda **kwargs: sent_commands.append(kwargs) or {"ok": True})
+        choice = LaneChoice(
+            lane_id="lane-1",
+            worker_id="Static-Mobile-2",
+            base_url="http://10.0.0.132:21434",
+            lane_type="cpu",
+            backend_type="llama",
+            current_model_name="Qwen3.5-0.8B-Q4_K_M.gguf",
+        )
+        target = MwGrpcTarget(endpoint="127.0.0.1:50061", host_id="static-mobile-2", lane_id="qwen")
+        fake_db = SimpleNamespace(connect=fake_db_connect)
+
+        with (
+            patch.object(app_module, "_create_router_request", return_value="req-2"),
+            patch.object(app_module, "_touch_router_request", return_value=None),
+            patch.object(app_module, "_request_cancel_requested", return_value=False),
+            patch.object(app_module, "pick_lane_for_model", return_value=choice),
+            patch.object(app_module, "_resolve_downstream_model_for_lane", return_value="Qwen3.5-0.8B-Q4_K_M.gguf"),
+            patch.object(app_module, "_acquire_router_lease", return_value=("lease-2", datetime.now(UTC) + timedelta(minutes=5))),
+            patch.object(app_module, "_heartbeat_router_lease", return_value=None),
+            patch.object(app_module, "_release_router_lease", return_value=None),
+            patch.object(app_module, "sign_token", return_value="token"),
+            patch.object(app_module, "_mw_target_for_lane", return_value=target),
+            patch.object(app_module, "_mw_client", lambda: fake_mw_client),
+            patch.object(app_module, "db", fake_db),
+            patch.object(app_module.MwGrpcClient, "stream_chat", fake_grpc_stream_chat),
+        ):
+            client = TestClient(app_module.app)
+            resp = client.post(
+                "/v1/chat/completions",
+                json={
+                    "model": "qwen3.5:0.8B",
+                    "stream": False,
+                    "messages": [{"role": "user", "content": "hi"}],
+                },
+            )
+            self.assertEqual(resp.status_code, 200)
+            body = resp.json()
+            self.assertEqual(body["choices"][0]["message"]["content"], "hi")
+            self.assertEqual(body["model"], "Qwen3.5-0.8B-Q4_K_M.gguf")
+            self.assertEqual(sent_commands[0]["message_type"], "load_model")
+
 
 if __name__ == "__main__":
     unittest.main()

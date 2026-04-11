@@ -10,6 +10,18 @@ from .router import pick_lane_for_model
 from .mw_overlay import apply_mw_effective_status
 
 
+MODEL_SELECTION_TAGS: dict[str, str] = {
+    "qwen3.5:0.8b": "qwen3.5:0.8B",
+    "qwen3.5:2b": "qwen3.5:2B",
+    "qwen3.5:4b": "qwen3.5:4B",
+    "qwen3.5:9b": "qwen3.5:9B",
+    "qwen3.5:27b": "qwen3.5:27B",
+    "falcon3:10b": "falcon3:10B",
+    "lfm2.5:350m": "lfm2.5:350M",
+    "gemma4:26b": "gemma4:26B",
+}
+
+
 def _normalize_host_id(host_name: str) -> str:
     return (host_name or "").strip().lower().replace(" ", "-").replace("_", "-")
 
@@ -37,6 +49,8 @@ def _tag_model_candidates(tags: list[str], *, modality: str) -> list[str]:
             name = t.split(":", 1)[1].strip()
             if name:
                 return [name]
+        if t in MODEL_SELECTION_TAGS:
+            return [MODEL_SELECTION_TAGS[t]]
 
     cap = "text"
     if "embeddings" in normalized:
@@ -57,15 +71,15 @@ def _tag_model_candidates(tags: list[str], *, modality: str) -> list[str]:
     key = f"{cap}:{behavior}" if behavior else cap
     # Deterministic built-in defaults. Operators can override by specifying model explicitly.
     mapping: dict[str, list[str]] = {
-        "text:fast": ["qwen3.5-9b", "qwen3.5-4b", "qwen3.5-2b"],
-        "text:balanced": ["qwen3.5-9b", "qwen3.5-27b"],
-        "text:smart": ["qwen3.5-27b", "qwen3.5-9b"],
-        "text:cheap": ["qwen3.5-2b", "qwen3.5-0.8b"],
-        "text": ["qwen3.5-9b"],
+        "text:fast": ["qwen3.5:9B", "qwen3.5:4B", "qwen3.5:2B"],
+        "text:balanced": ["qwen3.5:9B", "qwen3.5:27B"],
+        "text:smart": ["qwen3.5:27B", "qwen3.5:9B"],
+        "text:cheap": ["qwen3.5:2B", "qwen3.5:0.8B"],
+        "text": ["qwen3.5:9B"],
         "embeddings": ["nomic-embed-text"],
         "image-gen": ["flux1-schnell", "flux.1-schnell"],
     }
-    return list(mapping.get(key) or mapping.get(cap) or ["qwen3.5-9b"])
+    return list(mapping.get(key) or mapping.get(cap) or ["qwen3.5:9B"])
 
 
 def resolve_route(

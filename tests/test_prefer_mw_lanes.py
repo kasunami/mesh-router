@@ -63,6 +63,7 @@ class PreferMwLanePlacementTests(unittest.TestCase):
         with (
             mock.patch.object(router_module, "db", _Db()),
             mock.patch.object(router_module, "q", return_value=rows),
+            mock.patch.object(router_module, "apply_mw_effective_status", lambda *args, **kwargs: None),
             mock.patch.object(router_module.settings, "placement_prefer_mw_lanes", True),
         ):
             choice = router_module.pick_lane_for_model(model="qwen3.5-9b")
@@ -202,6 +203,7 @@ class PreferMwLanePlacementTests(unittest.TestCase):
         with (
             mock.patch.object(router_module, "db", _Db()),
             mock.patch.object(router_module, "q", q_mock),
+            mock.patch.object(router_module, "apply_mw_effective_status", lambda *args, **kwargs: None),
         ):
             choice = router_module.pick_lane_for_model(model="qwen3.5-0.8b")
 
@@ -210,6 +212,34 @@ class PreferMwLanePlacementTests(unittest.TestCase):
         query_text = q_mock.call_args.args[1]
         self.assertIn("p.allowed IS DISTINCT FROM false", query_text)
         self.assertIn("jsonb_array_length(COALESCE(h.model_store_paths", query_text)
+
+    def test_qwen_selection_tag_matches_quantized_viable_model(self) -> None:
+        rows = [
+            {
+                "lane_id": "frontdesk-cpu",
+                "host_name": "Static-Mobile-2",
+                "base_url": "http://10.0.0.132:21434",
+                "lane_type": "cpu",
+                "backend_type": "llama",
+                "status": "ready",
+                "proxy_auth_metadata": {"control_plane": "mw", "mw_host_id": "static-mobile-2", "mw_lane_id": "qwen"},
+                "current_model_name": "Qwen3.5-0.8B-Q4_K_M.gguf",
+                "current_model_tags": [],
+                "current_model_max_ctx": 8192,
+                "local_viable_models": [],
+                "remote_viable_models": [],
+            }
+        ]
+
+        with (
+            mock.patch.object(router_module, "db", _Db()),
+            mock.patch.object(router_module, "q", return_value=rows),
+            mock.patch.object(router_module, "apply_mw_effective_status", lambda *args, **kwargs: None),
+        ):
+            choice = router_module.pick_lane_for_model(model="qwen3.5:0.8B")
+
+        self.assertEqual(choice.lane_id, "frontdesk-cpu")
+        self.assertEqual(choice.worker_id, "Static-Mobile-2")
 
 
 if __name__ == "__main__":

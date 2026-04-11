@@ -39,6 +39,12 @@ class RouteResolveApiTests(unittest.TestCase):
         self.assertTrue(body["ok"])
         self.assertEqual(body["choice"]["worker_id"], "Static-Deskix")
 
+    def test_qwen_selection_tag_resolves_as_model_candidate(self) -> None:
+        self.assertEqual(
+            resolver_module._tag_model_candidates(["qwen3.5:0.8B"], modality="chat"),
+            ["qwen3.5:0.8B"],
+        )
+
     def test_route_resolve_prefers_best_perf_candidate(self) -> None:
         # Ensure resolve_route ranks among model candidates deterministically when perf expectations exist.
         def _pick(**kwargs):  # noqa: ANN001
@@ -48,7 +54,7 @@ class RouteResolveApiTests(unittest.TestCase):
 
         def _perf(choice, *, model, modality):  # noqa: ANN001
             # Favor the middle candidate.
-            tps = {"qwen3.5-9b": 50.0, "qwen3.5-4b": 120.0, "qwen3.5-2b": 80.0}.get(str(model), 0.0)
+            tps = {"qwen3.5:9B": 50.0, "qwen3.5:4B": 120.0, "qwen3.5:2B": 80.0}.get(str(model), 0.0)
             return {
                 "host_id": "static-deskix",
                 "lane_id": "lane-1",
@@ -71,7 +77,7 @@ class RouteResolveApiTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         body = resp.json()
         self.assertTrue(body["ok"])
-        self.assertEqual(body["choice"]["resolved_model"], "qwen3.5-4b")
+        self.assertEqual(body["choice"]["resolved_model"], "qwen3.5:4B")
 
 
 if __name__ == "__main__":

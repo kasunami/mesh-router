@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import re
@@ -3573,6 +3574,97 @@ def _normalize_route_request(*, route: str, raw_payload: dict[str, Any]) -> dict
     raise HTTPException(status_code=400, detail=f"unsupported route: {route}")
 
 
+async def _collect_mw_chat_completion(
+    *,
+    target: MwGrpcTarget,
+    request_id: str,
+    model: str,
+    request_payload: dict[str, Any],
+) -> dict[str, Any]:
+    content_parts: list[str] = []
+    usage_prompt: int | None = None
+    usage_completion: int | None = None
+    usage_total: int | None = None
+    finish_reason: str | None = None
+
+    async for event in MwGrpcClient().stream_chat(
+        target=target,
+        request_id=request_id,
+        model=model,
+        messages=[item.model_dump() if hasattr(item, "model_dump") else dict(item) for item in request_payload.get("messages") or []],
+        temperature=request_payload.get("temperature"),
+        max_tokens=request_payload.get("max_tokens"),
+        deadline_unix_ms=None,
+    ):
+        if str(event.event_type or "") in {"failed", "cancelled"}:
+            code = str(event.error_code or "mw_error")
+            message = str(event.error_message or "MW chat request failed")
+            raise RuntimeError(f"{code}: {message}")
+        try:
+            if event.usage and getattr(event.usage, "prompt_tokens", None) is not None:
+                usage_prompt = int(event.usage.prompt_tokens)
+            if event.usage and getattr(event.usage, "completion_tokens", None) is not None:
+                usage_completion = int(event.usage.completion_tokens)
+            if event.usage and getattr(event.usage, "total_tokens", None) is not None:
+                usage_total = int(event.usage.total_tokens)
+        except Exception:
+            pass
+        if str(getattr(event, "finish_reason", "") or ""):
+            finish_reason = str(event.finish_reason)
+
+        raw = bytes(event.raw_backend_payload or b"").strip()
+        if raw == b"[DONE]":
+            break
+        if raw:
+            try:
+                item = json.loads(raw.decode("utf-8"))
+                choice = ((item or {}).get("choices") or [{}])[0]
+                delta = (choice.get("delta") or {}).get("content")
+                message = (choice.get("message") or {}).get("content")
+                text = delta if delta is not None else message
+                if text:
+                    content_parts.append(str(text))
+                if choice.get("finish_reason"):
+                    finish_reason = str(choice.get("finish_reason"))
+                usage = (item or {}).get("usage") or {}
+                if usage.get("prompt_tokens") is not None:
+                    usage_prompt = int(usage.get("prompt_tokens"))
+                if usage.get("completion_tokens") is not None:
+                    usage_completion = int(usage.get("completion_tokens"))
+                if usage.get("total_tokens") is not None:
+                    usage_total = int(usage.get("total_tokens"))
+            except Exception:
+                content_parts.append(raw.decode("utf-8", errors="replace"))
+        elif getattr(event, "text_delta", ""):
+            content_parts.append(str(getattr(event, "text_delta", "")))
+        if str(event.event_type or "") in {"completed"}:
+            break
+
+    if usage_total is None and (usage_prompt is not None or usage_completion is not None):
+        usage_total = int(usage_prompt or 0) + int(usage_completion or 0)
+
+    response: dict[str, Any] = {
+        "id": f"chatcmpl-{request_id}",
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "model": model,
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": "".join(content_parts)},
+                "finish_reason": finish_reason or "stop",
+            }
+        ],
+    }
+    if usage_prompt is not None or usage_completion is not None or usage_total is not None:
+        response["usage"] = {
+            "prompt_tokens": int(usage_prompt or 0),
+            "completion_tokens": int(usage_completion or 0),
+            "total_tokens": int(usage_total or 0),
+        }
+    return response
+
+
 def _execute_router_request(
     *,
     request_id: str,
@@ -3766,12 +3858,48 @@ def _execute_router_request(
         try:
             endpoint = "/v1/chat/completions" if route == "chat" else "/v1/embeddings" if route == "embeddings" else "/sdapi/v1/txt2img"
             request_timeout = 300.0 if route == "images" else float(max(30, settings.default_lease_ttl_seconds))
-            with httpx.Client(timeout=request_timeout) as client:
-                downstream_response = client.post(
-                    f"{choice.base_url.rstrip('/')}{endpoint}",
-                    json=request_payload,
-                    headers={"Authorization": f"Bearer {token}"},
+            mw_target: MwGrpcTarget | None = None
+            if route == "chat" and settings.mw_control_enabled and lane_id:
+                try:
+                    with db.connect() as conn:
+                        with conn.cursor() as cur:
+                            mw_target = _mw_target_for_lane(cur=cur, lane_id=str(lane_id))
+                except Exception:
+                    mw_target = None
+            if mw_target is not None:
+                try:
+                    result = _mw_client().send_command(
+                        host_id=mw_target.host_id,
+                        message_type="load_model",
+                        payload={"lane_id": mw_target.lane_id, "model_name": downstream_model},
+                        wait=True,
+                        timeout_seconds=max(30, settings.mw_command_timeout_seconds),
+                    )
+                    if not bool(result.get("ok", False)):
+                        raise RuntimeError(str(result.get("error") or "MW load_model failed"))
+                except Exception as exc:
+                    raise RuntimeError(f"MW pre-chat load_model failed: {exc}") from exc
+                resp_data = asyncio.run(
+                    _collect_mw_chat_completion(
+                        target=mw_target,
+                        request_id=request_id,
+                        model=downstream_model,
+                        request_payload=request_payload,
+                    )
                 )
+                downstream_status_code = 200
+            else:
+                with httpx.Client(timeout=request_timeout) as client:
+                    downstream_response = client.post(
+                        f"{choice.base_url.rstrip('/')}{endpoint}",
+                        json=request_payload,
+                        headers={"Authorization": f"Bearer {token}"},
+                    )
+                downstream_status_code = downstream_response.status_code
+                try:
+                    resp_data = downstream_response.json()
+                except Exception:
+                    resp_data = {"raw": downstream_response.text}
         finally:
             stop_heartbeat.set()
             heartbeat_thread.join(timeout=2)
@@ -3780,13 +3908,9 @@ def _execute_router_request(
             err_msg = heartbeat_error["error"]
             raise RuntimeError(f"request heartbeat failed: {heartbeat_error['error']}")
 
-        try:
-            resp_data = downstream_response.json()
-        except Exception:
-            resp_data = {"raw": downstream_response.text}
-        if downstream_response.status_code >= 400:
+        if downstream_status_code >= 400:
             err_kind = "proxy_error"
-            err_msg = f"worker proxy http_{downstream_response.status_code}: {resp_data}"
+            err_msg = f"worker proxy http_{downstream_status_code}: {resp_data}"
             raise RuntimeError(err_msg)
 
         if route == "images":
