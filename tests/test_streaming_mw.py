@@ -139,7 +139,7 @@ class StreamingMwTests(unittest.TestCase):
             body = resp.json()
             self.assertEqual(body["choices"][0]["message"]["content"], "hi")
             self.assertEqual(body["model"], "Qwen3.5-0.8B-Q4_K_M.gguf")
-            self.assertEqual(sent_commands[0]["message_type"], "load_model")
+            self.assertEqual(sent_commands, [])
 
 
 if __name__ == "__main__":

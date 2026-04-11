@@ -3867,18 +3867,19 @@ def _execute_router_request(
                 except Exception:
                     mw_target = None
             if mw_target is not None:
-                try:
-                    result = _mw_client().send_command(
-                        host_id=mw_target.host_id,
-                        message_type="load_model",
-                        payload={"lane_id": mw_target.lane_id, "model_name": downstream_model},
-                        wait=True,
-                        timeout_seconds=max(30, settings.mw_command_timeout_seconds),
-                    )
-                    if not bool(result.get("ok", False)):
-                        raise RuntimeError(str(result.get("error") or "MW load_model failed"))
-                except Exception as exc:
-                    raise RuntimeError(f"MW pre-chat load_model failed: {exc}") from exc
+                if not _model_request_matches_candidate(model_name, choice.current_model_name or ""):
+                    try:
+                        result = _mw_client().send_command(
+                            host_id=mw_target.host_id,
+                            message_type="load_model",
+                            payload={"lane_id": mw_target.lane_id, "model_name": model_name},
+                            wait=True,
+                            timeout_seconds=max(30, settings.mw_command_timeout_seconds),
+                        )
+                        if not bool(result.get("ok", False)):
+                            raise RuntimeError(str(result.get("error") or "MW load_model failed"))
+                    except Exception as exc:
+                        raise RuntimeError(f"MW pre-chat load_model failed: {exc}") from exc
                 resp_data = asyncio.run(
                     _collect_mw_chat_completion(
                         target=mw_target,
@@ -4208,18 +4209,19 @@ def _execute_router_request_streaming(
 
         # Best-effort: ensure the requested model is loaded on MW-managed lanes before streaming.
         if mw_target is not None and settings.mw_control_enabled:
-            try:
-                result = _mw_client().send_command(
-                    host_id=mw_target.host_id,
-                    message_type="load_model",
-                    payload={"lane_id": mw_target.lane_id, "model_name": downstream_model},
-                    wait=True,
-                    timeout_seconds=max(30, settings.mw_command_timeout_seconds),
-                )
-                if not bool(result.get("ok", False)):
-                    raise RuntimeError(str(result.get("error") or "MW load_model failed"))
-            except Exception as exc:
-                raise RuntimeError(f"MW pre-stream load_model failed: {exc}") from exc
+            if not _model_request_matches_candidate(model_name, choice.current_model_name or ""):
+                try:
+                    result = _mw_client().send_command(
+                        host_id=mw_target.host_id,
+                        message_type="load_model",
+                        payload={"lane_id": mw_target.lane_id, "model_name": model_name},
+                        wait=True,
+                        timeout_seconds=max(30, settings.mw_command_timeout_seconds),
+                    )
+                    if not bool(result.get("ok", False)):
+                        raise RuntimeError(str(result.get("error") or "MW load_model failed"))
+                except Exception as exc:
+                    raise RuntimeError(f"MW pre-stream load_model failed: {exc}") from exc
 
         stop_heartbeat = threading.Event()
         heartbeat_error: dict[str, Any] = {}
