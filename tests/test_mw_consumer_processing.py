@@ -39,6 +39,16 @@ class CapturingConn:
         return None
 
 
+
+
+class CapturingRuntimeStore:
+    def __init__(self) -> None:
+        self.snapshots: list[dict] = []
+
+    def write_host_snapshot(self, **kwargs) -> None:  # noqa: ANN003
+        self.snapshots.append(kwargs)
+
+
 def make_db(cursor: CapturingCursor):
     @contextlib.contextmanager
     def _connect():
@@ -50,6 +60,7 @@ def make_db(cursor: CapturingCursor):
 class MwConsumerProcessingTests(unittest.TestCase):
     def test_process_state_upserts_services_and_lanes(self) -> None:
         cursor = CapturingCursor()
+        runtime_store = CapturingRuntimeStore()
         db_connect = make_db(cursor)
         now = datetime.now(UTC)
         process_message(
@@ -89,11 +100,15 @@ class MwConsumerProcessingTests(unittest.TestCase):
             },
             observed_at=now,
             db_connect=db_connect,
+            runtime_store=runtime_store,
         )
         sql = "\n".join(s for (s, _p) in cursor.executed)
         self.assertIn("INSERT INTO mw_hosts", sql)
         self.assertIn("INSERT INTO mw_services", sql)
         self.assertIn("INSERT INTO mw_lanes", sql)
+        self.assertEqual(len(runtime_store.snapshots), 1)
+        self.assertEqual(runtime_store.snapshots[0]["host_id"], "static-deskix")
+        self.assertEqual(runtime_store.snapshots[0]["snapshot"]["lane_states"][0]["actual_model"], "qwen3.5-4b")
 
     def test_process_response_upserts_transition_and_event(self) -> None:
         cursor = CapturingCursor()

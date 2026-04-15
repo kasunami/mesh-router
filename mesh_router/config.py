@@ -60,6 +60,13 @@ class Settings(BaseSettings):
     # When unset, MW consumer falls back to `database_url`.
     mw_state_database_url: str | None = os.getenv("MESH_ROUTER_MW_STATE_DATABASE_URL") or None
 
+    # Ephemeral MW runtime-state cache. Postgres remains audit/fallback; Redis is the
+    # preferred source for fast-changing active lane/backend/model truth.
+    runtime_state_redis_url: str | None = (
+        os.getenv("MESH_ROUTER_RUNTIME_STATE_REDIS_URL") or os.getenv("MESH_ROUTER_REDIS_URL") or None
+    )
+    runtime_state_ttl_seconds: int = 90
+
     # Placement gating for pilot cutovers. When enabled, prefer MW-managed lanes when multiple
     # candidates are eligible (reversible rollouts without per-request pinning).
     placement_prefer_mw_lanes: bool = False

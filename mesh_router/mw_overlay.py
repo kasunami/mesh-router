@@ -1,8 +1,13 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+import logging
 from typing import Any
 from urllib.parse import urlparse, urlunparse
+
+from .runtime_state import RuntimeStateStore, get_default_runtime_state_store
+
+logger = logging.getLogger(__name__)
 
 
 def _normalize_router_backend_type(value: str | None) -> str:
@@ -102,6 +107,7 @@ def apply_mw_effective_status(
     *,
     mw_state_db: Any,
     stale_seconds: int,
+    runtime_store: RuntimeStateStore | None = None,
 ) -> None:
     """
     Enrich lane rows (from the router DB) with MW-derived readiness + current model when lanes are
@@ -119,6 +125,7 @@ def apply_mw_effective_status(
         binding = _candidate_mw_binding(row)
         if binding is not None:
             mw_pairs.append((binding[0], binding[1]))
+    mw_pairs = list(dict.fromkeys(mw_pairs))
     if not mw_pairs:
         return
 
@@ -130,48 +137,62 @@ def apply_mw_effective_status(
             continue
         if not binding[2]:
             explicit_bindings.add((binding[0], binding[1]))
-    try:
-        with mw_state_db.connect() as conn:
-            with conn.cursor() as cur:
-                values_sql = ",".join(["(%s,%s)"] * len(mw_pairs))
-                params: list[Any] = []
-                for host_id, lane_id in mw_pairs:
-                    params.extend([host_id, lane_id])
-                cur.execute(
-                    f"""
-                    WITH wanted(host_id, lane_id) AS (VALUES {values_sql})
-                    SELECT
-                      w.host_id,
-                      w.lane_id,
-                      mh.last_heartbeat_at,
-                      ml.actual_state,
-                      ml.health_status,
-                      ml.desired_model,
-                      ml.actual_model,
-                      ml.backend_type,
-                      ml.metadata,
-                      ml.service_id,
-                      ms.listen_port
-                    FROM wanted w
-                    LEFT JOIN mw_hosts mh ON mh.host_id = w.host_id
-                    LEFT JOIN mw_lanes ml ON ml.host_id = w.host_id AND ml.lane_id = w.lane_id
-                    LEFT JOIN mw_services ms ON ms.host_id = ml.host_id AND ms.service_id = ml.service_id
-                    """,
-                    tuple(params),
-                )
-                for r in cur.fetchall():
-                    key = (str(r["host_id"]), str(r["lane_id"]))
-                    facts[key] = dict(r)
-    except Exception:
+
+    if runtime_store is None:
+        runtime_store = get_default_runtime_state_store()
+    if runtime_store is not None:
+        try:
+            facts.update(runtime_store.get_lane_facts(mw_pairs, stale_seconds=stale_seconds))
+        except Exception as exc:  # pragma: no cover - defensive guard around cache plugins/fakes
+            logger.warning("MW runtime-state cache read failed: %s", exc)
+
+    missing_pairs = [pair for pair in mw_pairs if pair not in facts]
+    db_unavailable = False
+    if missing_pairs:
+        try:
+            with mw_state_db.connect() as conn:
+                with conn.cursor() as cur:
+                    values_sql = ",".join(["(%s,%s)"] * len(missing_pairs))
+                    params: list[Any] = []
+                    for host_id, lane_id in missing_pairs:
+                        params.extend([host_id, lane_id])
+                    cur.execute(
+                        f"""
+                        WITH wanted(host_id, lane_id) AS (VALUES {values_sql})
+                        SELECT
+                          w.host_id,
+                          w.lane_id,
+                          mh.last_heartbeat_at,
+                          ml.actual_state,
+                          ml.health_status,
+                          ml.desired_model,
+                          ml.actual_model,
+                          ml.backend_type,
+                          ml.metadata,
+                          ml.service_id,
+                          ms.listen_port
+                        FROM wanted w
+                        LEFT JOIN mw_hosts mh ON mh.host_id = w.host_id
+                        LEFT JOIN mw_lanes ml ON ml.host_id = w.host_id AND ml.lane_id = w.lane_id
+                        LEFT JOIN mw_services ms ON ms.host_id = ml.host_id AND ms.service_id = ml.service_id
+                        """,
+                        tuple(params),
+                    )
+                    for r in cur.fetchall():
+                        key = (str(r["host_id"]), str(r["lane_id"]))
+                        facts[key] = dict(r)
+        except Exception:
+            db_unavailable = True
+
+    if db_unavailable:
         for row in rows:
             binding = _candidate_mw_binding(row)
-            if binding is None:
+            if binding is None or binding[2]:
                 continue
-            if binding[2]:
+            if (binding[0], binding[1]) in facts:
                 continue
             row["effective_status"] = "offline"
             row["readiness_reason"] = "mw_state_unavailable"
-        return
 
     now = datetime.now(tz=UTC)
     stale_cutoff = now - timedelta(seconds=int(stale_seconds))
@@ -180,6 +201,8 @@ def apply_mw_effective_status(
         if binding is None:
             continue
         host_id, lane_id, inferred = binding
+        if db_unavailable and not inferred and (host_id, lane_id) not in facts:
+            continue
         f = facts.get((host_id, lane_id)) or {}
         if inferred and not any(
             f.get(key) is not None

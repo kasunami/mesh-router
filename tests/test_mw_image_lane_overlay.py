@@ -277,3 +277,61 @@ def test_mw_overlay_rewrites_base_url_port_from_live_mw_service_port():
     assert rows[0]["effective_status"] == "ready"
     assert rows[0]["current_model_name"] == "Qwen3.5-27B-Q4_K_M"
     assert rows[0]["base_url"] == "http://10.0.0.95:21436"
+
+
+class _FakeRuntimeStore:
+    def __init__(self, facts):
+        self._facts = facts
+
+    def get_lane_facts(self, pairs, *, stale_seconds=None):  # noqa: ANN001
+        return {pair: self._facts[pair] for pair in pairs if pair in self._facts}
+
+
+def test_mw_overlay_prefers_runtime_cache_over_stale_db_rows():
+    now = datetime.now(tz=timezone.utc)
+    rows = [
+        {
+            "lane_id": "gpu-lane",
+            "lane_name": "gpu",
+            "lane_type": "gpu",
+            "backend_type": "llama",
+            "host_name": "Static-Deskix",
+            "proxy_auth_metadata": {"control_plane": "mw", "mw_host_id": "static-deskix", "mw_lane_id": "gpu"},
+            "status": "ready",
+            "base_url": "http://10.0.0.99:11434",
+            "current_model_name": "stale-db-model",
+        }
+    ]
+    stale_db_rows = [
+        {
+            "host_id": "static-deskix",
+            "lane_id": "gpu",
+            "last_heartbeat_at": now,
+            "actual_state": "running",
+            "health_status": "healthy",
+            "actual_model": "stale-db-model",
+            "backend_type": "llama.cpp",
+            "listen_port": 11434,
+        }
+    ]
+    runtime_store = _FakeRuntimeStore(
+        {
+            ("static-deskix", "gpu"): {
+                "host_id": "static-deskix",
+                "lane_id": "gpu",
+                "last_heartbeat_at": now,
+                "actual_state": "running",
+                "health_status": "healthy",
+                "actual_model": "qwen3.5-9b",
+                "backend_type": "llama.cpp",
+                "metadata": {"current_backend_type": "llama"},
+                "listen_port": 21434,
+            }
+        }
+    )
+
+    apply_mw_effective_status(rows, mw_state_db=_FakeDb(stale_db_rows), stale_seconds=45, runtime_store=runtime_store)
+
+    assert rows[0]["effective_status"] == "ready"
+    assert rows[0]["current_model_name"] == "qwen3.5-9b"
+    assert rows[0]["base_url"] == "http://10.0.0.99:21434"

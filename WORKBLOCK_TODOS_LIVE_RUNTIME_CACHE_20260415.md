@@ -47,3 +47,11 @@ Make MR route/status/inventory decisions from MW-reported live runtime truth, no
    - Missing/expired MW snapshot makes MW-managed lane `unknown/offline`.
    - Swap failure records actual loaded model/dead lane state.
    - Stale combined-lane cache cannot report ready when service is down.
+
+## Progress 2026-04-15
+
+- Implemented the first Redis live-state slice in MR. MW state snapshots now write TTL-bound host/service/lane keys under `mr:mw:*`, and the MW effective-state overlay reads Redis before falling back to Postgres.
+- Kept Postgres as durable audit/fallback storage for MW hosts, lanes, services, transitions, and transition events.
+- Added tests proving cache population preserves model/backend/ETA/service port truth and that fresh cache data overrides stale DB rows in effective routing/inventory state.
+- Remaining cache follow-through: write post-swap success/failure snapshots from MW responses, move lease-status/swap preflight reads onto the same cache-backed abstraction, and stop treating durable lane model columns as current truth for MW-managed lanes.
+

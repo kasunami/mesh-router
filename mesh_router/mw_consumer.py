@@ -13,7 +13,7 @@ from psycopg.types.json import Jsonb
 from psycopg.rows import dict_row
 
 from .config import settings
-from .db import db
+from .runtime_state import RuntimeStateStore, get_default_runtime_state_store
 
 logger = logging.getLogger(__name__)
 
@@ -256,7 +256,13 @@ def _insert_transition_event(cur: Any, *, request_id: str, host_id: str, payload
     )
 
 
-def process_message(*, payload: dict[str, Any], observed_at: datetime, db_connect: Callable[[], Any]) -> None:
+def process_message(
+    *,
+    payload: dict[str, Any],
+    observed_at: datetime,
+    db_connect: Callable[[], Any],
+    runtime_store: RuntimeStateStore | None = None,
+) -> None:
     message_type = str(payload.get("message_type") or "")
     host_id = str(payload.get("host_id") or "")
     if not host_id:
@@ -312,6 +318,13 @@ def process_message(*, payload: dict[str, Any], observed_at: datetime, db_connec
                     known_services.add(service_id)
                 _upsert_services(cur, host_id=host_id, service_states=service_states, observed_at=observed_at)
                 _upsert_lanes(cur, host_id=host_id, lane_states=lane_states, observed_at=observed_at)
+                if runtime_store is not None:
+                    runtime_store.write_host_snapshot(
+                        host_id=host_id,
+                        snapshot={**snapshot, "service_states": service_states, "lane_states": lane_states},
+                        observed_at=observed_at,
+                        ttl_seconds=settings.runtime_state_ttl_seconds,
+                    )
             elif message_type == "response":
                 request_id = str(payload.get("request_id") or "")
                 body = dict(payload.get("payload") or {})
@@ -347,6 +360,7 @@ def run_forever() -> None:
         }
     )
     consumer.subscribe([cfg.state_topic, cfg.heartbeats_topic, cfg.responses_topic])
+    runtime_store = get_default_runtime_state_store()
 
     logger.info("MW consumer started", extra={"topics": [cfg.state_topic, cfg.heartbeats_topic]})
     try:
@@ -371,6 +385,7 @@ def run_forever() -> None:
                     payload=payload,
                     observed_at=datetime.now(UTC),
                     db_connect=_mw_state_db_connect,
+                    runtime_store=runtime_store,
                 )
             except Exception as exc:
                 # Tables may not exist yet; keep the consumer alive and retry later.
