@@ -67,10 +67,12 @@ class _FakeDb:
 class InventoryApiTests(unittest.TestCase):
     def setUp(self) -> None:
         self.original_db = app_module.db
+        self.original_app_mw_state_db = app_module.mw_state_db
         self.original_inventory_mw_state_db = inventory_module.mw_state_db
 
     def tearDown(self) -> None:
         app_module.db = self.original_db  # type: ignore[assignment]
+        app_module.mw_state_db = self.original_app_mw_state_db  # type: ignore[assignment]
         inventory_module.mw_state_db = self.original_inventory_mw_state_db  # type: ignore[assignment]
 
     def test_api_inventory_overlays_mw_effective_status(self) -> None:
@@ -230,6 +232,55 @@ class InventoryApiTests(unittest.TestCase):
             [item["model_name"] for item in lane["local_viable_models"]],
             ["Qwen3.5-9B-6bit"],
         )
+
+    def test_mesh_inventory_uses_mw_effective_lane_truth(self) -> None:
+        now = datetime.now(tz=timezone.utc)
+        lanes = [
+            {
+                "host_name": "Static-Deskix",
+                "host_status": "ready",
+                "lane_id": "lane-cpu",
+                "lane_name": "cpu",
+                "lane_type": "cpu",
+                "backend_type": "bitnet",
+                "base_url": "http://10.0.0.99:11435",
+                "lane_status": "offline",
+                "suspension_reason": None,
+                "current_model_name": "LFM2.5-350M-Q4_K_M.gguf",
+                "proxy_auth_metadata": {"control_plane": "mw", "mw_host_id": "static-deskix", "mw_lane_id": "cpu"},
+                "last_ok_at": None,
+                "last_probe_at": None,
+            }
+        ]
+        policy = [
+            {"lane_id": "lane-cpu", "model_name": "LFM2.5-350M-Q4_K_M.gguf", "max_ctx": 8192},
+        ]
+        state_rows = [
+            {
+                "host_id": "static-deskix",
+                "lane_id": "cpu",
+                "last_heartbeat_at": now,
+                "actual_state": "running",
+                "health_status": "healthy",
+                "actual_model": "falcon3-10b",
+                "backend_type": "bitnet.cpp",
+                "listen_port": 21435,
+            }
+        ]
+
+        app_module.db = _FakeDb(_FakeCursor(fetchall_rows=[lanes, policy, [], []]))  # type: ignore[assignment]
+        app_module.mw_state_db = _FakeDb(_FakeCursor(fetchall_rows=[state_rows]))  # type: ignore[assignment]
+
+        client = TestClient(app_module.app)
+        resp = client.get("/mesh/inventory")
+        self.assertEqual(resp.status_code, 200)
+        lane = resp.json()["lanes"][0]
+        self.assertEqual(lane["lane_status"], "ready")
+        self.assertEqual(lane["raw_lane_status"], "offline")
+        self.assertEqual(lane["effective_status"], "ready")
+        self.assertIsNone(lane["readiness_reason"])
+        self.assertEqual(lane["current_model"], "falcon3-10b")
+        self.assertIn("falcon3-10b", lane["known_models"])
 
     def test_api_lane_lease_status_uses_mw_effective_lane_truth(self) -> None:
         now = datetime.now(tz=timezone.utc)

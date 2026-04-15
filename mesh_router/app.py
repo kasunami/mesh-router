@@ -5459,11 +5459,14 @@ def mesh_inventory() -> dict[str, Any]:
                   h.host_name,
                   h.status as host_status,
                   l.lane_id,
+                  l.lane_name,
                   l.lane_type,
+                  l.backend_type,
                   l.base_url,
                   l.status as lane_status,
                   l.suspension_reason,
                   l.current_model_name,
+                  l.proxy_auth_metadata,
                   l.last_ok_at,
                   l.last_probe_at
                 FROM lanes l
@@ -5471,7 +5474,7 @@ def mesh_inventory() -> dict[str, Any]:
                 ORDER BY h.host_name, l.lane_type, l.base_url
                 """
             )
-            lanes = cur.fetchall()
+            lanes = [dict(r) for r in cur.fetchall()]
             # Allowed/known models per lane (policy + aliases).
             cur.execute(
                 """
@@ -5513,6 +5516,12 @@ def mesh_inventory() -> dict[str, Any]:
             )
             active_swaps = cur.fetchall()
 
+    apply_mw_effective_status(
+        lanes,
+        mw_state_db=mw_state_db,
+        stale_seconds=settings.default_lease_stale_seconds,
+    )
+
     models_by_lane: dict[str, set[str]] = {}
     model_context_by_lane: dict[str, dict[str, int | None]] = {}
     for r in policy:
@@ -5541,8 +5550,10 @@ def mesh_inventory() -> dict[str, Any]:
             known.append(cm)
         active_swap = active_swaps_by_lane.get(lane_id)
         sibling_swap = active_swap_siblings.get(lane_id)
+        raw_lane_status = str(r["lane_status"])
+        effective_lane_status = str(r.get("effective_status") or raw_lane_status)
         lane_status = _display_lane_status(
-            raw_status=str(r["lane_status"]),
+            raw_status=effective_lane_status,
             suspension_reason=str(r.get("suspension_reason") or "") or None,
             active_swap=active_swap or sibling_swap,
         )
@@ -5556,13 +5567,16 @@ def mesh_inventory() -> dict[str, Any]:
                 "lane_type": str(r["lane_type"]),
                 "base_url": str(r["base_url"]),
                 "lane_status": lane_status,
-                "raw_lane_status": str(r["lane_status"]),
+                "raw_lane_status": raw_lane_status,
+                "effective_status": r.get("effective_status"),
+                "readiness_reason": r.get("readiness_reason"),
                 "suspension_reason": str(r.get("suspension_reason") or "") or None,
                 "current_model": cm or None,
                 "known_models": known,
                 "known_models_detail": [
                     {
                         "model_name": model_name,
+                        "tags": _inferred_model_tags(model_name),
                         "max_ctx": model_context_by_lane.get(lane_id, {}).get(model_name),
                     }
                     for model_name in known
