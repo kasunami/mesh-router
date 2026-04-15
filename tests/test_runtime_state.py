@@ -68,3 +68,31 @@ def test_runtime_state_store_writes_lane_facts_with_service_port_and_eta_metadat
     assert fact["metadata"]["backend_swap_eta_ms"] == 0
     assert fact["metadata"]["eta_complete"] is True
     assert redis.ttls[store.lane_key("static-deskix", "gpu")] == 90
+
+
+def test_runtime_state_store_can_label_response_snapshots() -> None:
+    redis = FakeRedis()
+    store = RuntimeStateStore(redis)  # type: ignore[arg-type]
+    now = datetime(2026, 4, 15, 12, 1, tzinfo=UTC)
+
+    store.write_host_snapshot(
+        host_id="static-deskix",
+        snapshot={
+            "service_states": [],
+            "lane_states": [
+                {
+                    "lane_id": "gpu",
+                    "backend_type": "llama.cpp",
+                    "actual_model": "qwen3.5-9b",
+                    "actual_state": "running",
+                    "health_status": "healthy",
+                }
+            ],
+        },
+        observed_at=now,
+        ttl_seconds=90,
+        source="mw_response_snapshot",
+    )
+
+    fact = store.get_lane_facts([("static-deskix", "gpu")])[("static-deskix", "gpu")]
+    assert fact["metadata"]["source"] == "mw_response_snapshot"

@@ -256,6 +256,19 @@ def _insert_transition_event(cur: Any, *, request_id: str, host_id: str, payload
     )
 
 
+
+def _response_host_state_snapshot(body: dict[str, Any]) -> dict[str, Any] | None:
+    result = body.get("result")
+    if not isinstance(result, dict):
+        return None
+    host_state = result.get("host_state")
+    if not isinstance(host_state, dict):
+        return None
+    if not isinstance(host_state.get("lane_states"), list) and not isinstance(host_state.get("service_states"), list):
+        return None
+    return host_state
+
+
 def process_message(
     *,
     payload: dict[str, Any],
@@ -331,6 +344,15 @@ def process_message(
                 if request_id:
                     _upsert_transition(cur, request_id=request_id, host_id=host_id, payload=body, observed_at=observed_at)
                     _insert_transition_event(cur, request_id=request_id, host_id=host_id, payload=body, observed_at=observed_at)
+                snapshot = _response_host_state_snapshot(body)
+                if runtime_store is not None and snapshot is not None:
+                    runtime_store.write_host_snapshot(
+                        host_id=host_id,
+                        snapshot=snapshot,
+                        observed_at=observed_at,
+                        ttl_seconds=settings.runtime_state_ttl_seconds,
+                        source="mw_response_snapshot",
+                    )
             else:
                 return
         conn.commit()

@@ -110,6 +110,62 @@ class MwConsumerProcessingTests(unittest.TestCase):
         self.assertEqual(runtime_store.snapshots[0]["host_id"], "static-deskix")
         self.assertEqual(runtime_store.snapshots[0]["snapshot"]["lane_states"][0]["actual_model"], "qwen3.5-4b")
 
+
+    def test_process_response_refreshes_runtime_cache_from_host_state(self) -> None:
+        cursor = CapturingCursor()
+        runtime_store = CapturingRuntimeStore()
+        db_connect = make_db(cursor)
+        now = datetime.now(UTC)
+
+        process_message(
+            payload={
+                "message_type": "response",
+                "host_id": "static-deskix",
+                "request_id": "00000000-0000-0000-0000-000000000002",
+                "payload": {
+                    "response_type": "failed",
+                    "command_type": "load_model",
+                    "ok": False,
+                    "result": {
+                        "host_state": {
+                            "actual_profile": "split_default",
+                            "service_states": [
+                                {
+                                    "service_id": "llama-gpu",
+                                    "backend_type": "llama.cpp",
+                                    "listen_port": 21434,
+                                    "actual_state": "running",
+                                    "health_status": "healthy",
+                                }
+                            ],
+                            "lane_states": [
+                                {
+                                    "lane_id": "gpu",
+                                    "lane_type": "gpu",
+                                    "backend_type": "llama.cpp",
+                                    "service_id": "llama-gpu",
+                                    "actual_model": "qwen3.5-9b",
+                                    "actual_state": "running",
+                                    "health_status": "healthy",
+                                }
+                            ],
+                        }
+                    },
+                    "error": {"code": "FAILED", "message": "swap failed after convergence check"},
+                },
+            },
+            observed_at=now,
+            db_connect=db_connect,
+            runtime_store=runtime_store,
+        )
+
+        sql = "\n".join(s for (s, _p) in cursor.executed)
+        self.assertIn("INSERT INTO mw_transitions", sql)
+        self.assertEqual(len(runtime_store.snapshots), 1)
+        self.assertEqual(runtime_store.snapshots[0]["host_id"], "static-deskix")
+        self.assertEqual(runtime_store.snapshots[0]["source"], "mw_response_snapshot")
+        self.assertEqual(runtime_store.snapshots[0]["snapshot"]["lane_states"][0]["actual_model"], "qwen3.5-9b")
+
     def test_process_response_upserts_transition_and_event(self) -> None:
         cursor = CapturingCursor()
         db_connect = make_db(cursor)

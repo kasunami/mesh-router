@@ -54,4 +54,9 @@ Make MR route/status/inventory decisions from MW-reported live runtime truth, no
 - Kept Postgres as durable audit/fallback storage for MW hosts, lanes, services, transitions, and transition events.
 - Added tests proving cache population preserves model/backend/ETA/service port truth and that fresh cache data overrides stale DB rows in effective routing/inventory state.
 - Remaining cache follow-through: write post-swap success/failure snapshots from MW responses, move lease-status/swap preflight reads onto the same cache-backed abstraction, and stop treating durable lane model columns as current truth for MW-managed lanes.
+## Progress 2026-04-15 Response Snapshots
+
+- Added response-side cache refresh. MR now extracts `result.host_state` from MW command responses and writes it to Redis as `mw_response_snapshot`, including failed/rejected command outcomes when MW reports the post-attempt host state.
+- This closes the first swap convergence gap: successful or failed MW commands can update live lane/backend/model truth immediately, without waiting for the next periodic state message.
+- Remaining follow-through: ensure lease-status and swap preflight exclusively consume the cache-backed effective-state abstraction, then retire durable `lanes.current_model_name` as runtime truth for MW-managed lanes.
 

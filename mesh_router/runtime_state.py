@@ -65,6 +65,7 @@ class RuntimeStateStore:
         snapshot: dict[str, Any],
         observed_at: datetime,
         ttl_seconds: int,
+        source: str = "mw_state_snapshot",
     ) -> None:
         ttl = max(1, int(ttl_seconds))
         observed_iso = observed_at.astimezone(UTC).isoformat()
@@ -75,6 +76,7 @@ class RuntimeStateStore:
         host_payload = {
             "host_id": host_id,
             "observed_at": observed_iso,
+            "source": source,
             "actual_profile": snapshot.get("actual_profile"),
             "service_count": len(service_states),
             "lane_count": len(lane_states),
@@ -85,7 +87,7 @@ class RuntimeStateStore:
             service_id = str(service.get("service_id") or "")
             if not service_id:
                 continue
-            payload = {"host_id": host_id, "observed_at": observed_iso, **service}
+            payload = {"host_id": host_id, "observed_at": observed_iso, "source": source, **service}
             self._set_json(self.service_key(host_id, service_id), payload, ttl)
 
         for lane in lane_states:
@@ -95,7 +97,7 @@ class RuntimeStateStore:
             service_id = str(lane.get("service_id") or "")
             service = service_by_id.get(service_id) or {}
             metadata = {
-                "source": "mw_state_snapshot",
+                "source": source,
                 "active_mode": lane.get("active_mode"),
                 "actual_model_max_ctx": lane.get("actual_model_max_ctx"),
                 "current_backend_type": lane.get("current_backend_type"),
