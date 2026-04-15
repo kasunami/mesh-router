@@ -197,11 +197,18 @@ def apply_mw_effective_status(
         if isinstance(metadata, dict):
             metadata_backend = _normalize_router_backend_type(str(metadata.get("current_backend_type") or ""))
         shared_explicit_binding = inferred and (host_id, lane_id) in explicit_bindings
-        if shared_explicit_binding and row_backend and fact_backend and row_backend != fact_backend and not metadata_backend:
+        current_backend_type = metadata_backend or fact_backend
+        backend_conflicts = bool(
+            row_backend
+            and current_backend_type
+            and row_backend != current_backend_type
+            and (row_backend == "sd" or current_backend_type == "sd")
+        )
+        if shared_explicit_binding and backend_conflicts:
             row["effective_status"] = "offline"
             row["readiness_reason"] = "backend_mismatch"
             continue
-        if not inferred and row_backend and fact_backend and row_backend != fact_backend and not metadata_backend:
+        if not inferred and backend_conflicts:
             row["effective_status"] = "offline"
             row["readiness_reason"] = "backend_mismatch"
             continue
@@ -212,7 +219,6 @@ def apply_mw_effective_status(
             row["current_model_name"] = f.get("actual_model")
         if f.get("desired_model"):
             row["desired_model_name"] = f.get("desired_model")
-        current_backend_type = metadata_backend or fact_backend
         if current_backend_type:
             row["backend_type"] = current_backend_type
         if isinstance(metadata, dict):
