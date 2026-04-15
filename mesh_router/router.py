@@ -65,6 +65,28 @@ def _normalized_model_tags(tags: list[str] | None) -> set[str]:
     return out
 
 
+def _family_size_tags_from_keys(keys: set[str]) -> set[str]:
+    tags: set[str] = set()
+    for key in keys:
+        for family, pattern in (
+            ("qwen3.5", r"qwen3\.5[-_:]?(\d+(?:\.\d+)?)(b|m)\b"),
+            ("falcon3", r"falcon3[-_:]?(\d+(?:\.\d+)?)(b|m)\b"),
+            ("lfm2.5", r"lfm2\.5[-_:]?(\d+(?:\.\d+)?)(b|m)\b"),
+            ("gemma4", r"gemma4[-_:]?(\d+(?:\.\d+)?)(b|m)\b"),
+        ):
+            match = re.search(pattern, key)
+            if match:
+                size = f"{match.group(1)}{match.group(2).lower()}"
+                tags.add(f"{family}:{size}")
+                tags.add(f"{family}-{size}")
+    return tags
+
+
+def _inferred_model_tags(model_name: str | None) -> set[str]:
+    """Return generic selection tags derived from a concrete model artifact."""
+    return _family_size_tags_from_keys(_model_lookup_keys(model_name))
+
+
 def _normalize_backend_type(value: str | None) -> str:
     raw = str(value or "").strip().lower()
     if raw in {"llama.cpp", "llama"}:
@@ -110,7 +132,13 @@ def _model_lookup_keys(model_name: str | None) -> set[str]:
         keys.add(debitted)
         keys.add(re.sub(r"[-_.](?:\d+bit|fp8)$", "", dequantized))
 
-    return {key for key in keys if key}
+    out = {key for key in keys if key}
+    out |= _family_size_tags_from_keys(out)
+    return out
+
+
+def _candidate_tags_with_inferred(candidate_model: str | None, candidate_tags: list[str] | None) -> set[str]:
+    return _normalized_model_tags(candidate_tags) | _inferred_model_tags(candidate_model)
 
 
 def _is_exact_model_request(model_name: str | None) -> bool:
@@ -152,7 +180,7 @@ def _model_matches_request(
     request_keys = _model_lookup_keys(requested_model)
     if request_keys & _model_lookup_keys(candidate):
         return True
-    return bool(request_keys & _normalized_model_tags(candidate_tags))
+    return bool(request_keys & _candidate_tags_with_inferred(candidate, candidate_tags))
 
 
 def pick_lane_for_model(
@@ -503,7 +531,7 @@ def pick_lane_for_model(
                       AND (
                         CASE
                           WHEN %s::text IS NOT NULL THEN l.backend_type = %s::text
-                          ELSE l.backend_type = 'llama' OR l.backend_type IS NULL
+                          ELSE l.backend_type IN ('llama', 'mlx') OR l.backend_type IS NULL
                         END
                       )
                       AND (%s::text[] IS NULL OR l.lane_id::text <> ALL(%s::text[]))

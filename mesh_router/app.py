@@ -533,7 +533,9 @@ def _model_lookup_keys(model_name: str | None) -> set[str]:
         stripped = re.sub(r"[-_.](?:instruct|instruction|chat|it)$", "", value)
         _add_variant(keys, stripped)
 
-    return {key for key in keys if key}
+    out = {key for key in keys if key}
+    out |= _family_size_tags_from_keys(out)
+    return out
 
 
 def _normalize_model_tag(tag: str | None) -> str | None:
@@ -553,6 +555,31 @@ def _normalized_model_tags(tags: list[str] | None) -> list[str]:
         normalized.append(value)
         seen.add(value)
     return normalized
+
+
+def _family_size_tags_from_keys(keys: set[str]) -> set[str]:
+    tags: set[str] = set()
+    for key in keys:
+        for family, pattern in (
+            ("qwen3.5", r"qwen3\.5[-_:]?(\d+(?:\.\d+)?)(b|m)\b"),
+            ("falcon3", r"falcon3[-_:]?(\d+(?:\.\d+)?)(b|m)\b"),
+            ("lfm2.5", r"lfm2\.5[-_:]?(\d+(?:\.\d+)?)(b|m)\b"),
+            ("gemma4", r"gemma4[-_:]?(\d+(?:\.\d+)?)(b|m)\b"),
+        ):
+            match = re.search(pattern, key)
+            if match:
+                size = f"{match.group(1)}{match.group(2).lower()}"
+                tags.add(f"{family}:{size}")
+                tags.add(f"{family}-{size}")
+    return tags
+
+
+def _inferred_model_tags(model_name: str | None) -> list[str]:
+    return sorted(_family_size_tags_from_keys(_model_lookup_keys(model_name)))
+
+
+def _model_tags_with_inferred(model_name: str | None, tags: list[str] | None) -> list[str]:
+    return _normalized_model_tags(list(tags or []) + _inferred_model_tags(model_name))
 
 
 def _is_exact_model_request(model_name: str | None) -> bool:
@@ -591,7 +618,7 @@ def _model_request_matches_candidate(
     request_keys = _model_lookup_keys(requested_model_name)
     if request_keys & _model_lookup_keys(candidate_model_name):
         return True
-    return bool(request_keys & set(_normalized_model_tags(candidate_tags)))
+    return bool(request_keys & set(_model_tags_with_inferred(candidate_model_name, candidate_tags)))
 
 
 def _resolve_swap_candidate(
@@ -1333,7 +1360,7 @@ def _build_lane_capability_payload(cur, lane_ref: str) -> tuple[dict[str, Any], 
             continue
         candidate = LaneModelCandidate(
             model_name=model_name,
-            tags=_normalized_model_tags(row.get("tags") or []),
+            tags=_model_tags_with_inferred(model_name, row.get("tags") or []),
             locality=locality,
             artifact_path=str(row["local_path"]),
             artifact_host=str(row["host_name"]),
@@ -1629,7 +1656,7 @@ def _resolve_downstream_model_for_lane(
     )
     lane_row = cur.fetchone()
     current_model_name = str((lane_row or {}).get("current_model_name") or "").strip()
-    current_model_tags = _normalized_model_tags((lane_row or {}).get("current_model_tags") or [])
+    current_model_tags = _model_tags_with_inferred(current_model_name, (lane_row or {}).get("current_model_tags") or [])
     if current_model_name and _model_request_matches_candidate(
         requested_model_name,
         current_model_name,
@@ -2044,6 +2071,23 @@ def api_routes_resolve(req: RouteResolveRequest) -> RouteResolveResponse:
         perf=perf,
         candidates_considered=candidates_considered,
     )
+
+
+class LaneUpsertRequest(BaseModel):
+    # NOTE: This model must be defined before it is referenced by `api_lane_upsert`.
+    # With `from __future__ import annotations`, FastAPI may cache a ForwardRef at
+    # route registration time; leaving this definition below the endpoint can
+    # break OpenAPI generation (/openapi.json) under Pydantic v2.
+    host_ref: str
+    lane_name: str
+    lane_type: Literal["cpu", "gpu", "mlx", "router", "other"]
+    backend_type: Literal["llama", "sd"] = "llama"
+    base_url: str
+    status: Literal["ready", "busy", "suspended", "offline", "error"] = "offline"
+    ram_budget_bytes: int | None = None
+    vram_budget_bytes: int | None = None
+    proxy_auth_mode: str | None = None
+    proxy_auth_metadata: dict[str, Any] | None = None
 
 
 @app.post("/api/lanes")
@@ -2952,7 +2996,7 @@ def _reroute_displaced_lease(
     try:
         choice = pick_lane_for_model(
             model=model_name,
-            backend_type="sd" if route == "images" else "llama",
+            backend_type=("sd" if route == "images" else None),
             pin_lane_type=request_payload.get("mesh_pin_lane_type"),
             exclude_lane_ids=excluded_lane_ids,
         )
@@ -3681,7 +3725,12 @@ def _execute_router_request(
     pin_lane_id = normalized.get("pin_lane_id")
     request_payload = dict(normalized["request_payload"])
     response_format = str(normalized.get("response_format") or "b64_json")
-    backend_type = "sd" if route == "images" else "llama"
+    if route == "images":
+        backend_type = "sd"
+    elif route == "chat":
+        backend_type = None
+    else:
+        backend_type = "llama"
     request_context_tokens = _estimate_request_context_tokens(route=route, payload=request_payload)
     downstream_model = model_name
 
@@ -4830,19 +4879,6 @@ class SwapModelRequest(BaseModel):
     allow_unverified: bool = False
     swap_urgency: Literal["wait", "cancel"] = "wait"
     wait_timeout_s: int = 1800
-
-
-class LaneUpsertRequest(BaseModel):
-    host_ref: str
-    lane_name: str
-    lane_type: Literal["cpu", "gpu", "mlx", "router", "other"]
-    backend_type: Literal["llama", "sd"] = "llama"
-    base_url: str
-    status: Literal["ready", "busy", "suspended", "offline", "error"] = "offline"
-    ram_budget_bytes: int | None = None
-    vram_budget_bytes: int | None = None
-    proxy_auth_mode: str | None = None
-    proxy_auth_metadata: dict[str, Any] | None = None
 
 
 def _swap_cost_metadata(

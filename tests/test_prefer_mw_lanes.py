@@ -241,6 +241,38 @@ class PreferMwLanePlacementTests(unittest.TestCase):
         self.assertEqual(choice.lane_id, "frontdesk-cpu")
         self.assertEqual(choice.worker_id, "Static-Mobile-2")
 
+    def test_inferred_generic_tags_ignore_quantization(self) -> None:
+        tags = router_module._inferred_model_tags("/models/Qwen3.5-0.8B-Q4_K_M.gguf")
+
+        self.assertIn("qwen3.5:0.8b", tags)
+        self.assertIn("qwen3.5-0.8b", tags)
+
+    def test_family_only_does_not_match_different_qwen_size(self) -> None:
+        rows = [
+            {
+                "lane_id": "frontdesk-08b",
+                "host_name": "Static-Mobile-2",
+                "base_url": "http://10.0.0.132:21434",
+                "lane_type": "gpu",
+                "backend_type": "llama",
+                "status": "ready",
+                "proxy_auth_metadata": {},
+                "current_model_name": "Qwen3.5-0.8B-Q4_K_M.gguf",
+                "current_model_tags": [],
+                "current_model_max_ctx": 8192,
+                "local_viable_models": [],
+                "remote_viable_models": [],
+            }
+        ]
+
+        with (
+            mock.patch.object(router_module, "db", _Db()),
+            mock.patch.object(router_module, "q", return_value=rows),
+            mock.patch.object(router_module, "apply_mw_effective_status", lambda *args, **kwargs: None),
+        ):
+            with self.assertRaises(RuntimeError):
+                router_module.pick_lane_for_model(model="qwen3.5:9B")
+
 
 if __name__ == "__main__":
     unittest.main()
