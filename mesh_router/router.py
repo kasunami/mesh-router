@@ -255,13 +255,6 @@ def pick_lane_for_model(
                       AND (%s::text[] IS NULL OR l.lane_id::text <> ALL(%s::text[]))
                       AND (l.status='ready' OR (l.proxy_auth_metadata->>'control_plane')='mw')
                       AND NOT EXISTS (
-                        SELECT 1 FROM router_requests rr
-                        WHERE rr.lane_id = l.lane_id
-                          AND rr.state = 'failed'
-                          AND rr.error_kind = 'proxy_error'
-                          AND rr.updated_at > now() - (%s * interval '1 second')
-                      )
-                      AND NOT EXISTS (
                         SELECT 1 FROM router_leases rl
                         WHERE rl.lane_id = l.lane_id
                           AND rl.state = 'active'
@@ -281,7 +274,6 @@ def pick_lane_for_model(
                         pin_lane_type,
                         list(excluded) or None,
                         list(excluded) or None,
-                        int(_RECENT_PROXY_ERROR_COOLDOWN_S),
                         int(settings.default_lease_stale_seconds),
                     ),
                 )
