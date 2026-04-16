@@ -3673,6 +3673,23 @@ def _normalize_route_request(*, route: str, raw_payload: dict[str, Any]) -> dict
     raise HTTPException(status_code=400, detail=f"unsupported route: {route}")
 
 
+def _refuse_base_url_fallback_if_mw_managed(*, lane_id: str, context: str) -> None:
+    '''Enforce MW authority boundary.
+
+    If a lane is explicitly MW-managed (lanes.proxy_auth_metadata.control_plane == "mw"),
+    mesh-router must not proxy directly via lane.base_url when it fails to resolve an MW gRPC target.
+    '''
+    with db.connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT proxy_auth_metadata FROM lanes WHERE lane_id=%s", (str(lane_id),))
+            meta_row = cur.fetchone() or {}
+    pam = meta_row.get("proxy_auth_metadata") or {}
+    if isinstance(pam, dict) and str(pam.get("control_plane") or "").strip().lower() == "mw":
+        raise RuntimeError(
+            f"MW-managed lane requires gRPC target; refusing base_url fallback ({context}, lane_id={lane_id})"
+        )
+
+
 async def _collect_mw_chat_completion(
     *,
     target: MwGrpcTarget,
@@ -3977,7 +3994,7 @@ def _execute_router_request(
             endpoint = "/v1/chat/completions" if route == "chat" else "/v1/embeddings" if route == "embeddings" else "/sdapi/v1/txt2img"
             request_timeout = 300.0 if route == "images" else float(max(30, settings.default_lease_ttl_seconds))
             mw_target: MwGrpcTarget | None = None
-            if route == "chat" and settings.mw_control_enabled and lane_id:
+            if settings.mw_control_enabled and lane_id:
                 try:
                     with db.connect() as conn:
                         with conn.cursor() as cur:
@@ -4009,17 +4026,9 @@ def _execute_router_request(
                 downstream_status_code = 200
             else:
                 # Strict MW authority: if the lane is explicitly MW-managed, never fall back to direct base_url proxy.
-                if route == "chat" and settings.mw_control_enabled and lane_id:
+                if settings.mw_control_enabled and lane_id:
                     try:
-                        with db.connect() as conn2:
-                            with conn2.cursor() as cur2:
-                                cur2.execute("SELECT proxy_auth_metadata FROM lanes WHERE lane_id=%s", (str(lane_id),))
-                                meta_row = cur2.fetchone() or {}
-                        pam = meta_row.get("proxy_auth_metadata") or {}
-                        if isinstance(pam, dict) and str(pam.get("control_plane") or "").strip().lower() == "mw":
-                            raise RuntimeError(
-                                f"MW-managed lane requires gRPC target; refusing base_url fallback (lane_id={lane_id})"
-                            )
+                        _refuse_base_url_fallback_if_mw_managed(lane_id=str(lane_id), context=f"route={route}")
                     except RuntimeError:
                         raise
                     except Exception:
@@ -4434,13 +4443,7 @@ def _execute_router_request_streaming(
                     # Strict MW authority: if the lane is explicitly MW-managed, never fall back to direct base_url proxy.
                     if settings.mw_control_enabled and lane_id:
                         try:
-                            with db.connect() as conn2:
-                                with conn2.cursor() as cur2:
-                                    cur2.execute("SELECT proxy_auth_metadata FROM lanes WHERE lane_id=%s", (str(lane_id),))
-                                    meta_row = cur2.fetchone() or {}
-                            pam = meta_row.get("proxy_auth_metadata") or {}
-                            if isinstance(pam, dict) and str(pam.get("control_plane") or "").strip().lower() == "mw":
-                                raise RuntimeError(f"MW-managed lane requires gRPC target; refusing base_url fallback (lane_id={lane_id})")
+                            _refuse_base_url_fallback_if_mw_managed(lane_id=str(lane_id), context="stream_chat")
                         except RuntimeError:
                             raise
                         except Exception:
