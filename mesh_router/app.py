@@ -3052,7 +3052,7 @@ def _reroute_displaced_lease(
 
     with db.connect() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT model_id FROM models WHERE model_name=%s", (model_name,))
+            cur.execute("SELECT model_id FROM models WHERE model_name=%s", (downstream_model,))
             model_row = cur.fetchone()
             if not model_row:
                 return {"status": "reroute_failed", "reason": f"model not registered: {model_name}"}
@@ -3840,6 +3840,7 @@ def _execute_router_request(
                 err_msg = str(exc)
                 raise
 
+            target_model_name = str(getattr(choice, "resolved_model_name", None) or model_name)
             if choice and not _model_request_matches_candidate(model_name, choice.current_model_name or ""):
                 # Swap needed — trigger swap and wait.
                 #
@@ -3849,27 +3850,27 @@ def _execute_router_request(
                     # api_lane_swap_model is a synchronous blocking function
                     api_lane_swap_model(
                         choice.lane_id,
-                        SwapModelRequest(model_name=model_name, swap_urgency="wait"),
+                        SwapModelRequest(model_name=target_model_name, swap_urgency="wait"),
                     )
                     did_swap = True
                 except Exception as swap_err:
                     logger.warning(
                         "Auto-swap failed for lane %s model %s: %s",
                         choice.lane_id,
-                        model_name,
+                        target_model_name,
                         swap_err,
                     )
                     # If the caller pinned an exact lane, never silently fall back.
                     if pin_lane_id and str(choice.lane_id) == str(pin_lane_id):
                         raise RuntimeError(
-                            f"pinned lane {pin_lane_id} could not be swapped to {model_name}: {swap_err}"
+                            f"pinned lane {pin_lane_id} could not be swapped to {target_model_name}: {swap_err}"
                         ) from swap_err
                     _acquire_excluded.add(str(choice.lane_id))
                     err_kind = "routing_error"
                     err_msg = f"auto-swap failed for lane {choice.lane_id}: {swap_err}"
                     continue
 
-            downstream_model = model_name
+            downstream_model = target_model_name
             with db.connect() as conn:
                 with conn.cursor() as cur:
                     cur.execute(
@@ -3878,9 +3879,9 @@ def _execute_router_request(
                         VALUES (%s, 'other'::model_format)
                         ON CONFLICT (model_name) DO UPDATE SET updated_at=now()
                         """,
-                        (model_name,),
+                        (downstream_model,),
                     )
-                    cur.execute("SELECT model_id FROM models WHERE model_name=%s", (model_name,))
+                    cur.execute("SELECT model_id FROM models WHERE model_name=%s", (downstream_model,))
                     model_id = str(cur.fetchone()["model_id"])
                     lane_id = choice.lane_id or None
                     if lane_id is not None:
@@ -3984,12 +3985,12 @@ def _execute_router_request(
                 except Exception:
                     mw_target = None
             if mw_target is not None:
-                if not _model_request_matches_candidate(model_name, choice.current_model_name or ""):
+                if downstream_model and not _model_request_matches_candidate(downstream_model, choice.current_model_name or ""):
                     try:
                         result = _mw_client().send_command(
                             host_id=mw_target.host_id,
                             message_type="load_model",
-                            payload={"lane_id": mw_target.lane_id, "model_name": model_name},
+                            payload={"lane_id": mw_target.lane_id, "model_name": downstream_model},
                             wait=True,
                             timeout_seconds=max(30, settings.mw_command_timeout_seconds),
                         )
@@ -4249,7 +4250,7 @@ def _execute_router_request_streaming(
                 headers={"X-Mesh-Request-Id": request_id},
             ) from exc
 
-        downstream_model = model_name
+        downstream_model = str(getattr(choice, "resolved_model_name", None) or model_name)
         with db.connect() as conn:
             with conn.cursor() as cur:
                 cur.execute(
@@ -4258,9 +4259,9 @@ def _execute_router_request_streaming(
                     VALUES (%s, 'other'::model_format)
                     ON CONFLICT (model_name) DO UPDATE SET updated_at=now()
                     """,
-                    (model_name,),
+                    (downstream_model,),
                 )
-                cur.execute("SELECT model_id FROM models WHERE model_name=%s", (model_name,))
+                cur.execute("SELECT model_id FROM models WHERE model_name=%s", (downstream_model,))
                 model_id = str(cur.fetchone()["model_id"])
                 lane_id = choice.lane_id or None
                 if lane_id is not None:
@@ -4343,12 +4344,12 @@ def _execute_router_request_streaming(
 
         # Best-effort: ensure the requested model is loaded on MW-managed lanes before streaming.
         if mw_target is not None and settings.mw_control_enabled:
-            if not _model_request_matches_candidate(model_name, choice.current_model_name or ""):
+            if downstream_model and not _model_request_matches_candidate(downstream_model, choice.current_model_name or ""):
                 try:
                     result = _mw_client().send_command(
                         host_id=mw_target.host_id,
                         message_type="load_model",
-                        payload={"lane_id": mw_target.lane_id, "model_name": model_name},
+                        payload={"lane_id": mw_target.lane_id, "model_name": downstream_model},
                         wait=True,
                         timeout_seconds=max(30, settings.mw_command_timeout_seconds),
                     )

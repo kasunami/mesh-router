@@ -22,6 +22,8 @@ class LaneChoice:
     backend_type: str
     current_model_name: str | None = None
     current_model_max_ctx: int | None = None
+    # Concrete host-local model artifact chosen for this request (may differ from request tag).
+    resolved_model_name: str | None = None
 
 
 class LanePlacementError(RuntimeError):
@@ -109,6 +111,27 @@ def _backend_matches_request(row: dict[str, Any], backend_type: str | None) -> b
         return actual == requested
     return requested == "llama"
 
+
+
+def _pick_viable_model_name(*, requested_model: str, lane_row: dict[str, Any], request_context_tokens: int | None) -> str | None:
+    """Choose a concrete model artifact for a generic request tag.
+
+    Requests often use family:size tags (e.g. qwen3.5:9b). MW/host backends need a
+    concrete host-local model identifier (file path, artifact name, etc.).
+    Prefer local artifacts; fall back to remote if present.
+    """
+    for group in ("local_viable_models", "remote_viable_models"):
+        for item in (lane_row.get(group) or []):
+            if not _model_item_allowed(item):
+                continue
+            if not _model_matches_request(requested_model, item.get("model_name"), item.get("tags") or []):
+                continue
+            if not _context_is_sufficient(request_context_tokens, item.get("max_ctx")):
+                continue
+            name = str(item.get("model_name") or "").strip()
+            if name:
+                return name
+    return None
 
 def _model_item_allowed(item: dict[str, Any]) -> bool:
     return item.get("allowed") is not False
@@ -281,6 +304,7 @@ def pick_lane_for_model(
             backend_type=str(r0.get("backend_type") or "llama"),
             current_model_name=r0.get("current_model_name"),
             current_model_max_ctx=int(r0["current_model_max_ctx"]) if r0.get("current_model_max_ctx") is not None else None,
+            resolved_model_name=str(r0.get("current_model_name") or "").strip() or None,
         )
 
     if pin_worker and pin_base_url:
@@ -338,6 +362,7 @@ def pick_lane_for_model(
             backend_type=str(r0.get("backend_type") or "llama"),
             current_model_name=r0.get("current_model_name"),
             current_model_max_ctx=int(r0["current_model_max_ctx"]) if r0.get("current_model_max_ctx") is not None else None,
+            resolved_model_name=str(r0.get("current_model_name") or "").strip() or None,
         )
 
     if pin_worker and not pin_base_url:
@@ -451,6 +476,7 @@ def pick_lane_for_model(
             backend_type=str(r0.get("backend_type") or "llama"),
             current_model_name=r0.get("current_model_name"),
             current_model_max_ctx=int(r0["current_model_max_ctx"]) if r0.get("current_model_max_ctx") is not None else None,
+            resolved_model_name=str(r0.get("current_model_name") or "").strip() or None,
         )
 
     def _pick() -> LaneChoice | None:
@@ -595,6 +621,7 @@ def pick_lane_for_model(
                 backend_type=str(r0.get("backend_type") or "llama"),
                 current_model_name=r0.get("current_model_name"),
                 current_model_max_ctx=int(r0["current_model_max_ctx"]) if r0.get("current_model_max_ctx") is not None else None,
+                resolved_model_name=str(r0.get("current_model_name") or "").strip() or None,
             )
         if context_mismatched:
             max_available_ctx = max(
@@ -667,6 +694,7 @@ def pick_lane_for_model(
                 backend_type=str(r0.get("backend_type") or "llama"),
                 current_model_name=r0.get("current_model_name"),
                 current_model_max_ctx=int(r0["current_model_max_ctx"]) if r0.get("current_model_max_ctx") is not None else None,
+                resolved_model_name=str(r0.get("current_model_name") or "").strip() or None,
             )
         if context_limited and request_context_tokens:
             max_available_ctx = 0
