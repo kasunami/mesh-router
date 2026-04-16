@@ -3841,20 +3841,33 @@ def _execute_router_request(
                 raise
 
             if choice and not _model_request_matches_candidate(model_name, choice.current_model_name or ""):
-                # Swap needed — trigger swap and wait
+                # Swap needed — trigger swap and wait.
+                #
+                # Important: a swap can fail because the *picked* lane isn't actually viable for the
+                # requested model. In that case, retry lane selection instead of returning an immediate 503.
                 try:
                     # api_lane_swap_model is a synchronous blocking function
                     api_lane_swap_model(
                         choice.lane_id,
-                        SwapModelRequest(
-                            model_name=model_name,
-                            swap_urgency="wait"
-                        )
+                        SwapModelRequest(model_name=model_name, swap_urgency="wait"),
                     )
                     did_swap = True
                 except Exception as swap_err:
-                    logger.warning("Auto-swap failed for lane %s model %s: %s", choice.lane_id, model_name, swap_err)
-                    raise RuntimeError(f"no READY lanes available serving {model_name} and auto-swap failed: {swap_err}")
+                    logger.warning(
+                        "Auto-swap failed for lane %s model %s: %s",
+                        choice.lane_id,
+                        model_name,
+                        swap_err,
+                    )
+                    # If the caller pinned an exact lane, never silently fall back.
+                    if pin_lane_id and str(choice.lane_id) == str(pin_lane_id):
+                        raise RuntimeError(
+                            f"pinned lane {pin_lane_id} could not be swapped to {model_name}: {swap_err}"
+                        ) from swap_err
+                    _acquire_excluded.add(str(choice.lane_id))
+                    err_kind = "routing_error"
+                    err_msg = f"auto-swap failed for lane {choice.lane_id}: {swap_err}"
+                    continue
 
             downstream_model = model_name
             with db.connect() as conn:
