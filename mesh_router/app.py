@@ -4419,7 +4419,10 @@ def _execute_router_request_streaming(
                                 break
                             if first_token_at is None:
                                 first_token_at = time.time()
-                            yield b"data: " + raw + b"\n\n"
+                            if raw.startswith(b"data: "):
+                                yield raw + b"\n\n"
+                            else:
+                                yield b"data: " + raw + b"\n\n"
                         if str(event.event_type or "") in {"completed"}:
                             break
                         if str(event.event_type or "") in {"failed", "cancelled"}:

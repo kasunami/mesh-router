@@ -32,22 +32,28 @@ mw_state_db = Db(settings.mw_state_database_url or settings.database_url)
 
 
 def init_db() -> None:
+    _apply_migrations(db, label="primary")
+    if settings.mw_state_database_url and settings.mw_state_database_url != settings.database_url:
+        _apply_migrations(mw_state_db, label="mw_state")
+
+
+def _apply_migrations(target_db: Db, label: str) -> None:
     sql_dir = Path(__file__).resolve().parent.parent / "sql"
     if not sql_dir.exists() or not sql_dir.is_dir():
-        logger.info("SQL directory not found at %s, skipping migrations", sql_dir)
+        logger.info("SQL directory not found at %s, skipping %s migrations", sql_dir, label)
         return
 
     sql_files = sorted(sql_dir.glob("*.sql"))
     if not sql_files:
         return
 
-    logger.info("Running %d SQL migrations", len(sql_files))
-    with db.connect() as conn:
+    logger.info("Running %d SQL migrations on %s database", len(sql_files), label)
+    with target_db.connect() as conn:
         for sql_file in sql_files:
             try:
                 conn.execute(sql_file.read_text())
             except Exception as e:
-                logger.error("Failed to execute %s: %s", sql_file.name, e)
+                logger.error("Failed to execute %s on %s: %s", sql_file.name, label, e)
                 raise
         conn.commit()
 
