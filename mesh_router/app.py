@@ -2900,6 +2900,53 @@ def _set_lane_suspension(cur, *, lane_id: str, suspended: bool, reason: str) -> 
     )
 
 
+def _coerce_aware_datetime(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=UTC)
+    if not value:
+        return None
+    try:
+        text = str(value)
+        if text.endswith("Z"):
+            text = f"{text[:-1]}+00:00"
+        parsed = datetime.fromisoformat(text)
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+    except Exception:
+        return None
+
+
+def _model_names_match(left: str | None, right: str | None) -> bool:
+    if not left or not right:
+        return False
+    return _model_request_matches_candidate(str(left), str(right)) or _model_request_matches_candidate(str(right), str(left))
+
+
+def _active_swap_stale_under_mw(row: dict[str, Any], active_swap: dict[str, Any] | None) -> bool:
+    if not active_swap:
+        return False
+    if str(row.get("effective_status") or "") != "ready":
+        return False
+    mw_seen_at = _coerce_aware_datetime(row.get("mw_last_heartbeat_at"))
+    swap_updated_at = _coerce_aware_datetime(active_swap.get("updated_at") or active_swap.get("last_event_at") or active_swap.get("started_at"))
+    if not mw_seen_at or not swap_updated_at or mw_seen_at <= swap_updated_at:
+        return False
+    current_model = str(row.get("current_model_name") or "").strip()
+    requested = str(active_swap.get("resolved_model_name") or active_swap.get("requested_model_name") or "").strip()
+    return bool(current_model and requested and not _model_names_match(current_model, requested))
+
+
+def _suspension_stale_under_mw(row: dict[str, Any], suspension_reason: str | None) -> bool:
+    if not suspension_reason:
+        return False
+    if str(row.get("effective_status") or "") != "ready":
+        return False
+    mw_seen_at = _coerce_aware_datetime(row.get("mw_last_heartbeat_at"))
+    lane_updated_at = _coerce_aware_datetime(row.get("updated_at"))
+    if not mw_seen_at or not lane_updated_at:
+        return False
+    return mw_seen_at > lane_updated_at
+
+
 def _display_lane_status(
     *,
     raw_status: str,
@@ -3518,6 +3565,7 @@ def api_lane_lease_status(lane_id: str) -> dict[str, Any]:
             cur.execute(
                 """
                 SELECT l.lane_id, l.lane_name, l.lane_type, l.base_url, l.status, l.suspension_reason, l.current_model_name,
+                       l.updated_at,
                        h.host_name,
                        proxy_auth_metadata, backend_type
                 FROM lanes l
@@ -3538,14 +3586,21 @@ def api_lane_lease_status(lane_id: str) -> dict[str, Any]:
 
     active_summary = _summarize_active_leases(active)
     latest = active_summary[-1] if active_summary else None
+    effective_status = str(lane_row.get("effective_status") or lane_row.get("status") or "")
+    raw_suspension_reason = lane_row.get("suspension_reason")
+    suppress_suspension = _suspension_stale_under_mw(lane_row, str(raw_suspension_reason or "") or None)
     return {
         "lane_id": str(lane_row["lane_id"]),
         "lane_name": str(lane_row.get("lane_name") or ""),
         "lane_type": str(lane_row.get("lane_type") or ""),
         "base_url": str(lane_row.get("base_url") or ""),
-        "lane_status": str(lane_row.get("effective_status") or lane_row.get("status") or ""),
-        "suspension_reason": lane_row.get("suspension_reason"),
+        "lane_status": effective_status,
+        "suspension_reason": None if suppress_suspension else raw_suspension_reason,
+        "raw_suspension_reason": raw_suspension_reason,
+        "stale_suspension_suppressed": suppress_suspension and bool(raw_suspension_reason),
         "current_model": lane_row.get("current_model_name"),
+        "mw_last_heartbeat_at": lane_row.get("mw_last_heartbeat_at").isoformat() if isinstance(lane_row.get("mw_last_heartbeat_at"), datetime) else lane_row.get("mw_last_heartbeat_at"),
+        "mw_state_source": lane_row.get("mw_state_source"),
         "lease_active": bool(active_summary),
         "active_lease_count": len(active_summary),
         "active_leases": active_summary,
@@ -5468,7 +5523,8 @@ def mesh_inventory() -> dict[str, Any]:
                   l.current_model_name,
                   l.proxy_auth_metadata,
                   l.last_ok_at,
-                  l.last_probe_at
+                  l.last_probe_at,
+                  l.updated_at
                 FROM lanes l
                 JOIN hosts h ON h.host_id=l.host_id
                 ORDER BY h.host_name, l.lane_type, l.base_url
@@ -5550,14 +5606,20 @@ def mesh_inventory() -> dict[str, Any]:
             known.append(cm)
         active_swap = active_swaps_by_lane.get(lane_id)
         sibling_swap = active_swap_siblings.get(lane_id)
+        stale_active_swap_suppressed = _active_swap_stale_under_mw(r, active_swap)
+        stale_sibling_swap_suppressed = _active_swap_stale_under_mw(r, sibling_swap)
+        display_active_swap = None if stale_active_swap_suppressed else active_swap
+        display_sibling_swap = None if stale_sibling_swap_suppressed else sibling_swap
         raw_lane_status = str(r["lane_status"])
         effective_lane_status = str(r.get("effective_status") or raw_lane_status)
+        suspension_reason = str(r.get("suspension_reason") or "") or None
+        stale_suspension_suppressed = _suspension_stale_under_mw(r, suspension_reason)
         lane_status = _display_lane_status(
             raw_status=effective_lane_status,
-            suspension_reason=str(r.get("suspension_reason") or "") or None,
-            active_swap=active_swap or sibling_swap,
+            suspension_reason=None if stale_suspension_suppressed else suspension_reason,
+            active_swap=display_active_swap or display_sibling_swap,
         )
-        if sibling_swap and not active_swap:
+        if display_sibling_swap and not display_active_swap:
             lane_status = "suspended"
         out.append(
             {
@@ -5570,8 +5632,12 @@ def mesh_inventory() -> dict[str, Any]:
                 "raw_lane_status": raw_lane_status,
                 "effective_status": r.get("effective_status"),
                 "readiness_reason": r.get("readiness_reason"),
-                "suspension_reason": str(r.get("suspension_reason") or "") or None,
+                "suspension_reason": None if stale_suspension_suppressed else suspension_reason,
+                "raw_suspension_reason": suspension_reason,
+                "stale_suspension_suppressed": stale_suspension_suppressed,
                 "current_model": cm or None,
+                "mw_last_heartbeat_at": r.get("mw_last_heartbeat_at").isoformat() if isinstance(r.get("mw_last_heartbeat_at"), datetime) else r.get("mw_last_heartbeat_at"),
+                "mw_state_source": r.get("mw_state_source"),
                 "known_models": known,
                 "known_models_detail": [
                     {
@@ -5595,9 +5661,10 @@ def mesh_inventory() -> dict[str, Any]:
                         "completed_at": active_swap["completed_at"].isoformat() if active_swap.get("completed_at") else None,
                         "updated_at": active_swap["updated_at"].isoformat() if active_swap.get("updated_at") else None,
                     }
-                    if active_swap
+                    if display_active_swap
                     else None
                 ),
+                "stale_active_swap_suppressed": stale_active_swap_suppressed,
                 "blocked_by_swap": (
                     {
                         "swap_id": str(sibling_swap["swap_id"]),
@@ -5607,9 +5674,10 @@ def mesh_inventory() -> dict[str, Any]:
                         "started_at": sibling_swap["started_at"].isoformat() if sibling_swap.get("started_at") else None,
                         "last_event_at": sibling_swap["last_event_at"].isoformat() if sibling_swap.get("last_event_at") else None,
                     }
-                    if sibling_swap and not active_swap
+                    if display_sibling_swap and not display_active_swap
                     else None
                 ),
+                "stale_blocking_swap_suppressed": stale_sibling_swap_suppressed,
             }
         )
     return {"lanes": out}

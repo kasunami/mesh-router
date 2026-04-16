@@ -60,3 +60,10 @@ Make MR route/status/inventory decisions from MW-reported live runtime truth, no
 - This closes the first swap convergence gap: successful or failed MW commands can update live lane/backend/model truth immediately, without waiting for the next periodic state message.
 - Remaining follow-through: ensure lease-status and swap preflight exclusively consume the cache-backed effective-state abstraction, then retire durable `lanes.current_model_name` as runtime truth for MW-managed lanes.
 
+## Progress 2026-04-15 Stale Lease/Swap Presentation
+
+- Added MW freshness metadata to the effective-state overlay so callers can see `mw_last_heartbeat_at` and `mw_state_source` alongside overlaid status/model/backend truth.
+- Updated `/api/lanes/{lane_id}/lease-status` and `/mesh/inventory` to suppress stale DB suspension reasons only when the MW effective state is ready and the MW heartbeat is newer than the lane row update.
+- Updated `/mesh/inventory` to suppress stale active or sibling swap blockers only when the MW effective state is newer than the nonterminal `lane_swaps` row and reports a different active model than the queued swap target.
+- Added regression coverage for the pupix-style drift case: DB says suspended on queued Gemma swap, MW reports combined lane ready on Qwen 27B, and live inventory returns ready with stale DB fields preserved as raw diagnostics.
+- Remaining follow-through: move swap preflight and placement decisions to consume the same cache-backed effective-state abstraction, not just status/inventory presentation.

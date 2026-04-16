@@ -213,6 +213,8 @@ def apply_mw_effective_status(
             f,
             stale_cutoff=stale_cutoff,
         )
+        if f.get("last_heartbeat_at") is not None:
+            row["mw_last_heartbeat_at"] = f.get("last_heartbeat_at")
         metadata = f.get("metadata") or {}
         row_backend = _normalize_router_backend_type(str(row.get("backend_type") or ""))
         fact_backend = _normalize_router_backend_type(str(f.get("backend_type") or ""))
@@ -250,6 +252,8 @@ def apply_mw_effective_status(
                     row["current_model_max_ctx"] = int(metadata["actual_model_max_ctx"])
             except (TypeError, ValueError):
                 pass
+            if metadata.get("source") is not None:
+                row["mw_state_source"] = metadata.get("source")
             for key in (
                 "current_backend_type",
                 "desired_backend_type",

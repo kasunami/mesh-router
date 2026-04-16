@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import unittest
 from unittest import mock
 
@@ -250,6 +250,7 @@ class InventoryApiTests(unittest.TestCase):
                 "proxy_auth_metadata": {"control_plane": "mw", "mw_host_id": "static-deskix", "mw_lane_id": "cpu"},
                 "last_ok_at": None,
                 "last_probe_at": None,
+                "updated_at": now - timedelta(minutes=5),
             }
         ]
         policy = [
@@ -265,6 +266,7 @@ class InventoryApiTests(unittest.TestCase):
                 "actual_model": "falcon3-10b",
                 "backend_type": "bitnet.cpp",
                 "listen_port": 21435,
+                "metadata": {"source": "mw_state_snapshot"},
             }
         ]
 
@@ -281,6 +283,77 @@ class InventoryApiTests(unittest.TestCase):
         self.assertIsNone(lane["readiness_reason"])
         self.assertEqual(lane["current_model"], "falcon3-10b")
         self.assertIn("falcon3-10b", lane["known_models"])
+        self.assertEqual(lane["mw_state_source"], "mw_state_snapshot")
+
+    def test_mesh_inventory_suppresses_stale_swap_and_suspension_when_mw_is_newer(self) -> None:
+        now = datetime.now(tz=timezone.utc)
+        old = now - timedelta(minutes=5)
+        lanes = [
+            {
+                "host_name": "pupix1",
+                "host_status": "ready",
+                "lane_id": "lane-combined",
+                "lane_name": "combined",
+                "lane_type": "other",
+                "backend_type": "llama",
+                "base_url": "http://10.0.0.95:11436",
+                "lane_status": "suspended",
+                "suspension_reason": "swap:old:queued",
+                "current_model_name": "gemma-4-26B-A4B-it-Q4_K_M",
+                "proxy_auth_metadata": {"control_plane": "mw", "mw_host_id": "pupix1", "mw_lane_id": "combined"},
+                "last_ok_at": None,
+                "last_probe_at": None,
+                "updated_at": old,
+            }
+        ]
+        policy = [
+            {"lane_id": "lane-combined", "model_name": "gemma-4-26B-A4B-it-Q4_K_M", "max_ctx": 8192},
+        ]
+        active_swaps = [
+            {
+                "swap_id": "old",
+                "lane_id": "lane-combined",
+                "state": "queued",
+                "terminal": False,
+                "details": {},
+                "requested_model_name": "gemma-4-26B-A4B-it-Q4_K_M",
+                "resolved_model_name": "gemma-4-26B-A4B-it-Q4_K_M",
+                "error_message": None,
+                "started_at": old,
+                "last_event_at": old,
+                "completed_at": None,
+                "updated_at": old,
+            }
+        ]
+        state_rows = [
+            {
+                "host_id": "pupix1",
+                "lane_id": "combined",
+                "last_heartbeat_at": now,
+                "actual_state": "running",
+                "health_status": "healthy",
+                "actual_model": "Qwen3.5-27B-Q4_K_M",
+                "backend_type": "llama.cpp",
+                "listen_port": 21436,
+                "metadata": {"source": "mw_response_snapshot"},
+            }
+        ]
+
+        app_module.db = _FakeDb(_FakeCursor(fetchall_rows=[lanes, policy, [], active_swaps]))  # type: ignore[assignment]
+        app_module.mw_state_db = _FakeDb(_FakeCursor(fetchall_rows=[state_rows]))  # type: ignore[assignment]
+
+        client = TestClient(app_module.app)
+        resp = client.get("/mesh/inventory")
+        self.assertEqual(resp.status_code, 200)
+        lane = resp.json()["lanes"][0]
+        self.assertEqual(lane["lane_status"], "ready")
+        self.assertIsNone(lane["suspension_reason"])
+        self.assertEqual(lane["raw_suspension_reason"], "swap:old:queued")
+        self.assertTrue(lane["stale_suspension_suppressed"])
+        self.assertIsNone(lane["active_swap"])
+        self.assertTrue(lane["stale_active_swap_suppressed"])
+        self.assertEqual(lane["current_model"], "Qwen3.5-27B-Q4_K_M")
+        self.assertEqual(lane["mw_state_source"], "mw_response_snapshot")
 
     def test_api_lane_lease_status_uses_mw_effective_lane_truth(self) -> None:
         now = datetime.now(tz=timezone.utc)
@@ -297,6 +370,7 @@ class InventoryApiTests(unittest.TestCase):
                     "current_model_name": "gemma-4-26B-A4B-it-Q4_K_M",
                     "proxy_auth_metadata": {"control_plane": "mw", "mw_host_id": "pupix1", "mw_lane_id": "combined"},
                     "backend_type": "llama",
+                    "updated_at": now - timedelta(minutes=5),
                 }
             ],
         )
@@ -310,6 +384,7 @@ class InventoryApiTests(unittest.TestCase):
                 "actual_model": "Qwen3.5-27B-Q4_K_M",
                 "backend_type": "llama.cpp",
                 "listen_port": 21436,
+                "metadata": {"source": "mw_response_snapshot"},
             }
         ]
 
@@ -323,6 +398,11 @@ class InventoryApiTests(unittest.TestCase):
         self.assertEqual(body["lane_status"], "ready")
         self.assertEqual(body["current_model"], "Qwen3.5-27B-Q4_K_M")
         self.assertEqual(body["base_url"], "http://10.0.0.95:21436")
+        self.assertIsNone(body["suspension_reason"])
+        self.assertEqual(body["raw_suspension_reason"], "swap:abc:queued")
+        self.assertTrue(body["stale_suspension_suppressed"])
+        self.assertIsNotNone(body["mw_last_heartbeat_at"])
+        self.assertEqual(body["mw_state_source"], "mw_response_snapshot")
 
     def test_api_lane_lease_status_infers_mw_binding_from_host_name(self) -> None:
         now = datetime.now(tz=timezone.utc)
@@ -340,6 +420,7 @@ class InventoryApiTests(unittest.TestCase):
                     "host_name": "pupix1",
                     "proxy_auth_metadata": {},
                     "backend_type": "llama",
+                    "updated_at": now - timedelta(minutes=5),
                 }
             ],
         )
@@ -353,6 +434,7 @@ class InventoryApiTests(unittest.TestCase):
                 "actual_model": "Qwen3.5-27B-Q4_K_M",
                 "backend_type": "llama.cpp",
                 "listen_port": 21436,
+                "metadata": {"source": "mw_state_snapshot"},
             }
         ]
 
@@ -366,6 +448,10 @@ class InventoryApiTests(unittest.TestCase):
         self.assertEqual(body["lane_status"], "ready")
         self.assertEqual(body["current_model"], "Qwen3.5-27B-Q4_K_M")
         self.assertEqual(body["base_url"], "http://10.0.0.95:21436")
+        self.assertIsNone(body["suspension_reason"])
+        self.assertEqual(body["raw_suspension_reason"], "swap:abc:queued")
+        self.assertTrue(body["stale_suspension_suppressed"])
+        self.assertEqual(body["mw_state_source"], "mw_state_snapshot")
 
 
 if __name__ == "__main__":
