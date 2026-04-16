@@ -4427,6 +4427,21 @@ def _execute_router_request_streaming(
                             err_msg = str(event.error_message or "mw stream failed")
                             break
                 else:
+                    # Strict MW authority: if the lane is explicitly MW-managed, never fall back to direct base_url proxy.
+                    if settings.mw_control_enabled and lane_id:
+                        try:
+                            with db.connect() as conn2:
+                                with conn2.cursor() as cur2:
+                                    cur2.execute("SELECT proxy_auth_metadata FROM lanes WHERE lane_id=%s", (str(lane_id),))
+                                    meta_row = cur2.fetchone() or {}
+                            pam = meta_row.get("proxy_auth_metadata") or {}
+                            if isinstance(pam, dict) and str(pam.get("control_plane") or "").strip().lower() == "mw":
+                                raise RuntimeError(f"MW-managed lane requires gRPC target; refusing base_url fallback (lane_id={lane_id})")
+                        except RuntimeError:
+                            raise
+                        except Exception:
+                            # If we cannot determine MW management, keep legacy behavior for now.
+                            pass
                     endpoint = "/v1/chat/completions"
                     request_timeout = float(max(30, settings.default_lease_ttl_seconds))
                     async with httpx.AsyncClient(timeout=request_timeout) as client:
