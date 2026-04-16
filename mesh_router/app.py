@@ -4007,6 +4007,23 @@ def _execute_router_request(
                 )
                 downstream_status_code = 200
             else:
+                # Strict MW authority: if the lane is explicitly MW-managed, never fall back to direct base_url proxy.
+                if route == "chat" and settings.mw_control_enabled and lane_id:
+                    try:
+                        with db.connect() as conn2:
+                            with conn2.cursor() as cur2:
+                                cur2.execute("SELECT proxy_auth_metadata FROM lanes WHERE lane_id=%s", (str(lane_id),))
+                                meta_row = cur2.fetchone() or {}
+                        pam = meta_row.get("proxy_auth_metadata") or {}
+                        if isinstance(pam, dict) and str(pam.get("control_plane") or "").strip().lower() == "mw":
+                            raise RuntimeError(
+                                f"MW-managed lane requires gRPC target; refusing base_url fallback (lane_id={lane_id})"
+                            )
+                    except RuntimeError:
+                        raise
+                    except Exception:
+                        # If we cannot determine MW management, keep legacy behavior for now.
+                        pass
                 with httpx.Client(timeout=request_timeout) as client:
                     downstream_response = client.post(
                         f"{choice.base_url.rstrip('/')}{endpoint}",
