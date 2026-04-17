@@ -254,6 +254,12 @@ def pick_lane_for_model(
                       AND (%s::text IS NULL OR l.lane_type::text = %s::text)
                       AND (%s::text[] IS NULL OR l.lane_id::text <> ALL(%s::text[]))
                       AND (l.status='ready' OR (l.proxy_auth_metadata->>'control_plane')='mw')
+                      AND NOT EXISTS (
+                        SELECT 1 FROM router_leases rl
+                        WHERE rl.lane_id = l.lane_id
+                          AND rl.state = 'active'
+                          AND COALESCE(rl.last_heartbeat_at, rl.acquired_at) > now() - (%s * interval '1 second')
+                      )
                     LIMIT 1
                     """,
                     (
@@ -268,6 +274,7 @@ def pick_lane_for_model(
                         pin_lane_type,
                         list(excluded) or None,
                         list(excluded) or None,
+                        int(settings.default_lease_stale_seconds),
                     ),
                 )
         if not rows:

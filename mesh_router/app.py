@@ -615,11 +615,6 @@ def _model_request_matches_candidate(
             or candidate_parent == requested_model_name
         ):
             return True
-        # Exact requests (paths, quant tags like "4bit", GGUF filenames, etc.) must not
-        # fall back to fuzzy key/tag matching. Otherwise similar family/size models
-        # (ex: "Qwen3.5-9B-MLX-4bit" vs "Qwen3.5-9B-6bit") can be incorrectly treated
-        # as interchangeable during swap-preflight and routing decisions.
-        return False
     request_keys = _model_lookup_keys(requested_model_name)
     if request_keys & _model_lookup_keys(candidate_model_name):
         return True
@@ -1843,15 +1838,6 @@ def api_mw_command_status(request_id: str) -> MWCommandStatusResponse:
         completed_at=row["completed_at"].isoformat() if row.get("completed_at") else None,
         updated_at=row["updated_at"].isoformat() if row.get("updated_at") else None,
     )
-
-
-from .mw_consumer import process_mw_message
-
-
-@app.post("/api/mw/hosts/{host_id}/state")
-def api_mw_host_state(host_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-    process_mw_message(payload)
-    return {"ok": True}
 
 
 @app.post("/api/mw/hosts/{host_id}/health-probe", response_model=MWCommandResponse)
