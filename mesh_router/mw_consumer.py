@@ -194,6 +194,8 @@ def _upsert_lanes(cur: Any, *, host_id: str, lane_states: Iterable[dict[str, Any
                         "total_swap_eta_ms": l.get("total_swap_eta_ms"),
                         "eta_source": l.get("eta_source"),
                         "eta_complete": l.get("eta_complete"),
+                        "validated_candidates": l.get("validated_candidates"),
+                        "active_job": l.get("active_job"),
                     }
                 ),
             ),

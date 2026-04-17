@@ -1700,6 +1700,8 @@ def _lane_gateway_healthy(
             return bool(result.get("ok"))
         except Exception:
             pass
+        # MW-managed lane: don't fall back to base_url health check — gRPC is authoritative.
+        return False
     health_urls = ("/health", "/healthz", "/readyz", "/livez")
     try:
         with httpx.Client(timeout=5.0) as client:
@@ -5690,6 +5692,9 @@ def mesh_inventory() -> dict[str, Any]:
                 "current_model": cm or None,
                 "mw_last_heartbeat_at": r.get("mw_last_heartbeat_at").isoformat() if isinstance(r.get("mw_last_heartbeat_at"), datetime) else r.get("mw_last_heartbeat_at"),
                 "mw_state_source": r.get("mw_state_source"),
+                "validated_candidates": r.get("validated_candidates"),
+                "active_job": r.get("active_job"),
+                "job_hung": bool(r.get("job_hung", False)),
                 "known_models": known,
                 "known_models_detail": [
                     {

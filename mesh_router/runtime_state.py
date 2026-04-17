@@ -122,6 +122,8 @@ class RuntimeStateStore:
                 "metadata": metadata,
                 "service_id": service_id or None,
                 "listen_port": service.get("listen_port"),
+                "validated_candidates": _json_safe(list(lane.get("validated_candidates") or [])),
+                "active_job": _json_safe(lane.get("active_job")) if isinstance(lane.get("active_job"), dict) else None,
             }
             self._set_json(self.lane_key(host_id, lane_id), payload, ttl)
 

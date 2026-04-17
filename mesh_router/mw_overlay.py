@@ -9,6 +9,35 @@ from .runtime_state import RuntimeStateStore, get_default_runtime_state_store
 
 logger = logging.getLogger(__name__)
 
+_MW_PROGRESS_TIMEOUT_SECONDS = 180
+
+
+def _parse_iso_dt(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=UTC)
+    if not value:
+        return None
+    try:
+        text = str(value)
+        if text.endswith("Z"):
+            text = f"{text[:-1]}+00:00"
+        parsed = datetime.fromisoformat(text)
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+    except (TypeError, ValueError):
+        return None
+
+
+def _is_job_hung(active_job: Any) -> bool:
+    if not isinstance(active_job, dict):
+        return False
+    last_progress = active_job.get("last_progress_at")
+    if not last_progress:
+        return False
+    dt = _parse_iso_dt(last_progress)
+    if dt is None:
+        return False
+    return (datetime.now(tz=UTC) - dt).total_seconds() > _MW_PROGRESS_TIMEOUT_SECONDS
+
 
 def _normalize_router_backend_type(value: str | None) -> str:
     raw = str(value or "").strip().lower()
@@ -121,22 +150,19 @@ def apply_mw_effective_status(
       - current_model_name: set to MW `actual_model` when present (for more truthful inventory)
     """
     mw_pairs: list[tuple[str, str]] = []
-    for row in rows:
-        binding = _candidate_mw_binding(row)
-        if binding is not None:
-            mw_pairs.append((binding[0], binding[1]))
-    mw_pairs = list(dict.fromkeys(mw_pairs))
-    if not mw_pairs:
-        return
-
-    facts: dict[tuple[str, str], dict[str, Any]] = {}
     explicit_bindings: set[tuple[str, str]] = set()
     for row in rows:
         binding = _candidate_mw_binding(row)
         if binding is None:
             continue
+        mw_pairs.append((binding[0], binding[1]))
         if not binding[2]:
             explicit_bindings.add((binding[0], binding[1]))
+    mw_pairs = list(dict.fromkeys(mw_pairs))
+    if not mw_pairs:
+        return
+
+    facts: dict[tuple[str, str], dict[str, Any]] = {}
 
     if runtime_store is None:
         runtime_store = get_default_runtime_state_store()
@@ -146,15 +172,29 @@ def apply_mw_effective_status(
         except Exception as exc:  # pragma: no cover - defensive guard around cache plugins/fakes
             logger.warning("MW runtime-state cache read failed: %s", exc)
 
-    missing_pairs = [pair for pair in mw_pairs if pair not in facts]
+    # Explicit MW lanes (control_plane=mw) are served exclusively from Redis cache —
+    # no DB fallback. Cache miss → offline immediately.
+    for row in rows:
+        binding = _candidate_mw_binding(row)
+        if binding is None or binding[2]:  # skip inferred
+            continue
+        if (binding[0], binding[1]) not in facts:
+            row["effective_status"] = "offline"
+            row["readiness_reason"] = "mw_cache_miss"
+
+    # For inferred lanes only: fall back to mw_state_db when cache is cold.
+    inferred_missing = [
+        pair for pair in mw_pairs
+        if pair not in facts and pair not in explicit_bindings
+    ]
     db_unavailable = False
-    if missing_pairs:
+    if inferred_missing:
         try:
             with mw_state_db.connect() as conn:
                 with conn.cursor() as cur:
-                    values_sql = ",".join(["(%s,%s)"] * len(missing_pairs))
+                    values_sql = ",".join(["(%s,%s)"] * len(inferred_missing))
                     params: list[Any] = []
-                    for host_id, lane_id in missing_pairs:
+                    for host_id, lane_id in inferred_missing:
                         params.extend([host_id, lane_id])
                     cur.execute(
                         f"""
@@ -201,7 +241,10 @@ def apply_mw_effective_status(
         if binding is None:
             continue
         host_id, lane_id, inferred = binding
-        if db_unavailable and not inferred and (host_id, lane_id) not in facts:
+        # Explicit MW lane with no cache entry: already marked offline above; skip enrichment.
+        if not inferred and (host_id, lane_id) not in facts:
+            continue
+        if db_unavailable and (host_id, lane_id) not in facts:
             continue
         f = facts.get((host_id, lane_id)) or {}
         if inferred and not any(
@@ -270,3 +313,15 @@ def apply_mw_effective_status(
         effective_base_url = _base_url_with_listen_port(row.get("base_url"), listen_port=f.get("listen_port"))
         if effective_base_url:
             row["base_url"] = effective_base_url
+
+        validated_candidates = f.get("validated_candidates")
+        if validated_candidates is not None:
+            row["validated_candidates"] = validated_candidates
+
+        active_job = f.get("active_job")
+        if isinstance(active_job, dict):
+            row["active_job"] = active_job
+            row["job_hung"] = _is_job_hung(active_job)
+        elif "active_job" not in row:
+            row.setdefault("active_job", None)
+            row.setdefault("job_hung", False)
