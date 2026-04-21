@@ -90,5 +90,20 @@ class Settings(BaseSettings):
     # metadata (if available) in responses and SSE headers.
     route_debug_headers_enabled: bool = False
 
+    # VLM routing (llama.cpp router-style backends)
+    #
+    # When enabled, mesh-router seeds a dedicated VLM lane that points at a llama.cpp router
+    # service (supports POST /models/load) and can accept OpenAI-style multimodal chat payloads.
+    vlm_seed_enabled: bool = False
+    vlm_lane_host_ref: str = "packhub"
+    vlm_lane_name: str = "vlm-router"
+    vlm_lane_base_url: str = "http://llama-vision-router.ai-tools.svc.cluster.local:4012"
+    vlm_declared_models: str = "qwen3.5-9b-vlm,Qwen3.5-9B-VLM-Q4_K_M"
+
+    # If true, a chat request containing image parts can be remapped from a text-only model
+    # request (e.g. Qwen3.5-9B) to the default VLM alias.
+    vlm_remap_text_model_requests: bool = True
+    vlm_default_model: str = "qwen3.5-9b-vlm"
+
 
 settings = Settings()

@@ -94,6 +94,120 @@ def _infer_mw_lane_id_for_row(row: dict[str, Any]) -> str | None:
     return None
 
 
+def _chat_payload_has_images(payload: dict[str, Any]) -> bool:
+    messages = payload.get("messages") or []
+    if not isinstance(messages, list):
+        return False
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if not isinstance(part, dict):
+                continue
+            part_type = str(part.get("type") or "").strip().lower()
+            if part_type in {"image_url", "input_image", "image"}:
+                return True
+    return False
+
+
+def _looks_like_qwen35_9b(model_name: str) -> bool:
+    lowered = (model_name or "").strip().lower().replace("_", "-")
+    if not lowered:
+        return False
+    if "qwen3.5" not in lowered and not lowered.startswith("qwen3-5"):
+        return False
+    return ("9b" in lowered) or ("qwen3.5:9b" in lowered) or ("qwen3.5-9b" in lowered)
+
+
+def _maybe_remap_vlm_model(*, requested_model: str, has_images: bool) -> str:
+    if not has_images or not settings.vlm_remap_text_model_requests:
+        return requested_model
+    lowered = (requested_model or "").strip().lower()
+    if "vlm" in lowered or "-vl" in lowered or "vision" in lowered:
+        return requested_model
+    if _looks_like_qwen35_9b(requested_model):
+        return str(settings.vlm_default_model or requested_model).strip() or requested_model
+    return requested_model
+
+
+@app.on_event("startup")
+def _startup_seed_vlm() -> None:
+    if not settings.vlm_seed_enabled:
+        return
+    base_url = str(settings.vlm_lane_base_url or "").strip()
+    if not base_url:
+        return
+    declared = [m.strip() for m in str(settings.vlm_declared_models or "").split(",") if m.strip()]
+    if not declared:
+        declared = [str(settings.vlm_default_model or "").strip()] if str(settings.vlm_default_model or "").strip() else []
+    if not declared:
+        return
+    lane_meta = {
+        "llama_router": True,
+        "supports_multimodal": True,
+        "declared_models": declared,
+        "declared_model_tags": {m: ["multimodal", "vlm", "vision"] for m in declared},
+        "declared_max_ctx": {m: 8192 for m in declared},
+    }
+    with db.connect() as conn:
+        with conn.cursor() as cur:
+            host_id, _ = _resolve_host_id(cur, settings.vlm_lane_host_ref, create=True)
+            cur.execute(
+                """
+                INSERT INTO lanes (
+                  host_id,
+                  lane_name,
+                  lane_type,
+                  backend_type,
+                  base_url,
+                  status,
+                  proxy_auth_metadata,
+                  updated_at
+                )
+                VALUES (
+                  %s,
+                  %s,
+                  'router'::lane_type,
+                  'llama',
+                  %s,
+                  'ready'::lane_status,
+                  %s::jsonb,
+                  now()
+                )
+                ON CONFLICT (base_url)
+                DO UPDATE SET
+                  host_id = EXCLUDED.host_id,
+                  lane_name = EXCLUDED.lane_name,
+                  lane_type = EXCLUDED.lane_type,
+                  backend_type = EXCLUDED.backend_type,
+                  status = EXCLUDED.status,
+                  proxy_auth_metadata = EXCLUDED.proxy_auth_metadata,
+                  updated_at = now()
+                """,
+                (
+                    host_id,
+                    str(settings.vlm_lane_name or "vlm-router"),
+                    base_url,
+                    Jsonb(lane_meta),
+                ),
+            )
+            for model_name in declared:
+                cur.execute(
+                    """
+                    INSERT INTO models (model_name, format, tags)
+                    VALUES (%s, 'other'::model_format, %s::text[])
+                    ON CONFLICT (model_name) DO UPDATE SET
+                      tags = EXCLUDED.tags,
+                      updated_at = now()
+                    """,
+                    (model_name, ["multimodal", "vlm", "vision"]),
+                )
+        conn.commit()
+
+
 def _backend_compatibility_reason(
     *,
     model_name: str,
@@ -3792,13 +3906,15 @@ def _execute_router_request(
     job_type: str,
 ) -> dict[str, Any]:
     normalized = _normalize_route_request(route=route, raw_payload=raw_payload)
-    model_name = str(normalized["requested_model_name"])
+    requested_model_name = str(normalized["requested_model_name"])
     pin_worker = normalized.get("pin_worker")
     pin_base_url = normalized.get("pin_base_url")
     pin_lane_type = normalized.get("pin_lane_type")
     pin_lane_id = normalized.get("pin_lane_id")
     request_payload = dict(normalized["request_payload"])
     response_format = str(normalized.get("response_format") or "b64_json")
+    has_images = bool(route == "chat" and _chat_payload_has_images(request_payload))
+    model_name = _maybe_remap_vlm_model(requested_model=requested_model_name, has_images=has_images)
     if route == "images":
         backend_type = "sd"
     elif route == "chat":
@@ -3810,7 +3926,7 @@ def _execute_router_request(
 
     _touch_router_request(
         request_id=request_id,
-        requested_model_name=model_name,
+        requested_model_name=requested_model_name,
     )
     if _request_cancel_requested(request_id):
         _touch_router_request(
@@ -3844,6 +3960,7 @@ def _execute_router_request(
                     model=model_name,
                     backend_type=backend_type,
                     request_context_tokens=request_context_tokens,
+                    requires_multimodal=has_images,
                     pin_worker=pin_worker,
                     pin_base_url=pin_base_url,
                     pin_lane_type=pin_lane_type,
@@ -4037,6 +4154,18 @@ def _execute_router_request(
                         # If we cannot determine MW management, keep legacy behavior for now.
                         pass
                 with httpx.Client(timeout=request_timeout) as client:
+                    if route == "chat" and str(choice.lane_type or "").strip().lower() == "router" and downstream_model:
+                        load_response = client.post(
+                            f"{choice.base_url.rstrip('/')}/models/load",
+                            json={"model": downstream_model},
+                            headers={"Authorization": f"Bearer {token}"},
+                        )
+                        if load_response.status_code >= 400:
+                            try:
+                                load_body = load_response.json()
+                            except Exception:
+                                load_body = {"raw": load_response.text}
+                            raise RuntimeError(f"llama router model load failed http_{load_response.status_code}: {load_body}")
                     downstream_response = client.post(
                         f"{choice.base_url.rstrip('/')}{endpoint}",
                         json=request_payload,

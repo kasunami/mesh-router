@@ -211,6 +211,7 @@ def pick_lane_for_model(
     model: str,
     backend_type: str | None = None,
     request_context_tokens: int | None = None,
+    requires_multimodal: bool = False,
     pin_worker: str | None = None,
     pin_base_url: str | None = None,
     pin_lane_type: str | None = None,
@@ -227,6 +228,30 @@ def pick_lane_for_model(
     load times, TPS, and error rates.
     """
     excluded = {lane_id for lane_id in (exclude_lane_ids or set()) if lane_id}
+
+    def _augment_declared_models(row: dict[str, Any]) -> None:
+        meta = row.get("proxy_auth_metadata") or {}
+        if not isinstance(meta, dict):
+            return
+        declared = meta.get("declared_models") or meta.get("supported_models") or []
+        if not isinstance(declared, list):
+            return
+        tags_by_model = meta.get("declared_model_tags") if isinstance(meta.get("declared_model_tags"), dict) else {}
+        max_ctx_by_model = meta.get("declared_max_ctx") if isinstance(meta.get("declared_max_ctx"), dict) else {}
+        out: list[dict[str, Any]] = list(row.get("local_viable_models") or [])
+        for name in declared:
+            model_name = str(name or "").strip()
+            if not model_name:
+                continue
+            out.append(
+                {
+                    "model_name": model_name,
+                    "tags": list(tags_by_model.get(model_name) or []),
+                    "max_ctx": max_ctx_by_model.get(model_name),
+                    "allowed": True,
+                }
+            )
+        row["local_viable_models"] = out
 
     if pin_lane_id:
         try:
@@ -573,7 +598,27 @@ def pick_lane_for_model(
                     ),
                 )
         apply_mw_effective_status(rows, mw_state_db=mw_state_db, stale_seconds=settings.default_lease_stale_seconds)
+        for row in rows:
+            _augment_declared_models(row)
         rows = [row for row in rows if _backend_matches_request(row, backend_type)]
+
+        if requires_multimodal:
+            def _supports_multimodal(row: dict[str, Any]) -> bool:
+                meta = row.get("proxy_auth_metadata") or {}
+                if isinstance(meta, dict) and meta.get("supports_multimodal") is True:
+                    return True
+                for group in ("local_viable_models", "remote_viable_models"):
+                    for item in row.get(group) or []:
+                        tags = item.get("tags") or []
+                        lowered = {str(t).strip().lower() for t in tags if str(t).strip()}
+                        if {"multimodal", "vlm", "vision"} & lowered:
+                            return True
+                        name = str(item.get("model_name") or "").lower()
+                        if "vlm" in name or "-vl" in name or "vision" in name:
+                            return True
+                return False
+
+            rows = [r for r in rows if _supports_multimodal(r)]
         if settings.placement_prefer_mw_lanes:
             def _is_mw(row: dict) -> bool:
                 pam = row.get("proxy_auth_metadata") or {}
