@@ -4181,7 +4181,28 @@ def _execute_router_request(
                                 load_body = load_response.json()
                             except Exception:
                                 load_body = {"raw": load_response.text}
-                            raise RuntimeError(f"llama router model load failed http_{load_response.status_code}: {load_body}")
+                            # llama.cpp router returns 400 "model is already running" when the requested model is
+                            # already loaded. Treat that as success (idempotent load).
+                            try:
+                                load_message = ""
+                                if isinstance(load_body, dict):
+                                    if isinstance(load_body.get("error"), dict):
+                                        load_message = str(load_body["error"].get("message") or "")
+                                    if not load_message and load_body.get("message"):
+                                        load_message = str(load_body.get("message") or "")
+                                    if not load_message and load_body.get("raw"):
+                                        load_message = str(load_body.get("raw") or "")
+                                else:
+                                    load_message = str(load_body)
+                            except Exception:
+                                load_message = ""
+
+                            if load_response.status_code == 400 and "model is already running" in load_message.lower():
+                                pass
+                            else:
+                                raise RuntimeError(
+                                    f"llama router model load failed http_{load_response.status_code}: {load_body}"
+                                )
                     downstream_response = client.post(
                         f"{choice.base_url.rstrip('/')}{endpoint}",
                         json=request_payload,
