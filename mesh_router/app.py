@@ -4195,7 +4195,7 @@ def _execute_router_request(
                 downstream_status_code = 200
             else:
                 # Strict MW authority: if the lane is explicitly MW-managed, never fall back to direct base_url proxy.
-                if settings.mw_control_enabled and lane_id:
+                if settings.mw_control_enabled and lane_id and not has_images:
                     try:
                         _refuse_base_url_fallback_if_mw_managed(lane_id=str(lane_id), context=f"route={route}")
                     except RuntimeError:
@@ -4545,6 +4545,13 @@ def _execute_router_request_streaming(
                         mw_target = _mw_target_for_lane(cur=cur, lane_id=str(lane_id))
             except Exception:
                 mw_target = None
+
+        # MW gRPC chat requests currently encode `content` as a plain string.
+        # OpenAI multimodal chat payloads use structured content blocks (e.g. image_url),
+        # so MW inference cannot faithfully proxy them yet. For multimodal requests, route
+        # directly to the lane base_url instead of MW gRPC.
+        if has_images:
+            mw_target = None
         _maybe_add_perf_expectation_headers(
             headers=headers,
             host_id=str(getattr(mw_target, "host_id", "") or "") if mw_target is not None else (str(choice.worker_id) if choice else None),
@@ -4643,7 +4650,7 @@ def _execute_router_request_streaming(
                             break
                 else:
                     # Strict MW authority: if the lane is explicitly MW-managed, never fall back to direct base_url proxy.
-                    if settings.mw_control_enabled and lane_id:
+                    if settings.mw_control_enabled and lane_id and not has_images:
                         try:
                             _refuse_base_url_fallback_if_mw_managed(lane_id=str(lane_id), context="stream_chat")
                         except RuntimeError:
