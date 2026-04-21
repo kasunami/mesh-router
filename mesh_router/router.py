@@ -603,22 +603,12 @@ def pick_lane_for_model(
         rows = [row for row in rows if _backend_matches_request(row, backend_type)]
 
         if requires_multimodal:
-            def _supports_multimodal(row: dict[str, Any]) -> bool:
-                meta = row.get("proxy_auth_metadata") or {}
-                if isinstance(meta, dict) and meta.get("supports_multimodal") is True:
-                    return True
-                for group in ("local_viable_models", "remote_viable_models"):
-                    for item in row.get(group) or []:
-                        tags = item.get("tags") or []
-                        lowered = {str(t).strip().lower() for t in tags if str(t).strip()}
-                        if {"multimodal", "vlm", "vision"} & lowered:
-                            return True
-                        name = str(item.get("model_name") or "").lower()
-                        if "vlm" in name or "-vl" in name or "vision" in name:
-                            return True
-                return False
-
-            rows = [r for r in rows if _supports_multimodal(r)]
+            rows = [
+                r
+                for r in rows
+                if isinstance(r.get("proxy_auth_metadata"), dict)
+                and (r.get("proxy_auth_metadata") or {}).get("supports_multimodal") is True
+            ]
         if settings.placement_prefer_mw_lanes:
             def _is_mw(row: dict) -> bool:
                 pam = row.get("proxy_auth_metadata") or {}
