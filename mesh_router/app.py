@@ -133,6 +133,20 @@ def _maybe_remap_vlm_model(*, requested_model: str, has_images: bool) -> str:
     return requested_model
 
 
+def _lane_uses_llama_router(*, lane_id: str) -> bool:
+    if not lane_id:
+        return False
+    try:
+        with db.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT proxy_auth_metadata FROM lanes WHERE lane_id=%s", (str(lane_id),))
+                row = cur.fetchone() or {}
+    except Exception:
+        return False
+    meta = row.get("proxy_auth_metadata") or {}
+    return isinstance(meta, dict) and meta.get("llama_router") is True
+
+
 @app.on_event("startup")
 def _startup_seed_vlm() -> None:
     if not settings.vlm_seed_enabled:
@@ -170,7 +184,7 @@ def _startup_seed_vlm() -> None:
                 VALUES (
                   %s,
                   %s,
-                  'router'::lane_type,
+                  'other'::lane_type,
                   'llama',
                   %s,
                   'ready'::lane_status,
@@ -4154,7 +4168,7 @@ def _execute_router_request(
                         # If we cannot determine MW management, keep legacy behavior for now.
                         pass
                 with httpx.Client(timeout=request_timeout) as client:
-                    if route == "chat" and str(choice.lane_type or "").strip().lower() == "router" and downstream_model:
+                    if route == "chat" and lane_id and _lane_uses_llama_router(lane_id=str(lane_id)) and downstream_model:
                         load_response = client.post(
                             f"{choice.base_url.rstrip('/')}/models/load",
                             json={"model": downstream_model},
