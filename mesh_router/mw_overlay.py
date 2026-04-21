@@ -285,6 +285,25 @@ def apply_mw_effective_status(
         row["effective_status"] = effective_status
         row["readiness_reason"] = readiness_reason
 
+        # Multimodal capability overlay:
+        # - A lane is considered multimodal-capable only when MW is running a VLM-configured service.
+        # - Keep this as a lane capability (not a model alias) so the same model can be served as
+        #   LLM on CPU lanes and as LMM on GPU lanes.
+        try:
+            service_id = str(f.get("service_id") or "").strip()
+            pam = row.get("proxy_auth_metadata") or {}
+            if not isinstance(pam, dict):
+                pam = {}
+            mm = False
+            if isinstance(metadata, dict) and metadata.get("supports_multimodal") is True:
+                mm = True
+            if service_id in {"llama-vlm", "llama-vlm.service"}:
+                mm = True
+            pam["supports_multimodal"] = bool(mm)
+            row["proxy_auth_metadata"] = pam
+        except Exception:
+            pass
+
         if f.get("actual_model"):
             row["current_model_name"] = f.get("actual_model")
         if f.get("desired_model"):
