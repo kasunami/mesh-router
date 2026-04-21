@@ -4181,6 +4181,12 @@ def _execute_router_request(
                             mw_target = _mw_target_for_lane(cur=cur, lane_id=str(lane_id))
                 except Exception:
                     mw_target = None
+
+            # MW gRPC chat requests only carry message content as a string today, which
+            # cannot represent OpenAI multimodal content blocks (e.g. image_url parts).
+            # For multimodal requests, proxy directly to the lane base_url.
+            if has_images:
+                mw_target = None
             if mw_target is not None:
                 if downstream_model and not _model_request_matches_candidate(downstream_model, choice.current_model_name or ""):
                     try:
