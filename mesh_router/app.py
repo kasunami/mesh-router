@@ -151,75 +151,109 @@ def _lane_uses_llama_router(*, lane_id: str) -> bool:
 def _startup_seed_vlm() -> None:
     if not settings.vlm_seed_enabled:
         return
-    base_url = str(settings.vlm_lane_base_url or "").strip()
-    if not base_url:
-        return
     declared = [m.strip() for m in str(settings.vlm_declared_models or "").split(",") if m.strip()]
     if not declared:
         declared = [str(settings.vlm_default_model or "").strip()] if str(settings.vlm_default_model or "").strip() else []
     if not declared:
         return
-    lane_meta = {
-        "llama_router": True,
-        "supports_multimodal": True,
-        "mw_ignore": True,
-        "declared_models": declared,
-        "declared_model_tags": {m: ["multimodal", "vlm", "vision"] for m in declared},
-        "declared_max_ctx": {m: 8192 for m in declared},
-    }
+
+    specs: list[dict[str, Any]] = []
+    if settings.vlm_lane_specs_json:
+        try:
+            import json as _json
+
+            parsed = _json.loads(str(settings.vlm_lane_specs_json))
+            if isinstance(parsed, list):
+                for item in parsed:
+                    if isinstance(item, dict):
+                        specs.append(dict(item))
+        except Exception:
+            specs = []
+    if not specs:
+        base_url = str(settings.vlm_lane_base_url or "").strip()
+        if not base_url:
+            return
+        specs = [
+            {
+                "host_ref": str(settings.vlm_lane_host_ref or "packhub"),
+                "lane_name": str(settings.vlm_lane_name or "vlm-router"),
+                "base_url": base_url,
+                # Back-compat default: this seeded lane is a llama.cpp router-style backend.
+                "llama_router": True,
+            }
+        ]
+
     with db.connect() as conn:
         with conn.cursor() as cur:
-            host_id, _ = _resolve_host_id(cur, settings.vlm_lane_host_ref, create=True)
-            cur.execute(
-                """
-                INSERT INTO lanes (
-                  host_id,
-                  lane_name,
-                  lane_type,
-                  backend_type,
-                  base_url,
-                  status,
-                  proxy_auth_metadata,
-                  updated_at
-                )
-                VALUES (
-                  %s,
-                  %s,
-                  'other'::lane_type,
-                  'llama',
-                  %s,
-                  'ready'::lane_status,
-                  %s::jsonb,
-                  now()
-                )
-                ON CONFLICT (base_url)
-                DO UPDATE SET
-                  host_id = EXCLUDED.host_id,
-                  lane_name = EXCLUDED.lane_name,
-                  lane_type = EXCLUDED.lane_type,
-                  backend_type = EXCLUDED.backend_type,
-                  status = EXCLUDED.status,
-                  proxy_auth_metadata = EXCLUDED.proxy_auth_metadata,
-                  updated_at = now()
-                """,
-                (
-                    host_id,
-                    str(settings.vlm_lane_name or "vlm-router"),
-                    base_url,
-                    Jsonb(lane_meta),
-                ),
-            )
-            for model_name in declared:
+            for item in specs:
+                base_url = str(item.get("base_url") or "").strip()
+                if not base_url:
+                    continue
+                host_ref = str(item.get("host_ref") or settings.vlm_lane_host_ref or "packhub").strip()
+                lane_name = str(item.get("lane_name") or settings.vlm_lane_name or "vlm-router").strip() or "vlm-router"
+                llama_router = bool(item.get("llama_router")) if item.get("llama_router") is not None else False
+
+                lane_meta: dict[str, Any] = {
+                    "supports_multimodal": True,
+                    "mw_ignore": True,
+                    "declared_models": declared,
+                    "declared_model_tags": {m: ["multimodal", "vlm", "vision"] for m in declared},
+                    "declared_max_ctx": {m: 8192 for m in declared},
+                }
+                if llama_router:
+                    lane_meta["llama_router"] = True
+
+                host_id, _ = _resolve_host_id(cur, host_ref, create=True)
                 cur.execute(
                     """
-                    INSERT INTO models (model_name, format, tags)
-                    VALUES (%s, 'other'::model_format, %s::text[])
-                    ON CONFLICT (model_name) DO UPDATE SET
-                      tags = EXCLUDED.tags,
+                    INSERT INTO lanes (
+                      host_id,
+                      lane_name,
+                      lane_type,
+                      backend_type,
+                      base_url,
+                      status,
+                      proxy_auth_metadata,
+                      updated_at
+                    )
+                    VALUES (
+                      %s,
+                      %s,
+                      'other'::lane_type,
+                      'llama',
+                      %s,
+                      'ready'::lane_status,
+                      %s::jsonb,
+                      now()
+                    )
+                    ON CONFLICT (base_url)
+                    DO UPDATE SET
+                      host_id = EXCLUDED.host_id,
+                      lane_name = EXCLUDED.lane_name,
+                      lane_type = EXCLUDED.lane_type,
+                      backend_type = EXCLUDED.backend_type,
+                      status = EXCLUDED.status,
+                      proxy_auth_metadata = EXCLUDED.proxy_auth_metadata,
                       updated_at = now()
                     """,
-                    (model_name, ["multimodal", "vlm", "vision"]),
+                    (
+                        host_id,
+                        lane_name,
+                        base_url,
+                        Jsonb(lane_meta),
+                    ),
                 )
+                for model_name in declared:
+                    cur.execute(
+                        """
+                        INSERT INTO models (model_name, format, tags)
+                        VALUES (%s, 'other'::model_format, %s::text[])
+                        ON CONFLICT (model_name) DO UPDATE SET
+                          tags = EXCLUDED.tags,
+                          updated_at = now()
+                        """,
+                        (model_name, ["multimodal", "vlm", "vision"]),
+                    )
         conn.commit()
 
 

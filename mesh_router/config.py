@@ -95,6 +95,11 @@ class Settings(BaseSettings):
     # When enabled, mesh-router seeds a dedicated VLM lane that points at a llama.cpp router
     # service (supports POST /models/load) and can accept OpenAI-style multimodal chat payloads.
     vlm_seed_enabled: bool = False
+    # Optional: seed multiple VLM lanes.
+    # JSON array of objects like:
+    #   [{"host_ref":"Static-Deskix","lane_name":"vlm-deskix","base_url":"http://10.0.0.99:21437","llama_router":false}]
+    # When set, takes precedence over vlm_lane_host_ref/vlm_lane_name/vlm_lane_base_url.
+    vlm_lane_specs_json: str | None = None
     vlm_lane_host_ref: str = "packhub"
     vlm_lane_name: str = "vlm-router"
     vlm_lane_base_url: str = "http://llama-vision-router.ai-tools.svc.cluster.local:4012"
