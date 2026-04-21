@@ -10,7 +10,11 @@ from pydantic import BaseModel, Field
 
 class ChatMessage(BaseModel):
     role: Literal["system", "user", "assistant", "tool"]
-    content: str | None = None
+    # OpenAI multimodal messages use `content` as a list of parts:
+    # [{"type":"text","text":"..."}, {"type":"image_url","image_url":{"url":"..."}}]
+    # Keep this permissive so mesh-router can proxy multimodal requests to
+    # downstream servers (e.g. llama.cpp vision) without enforcing a specific schema.
+    content: str | list[dict[str, Any]] | list[str] | None = None
     name: str | None = None
     tool_call_id: str | None = None
     tool_calls: list[dict[str, Any]] | None = None
