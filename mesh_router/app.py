@@ -102,14 +102,25 @@ def _chat_payload_has_images(payload: dict[str, Any]) -> bool:
         if not isinstance(msg, dict):
             continue
         content = msg.get("content")
+        # Some OpenAI-compatible clients send multimodal content as a list of parts,
+        # but permissive schema coercions can sometimes deserialize those parts as strings.
+        if isinstance(content, str):
+            lowered = content.lower()
+            if "data:image" in lowered or "image_url" in lowered or "input_image" in lowered:
+                return True
+            continue
         if not isinstance(content, list):
             continue
         for part in content:
-            if not isinstance(part, dict):
+            if isinstance(part, dict):
+                part_type = str(part.get("type") or "").strip().lower()
+                if part_type in {"image_url", "input_image", "image"}:
+                    return True
                 continue
-            part_type = str(part.get("type") or "").strip().lower()
-            if part_type in {"image_url", "input_image", "image"}:
-                return True
+            if isinstance(part, str):
+                lowered = part.lower()
+                if "data:image" in lowered or "image_url" in lowered or "input_image" in lowered:
+                    return True
     return False
 
 
