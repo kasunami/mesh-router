@@ -162,6 +162,7 @@ def _startup_seed_vlm() -> None:
     lane_meta = {
         "llama_router": True,
         "supports_multimodal": True,
+        "mw_ignore": True,
         "declared_models": declared,
         "declared_model_tags": {m: ["multimodal", "vlm", "vision"] for m in declared},
         "declared_max_ctx": {m: 8192 for m in declared},

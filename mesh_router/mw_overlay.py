@@ -58,6 +58,8 @@ def _normalize_mw_host_id(host_name: str | None) -> str:
 
 def _candidate_mw_binding(row: dict[str, Any]) -> tuple[str, str, bool] | None:
     pam = row.get("proxy_auth_metadata") or {}
+    if isinstance(pam, dict) and pam.get("mw_ignore") is True:
+        return None
     if isinstance(pam, dict) and str(pam.get("control_plane") or "").strip().lower() == "mw":
         host_id = str(pam.get("mw_host_id") or "").strip() or _normalize_mw_host_id(str(row.get("host_name") or ""))
         lane_id = str(pam.get("mw_lane_id") or "").strip()
