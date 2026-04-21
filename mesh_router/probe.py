@@ -133,7 +133,7 @@ def probe_once() -> None:
             lanes = q(
                 cur,
                 """
-                SELECT lane_id, host_id, base_url, status, suspension_reason
+                SELECT lane_id, host_id, base_url, status, suspension_reason, proxy_auth_metadata
                 FROM lanes
                 WHERE lane_type != 'router'
                 ORDER BY base_url
@@ -218,12 +218,15 @@ def probe_once() -> None:
                     )
                     
                     # Also detect currently loaded model
-                    loaded_model = _probe_lane_model(base_url)
-                    if loaded_model:
-                        cur.execute(
-                            "UPDATE lanes SET current_model_name=%s WHERE lane_id=%s",
-                            (loaded_model, lane_id),
-                        )
+                    pam = lane.get("proxy_auth_metadata") or {}
+                    is_llama_router = isinstance(pam, dict) and pam.get("llama_router") is True
+                    if not is_llama_router:
+                        loaded_model = _probe_lane_model(base_url)
+                        if loaded_model:
+                            cur.execute(
+                                "UPDATE lanes SET current_model_name=%s WHERE lane_id=%s",
+                                (loaded_model, lane_id),
+                            )
             
             # After all lanes probed, enforce dual-boot mutual exclusion
             _enforce_dualboot_mutual_exclusion(cur)

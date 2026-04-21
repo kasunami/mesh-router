@@ -623,6 +623,23 @@ def pick_lane_for_model(
         def _status(row: dict) -> str:
             return str(row.get("effective_status") or row.get("status") or "")
 
+        # For explicit multimodal lanes (e.g. llama.cpp router backends), don't require the
+        # model to appear in lane_model_viability. The lane itself is the capability boundary.
+        if requires_multimodal:
+            ready_mm = [row for row in rows if _status(row) == "ready"]
+            if ready_mm:
+                r0 = ready_mm[0]
+                return LaneChoice(
+                    lane_id=str(r0["lane_id"]),
+                    worker_id=str(r0["host_name"]),
+                    base_url=str(r0["base_url"]),
+                    lane_type=str(r0["lane_type"]),
+                    backend_type=str(r0.get("backend_type") or "llama"),
+                    current_model_name=r0.get("current_model_name"),
+                    current_model_max_ctx=int(r0["current_model_max_ctx"]) if r0.get("current_model_max_ctx") is not None else None,
+                    resolved_model_name=model.strip() or None,
+                )
+
         # Only 'ready' lanes are eligible for direct dispatch.
         matched = [
             row

@@ -3991,8 +3991,9 @@ def _execute_router_request(
                 err_msg = str(exc)
                 raise
 
-            target_model_name = str(getattr(choice, "resolved_model_name", None) or model_name)
-            if choice and not _model_request_matches_candidate(model_name, choice.current_model_name or ""):
+            is_llama_router_lane = bool(choice and _lane_uses_llama_router(lane_id=str(choice.lane_id)))
+            target_model_name = str(model_name if is_llama_router_lane else (getattr(choice, "resolved_model_name", None) or model_name))
+            if choice and not is_llama_router_lane and not _model_request_matches_candidate(model_name, choice.current_model_name or ""):
                 # Swap needed — trigger swap and wait.
                 #
                 # Important: a swap can fail because the *picked* lane isn't actually viable for the
