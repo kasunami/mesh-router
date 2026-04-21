@@ -602,6 +602,16 @@ def pick_lane_for_model(
             _augment_declared_models(row)
         rows = [row for row in rows if _backend_matches_request(row, backend_type)]
 
+        # Exclude "seeded helper" lanes from normal placement decisions.
+        #
+        # We keep these rows in the DB for back-compat and explicit pinning, but they
+        # should not steal traffic when MW-managed lanes are available.
+        def _is_mw_ignored(row: dict[str, Any]) -> bool:
+            pam = row.get("proxy_auth_metadata") or {}
+            return isinstance(pam, dict) and pam.get("mw_ignore") is True
+
+        rows = [row for row in rows if not _is_mw_ignored(row)]
+
         if requires_multimodal:
             rows = [
                 r
