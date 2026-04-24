@@ -2344,6 +2344,47 @@ def api_lane_upsert(req: LaneUpsertRequest) -> dict[str, Any]:
     }
 
 
+class LaneSetStatusRequest(BaseModel):
+    status: Literal["ready", "suspended"]
+    reason: str | None = None
+
+
+@app.post("/api/lanes/{lane_id}/set-status")
+def api_lane_set_status(lane_id: str, req: LaneSetStatusRequest) -> dict[str, Any]:
+    """
+    Enable/disable a lane for routing and UI.
+
+    Note: For MW-managed lanes, simply toggling the underlying worker service is not always
+    desirable. Instead we mark the lane as suspended/offline in the router DB using
+    `suspension_reason`, which the inventory view respects even when MW reports the lane ready.
+    """
+    desired = (req.status or "").strip().lower()
+    if desired not in {"ready", "suspended"}:
+        raise HTTPException(status_code=400, detail="invalid status")
+    reason = (req.reason or "ui_disabled").strip() or "ui_disabled"
+    with db.connect() as conn:
+        with conn.cursor() as cur:
+            if desired == "suspended":
+                _set_lane_suspension(cur, lane_id=lane_id, suspended=True, reason=reason)
+            else:
+                _set_lane_suspension(cur, lane_id=lane_id, suspended=False, reason=reason)
+            cur.execute(
+                "SELECT lane_id, status, suspension_reason, updated_at FROM lanes WHERE lane_id=%s",
+                (lane_id,),
+            )
+            row = cur.fetchone()
+        conn.commit()
+    if not row:
+        raise HTTPException(status_code=404, detail="lane not found")
+    return {
+        "ok": True,
+        "lane_id": str(row["lane_id"]),
+        "status": str(row.get("status") or ""),
+        "suspension_reason": str(row.get("suspension_reason") or "") or None,
+        "updated_at": row["updated_at"].isoformat() if row.get("updated_at") else None,
+    }
+
+
 @app.get("/v1/models")
 def v1_models() -> dict[str, Any]:
     def _is_canonical(model: str) -> bool:
