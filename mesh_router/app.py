@@ -5501,18 +5501,6 @@ def api_lane_swap_model(lane_id: str, req: SwapModelRequest) -> dict[str, Any]:
                         reason=suspension_reason,
                     )
             source_mode = preflight.source_mode or "local"
-            cur.execute(
-                """
-                SELECT hma.artifact_id, hma.model_id, hma.host_id, hma.local_path, h.host_name, h.mgmt_ssh_host, h.mgmt_ssh_user
-                FROM host_model_artifacts hma
-                JOIN models m ON m.model_id=hma.model_id
-                JOIN hosts h ON h.host_id=hma.host_id
-                WHERE m.model_name=%s AND hma.local_path=%s
-                LIMIT 1
-                """,
-                (preflight.model_name, preflight.artifact_path),
-            )
-            artifact_row = cur.fetchone()
             mw_target = _mw_target_for_lane(cur=cur, lane_id=str(preflight.lane_id))
             swap_id = _create_lane_swap(
                 cur,
@@ -5530,6 +5518,73 @@ def api_lane_swap_model(lane_id: str, req: SwapModelRequest) -> dict[str, Any]:
                     }
                 ),
             )
+
+            # If the model is already loaded and healthy, short-circuit to a terminal "ready"
+            # swap so UI clients don't get stuck in "queued" forever.
+            if str(preflight.swap_strategy or "") == "already_loaded":
+                _record_lane_swap_event(
+                    cur,
+                    swap_id=str(swap_id),
+                    event_type="noop",
+                    state="ready",
+                    message="requested model already loaded and healthy",
+                    details={
+                        "ok": True,
+                        "noop": True,
+                        "reason": "requested model already loaded and healthy",
+                        "requested_model_name": req.model_name,
+                        "resolved_model_name": preflight.model_name,
+                        "swap_strategy": "already_loaded",
+                    },
+                    current_model_name=preflight.model_name,
+                )
+                conn.commit()
+                return {
+                    "ok": True,
+                    "lane_id": str(preflight.lane_id),
+                    "model_name": str(preflight.model_name),
+                    "requested_model_name": req.model_name,
+                    "source_mode": source_mode,
+                    "swap_id": str(swap_id),
+                    "details": {
+                        "ok": True,
+                        "noop": True,
+                        "reason": "requested model already loaded and healthy",
+                    },
+                }
+
+            cur.execute(
+                """
+                SELECT hma.artifact_id, hma.model_id, hma.host_id, hma.local_path, h.host_name, h.mgmt_ssh_host, h.mgmt_ssh_user
+                FROM host_model_artifacts hma
+                JOIN models m ON m.model_id=hma.model_id
+                JOIN hosts h ON h.host_id=hma.host_id
+                WHERE m.model_name=%s AND hma.local_path=%s
+                LIMIT 1
+                """,
+                (preflight.model_name, preflight.artifact_path),
+            )
+            artifact_row = cur.fetchone()
+            if not artifact_row:
+                _record_lane_swap_event(
+                    cur,
+                    swap_id=str(swap_id),
+                    event_type="router_failed",
+                    state="failed",
+                    message="artifact not found for swap",
+                    details={
+                        "ok": False,
+                        "reason": "artifact not found for swap",
+                        "requested_model_name": req.model_name,
+                        "resolved_model_name": preflight.model_name,
+                        "artifact_path": preflight.artifact_path,
+                        "artifact_host": preflight.artifact_host,
+                        "artifact_provider": preflight.artifact_provider,
+                    },
+                    error_message="artifact not found for swap",
+                )
+                conn.commit()
+                raise HTTPException(status_code=404, detail="artifact not found for swap")
         conn.commit()
     if not lane_state or not preflight or not artifact_row:
         raise HTTPException(status_code=404, detail="artifact not found for swap")
