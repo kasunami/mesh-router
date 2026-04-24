@@ -4044,6 +4044,7 @@ def _execute_router_request(
         return {}
 
     lease_id: str | None = None
+    expires_at: datetime | None = None
     lane_id: str | None = None
     model_id: str | None = None
     choice = None
@@ -4160,6 +4161,8 @@ def _execute_router_request(
                     _acquire_excluded.add(choice.lane_id)
                     continue
                 raise
+        if lease_id is None or expires_at is None or choice is None:
+            raise RuntimeError("failed to acquire router lease")
         _touch_router_request(
             request_id=request_id,
             state="acquired",
@@ -4502,6 +4505,7 @@ def _execute_router_request_streaming(
 
     started = time.time()
     lease_id: str | None = None
+    expires_at: datetime | None = None
     lane_id: str | None = None
     model_id: str | None = None
     choice = None
@@ -4563,6 +4567,8 @@ def _execute_router_request_streaming(
                 "request_payload": request_payload,
             },
         )
+        if lease_id is None or expires_at is None or choice is None:
+            raise RuntimeError("failed to acquire router lease")
         _touch_router_request(
             request_id=request_id,
             state="acquired",

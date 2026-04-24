@@ -218,6 +218,149 @@ def pick_lane_for_model(
     pin_lane_id: str | None = None,
     exclude_lane_ids: set[str] | None = None,
 ) -> LaneChoice:
+    """Pick a lane for a requested model.
+
+    Supports "model-as-tag" routing:
+    - If `model` does not place and also matches a known model tag in the DB,
+      retry placement using concrete models that carry that tag.
+    - This lets callers use e.g. `model="home-assistant-voice"` without a
+      separate /api/routes/resolve call.
+    """
+    return _pick_lane_for_model_with_tag_fallback(
+        model=model,
+        backend_type=backend_type,
+        request_context_tokens=request_context_tokens,
+        requires_multimodal=requires_multimodal,
+        pin_worker=pin_worker,
+        pin_base_url=pin_base_url,
+        pin_lane_type=pin_lane_type,
+        pin_lane_id=pin_lane_id,
+        exclude_lane_ids=exclude_lane_ids,
+    )
+
+
+def _normalize_single_tag(tag: str | None) -> str | None:
+    raw = (tag or "").strip().lower()
+    if not raw:
+        return None
+    return raw.replace("_", "-")
+
+
+def _models_for_tag(tag: str) -> list[str]:
+    """Return concrete model names that carry a given tag (normalized)."""
+    normalized = _normalize_single_tag(tag)
+    if not normalized:
+        return []
+    with db.connect() as conn:
+        with conn.cursor() as cur:
+            rows = q(
+                cur,
+                """
+                SELECT model_name
+                FROM models
+                WHERE tags @> ARRAY[%s]::text[]
+                ORDER BY params_b ASC NULLS LAST, model_name ASC
+                LIMIT 25
+                """,
+                (normalized,),
+            )
+    return [str(r.get("model_name") or "").strip() for r in (rows or []) if str(r.get("model_name") or "").strip()]
+
+
+def _is_no_ready_lane_error(exc: Exception, *, requested: str) -> bool:
+    msg = str(exc or "")
+    return msg.strip() == f"no READY lanes available serving requested model: {requested}"
+
+
+def _pick_lane_for_model_with_tag_fallback(
+    *,
+    model: str,
+    backend_type: str | None = None,
+    request_context_tokens: int | None = None,
+    requires_multimodal: bool = False,
+    pin_worker: str | None = None,
+    pin_base_url: str | None = None,
+    pin_lane_type: str | None = None,
+    pin_lane_id: str | None = None,
+    exclude_lane_ids: set[str] | None = None,
+) -> LaneChoice:
+    """
+    Wrapper that retries placement when the requested `model` is actually a model tag.
+
+    Important: only triggers fallback when placement fails with the generic
+    "no READY lanes available..." error and the caller did not pin a specific lane_id.
+    """
+    requested = str(model or "").strip()
+    if not requested:
+        raise RuntimeError("model is required")
+
+    try:
+        return _pick_lane_for_model_single(
+            model=requested,
+            backend_type=backend_type,
+            request_context_tokens=request_context_tokens,
+            requires_multimodal=requires_multimodal,
+            pin_worker=pin_worker,
+            pin_base_url=pin_base_url,
+            pin_lane_type=pin_lane_type,
+            pin_lane_id=pin_lane_id,
+            exclude_lane_ids=exclude_lane_ids,
+        )
+    except LanePlacementError:
+        # Explicit pin/type/backend mismatches should remain actionable.
+        raise
+    except Exception as exc:
+        if pin_lane_id:
+            raise
+        if not _is_no_ready_lane_error(exc, requested=requested):
+            raise
+
+        candidates = _models_for_tag(requested)
+        # If the tag exists but doesn't map to any model rows, keep the original error.
+        if not candidates:
+            raise
+
+        last_exc: Exception = exc
+        seen: set[str] = {requested}
+        for candidate in candidates:
+            cand = str(candidate or "").strip()
+            if not cand or cand in seen:
+                continue
+            seen.add(cand)
+            try:
+                return _pick_lane_for_model_single(
+                    model=cand,
+                    backend_type=backend_type,
+                    request_context_tokens=request_context_tokens,
+                    requires_multimodal=requires_multimodal,
+                    pin_worker=pin_worker,
+                    pin_base_url=pin_base_url,
+                    pin_lane_type=pin_lane_type,
+                    pin_lane_id=pin_lane_id,
+                    exclude_lane_ids=exclude_lane_ids,
+                )
+            except LanePlacementError:
+                raise
+            except Exception as cand_exc:
+                last_exc = cand_exc
+                if _is_no_ready_lane_error(cand_exc, requested=cand):
+                    continue
+                raise
+        raise last_exc
+
+
+def _pick_lane_for_model_single(
+    *,
+    model: str,
+    backend_type: str | None = None,
+    request_context_tokens: int | None = None,
+    requires_multimodal: bool = False,
+    pin_worker: str | None = None,
+    pin_base_url: str | None = None,
+    pin_lane_type: str | None = None,
+    pin_lane_id: str | None = None,
+    exclude_lane_ids: set[str] | None = None,
+) -> LaneChoice:
     """
     Minimal placement logic:
     - If pinned (worker + base_url), use it.
