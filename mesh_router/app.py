@@ -3109,7 +3109,11 @@ def _active_swap_stale_under_mw(row: dict[str, Any], active_swap: dict[str, Any]
         return False
     current_model = str(row.get("current_model_name") or "").strip()
     requested = str(active_swap.get("resolved_model_name") or active_swap.get("requested_model_name") or "").strip()
-    return bool(current_model and requested and not _model_names_match(current_model, requested))
+    # If MW has observed the lane after the swap was enqueued *and* the lane is ready, treat the
+    # router swap row as stale regardless of whether the model matches. This avoids UI lanes
+    # getting stuck in "queued" when a swap completed (or was effectively a noop) but the router
+    # never received terminal events.
+    return bool(current_model and requested)
 
 
 def _suspension_stale_under_mw(row: dict[str, Any], suspension_reason: str | None) -> bool:
