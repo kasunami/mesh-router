@@ -158,6 +158,36 @@ class RuntimeStateStore:
             facts[pair] = fact
         return facts
 
+    def write_lane_fact(
+        self,
+        *,
+        host_id: str,
+        lane_id: str,
+        fact: dict[str, Any],
+        observed_at: datetime,
+        ttl_seconds: int,
+        source: str = "inventory_probe",
+    ) -> None:
+        """
+        Write a minimal lane fact snapshot into Redis.
+
+        This is intentionally lightweight and is used as a best-effort "refresh" path when
+        the MW consumer cache is cold but a direct probe confirms the lane is alive.
+        """
+        ttl = max(1, int(ttl_seconds))
+        observed_iso = observed_at.astimezone(UTC).isoformat()
+        payload = {
+            "host_id": str(host_id),
+            "lane_id": str(lane_id),
+            "last_heartbeat_at": observed_iso,
+            "source": source,
+            **_json_safe(dict(fact)),
+        }
+        # Ensure critical keys exist with safe defaults for the overlay.
+        payload.setdefault("actual_state", "ready")
+        payload.setdefault("health_status", "healthy")
+        self._set_json(self.lane_key(str(host_id), str(lane_id)), payload, ttl)
+
     def _set_json(self, key: str, payload: dict[str, Any], ttl_seconds: int) -> None:
         try:
             self.client.setex(key, ttl_seconds, json.dumps(_json_safe(payload), sort_keys=True, separators=(",", ":")))

@@ -30,6 +30,7 @@ from .mw_overlay import (
     apply_mw_effective_status,
     _normalize_router_backend_type,
 )
+from .runtime_state import get_default_runtime_state_store
 from .perf_registry import get_expectation, insert_observation
 from .route_resolver import resolve_route
 from .router import LanePlacementError, pick_lane_for_model
@@ -5784,6 +5785,25 @@ def api_lane_swap_event(swap_id: str, req: Request, body: LaneSwapEventRequest) 
 @app.get("/mesh/inventory")
 def mesh_inventory() -> dict[str, Any]:
     """Best-effort inventory view: hosts, lanes, and known per-lane model options."""
+    def _probe_lane_alive(base_url: str, *, timeout_s: float = 0.45) -> bool:
+        raw = str(base_url or "").strip()
+        if not raw:
+            return False
+        base = raw.rstrip("/")
+        timeout = httpx.Timeout(timeout_s, connect=min(0.25, timeout_s))
+        try:
+            with httpx.Client(timeout=timeout) as c:
+                for path in ("/v1/models", "/api/tags", "/health/readiness", "/health/liveliness"):
+                    try:
+                        resp = c.get(f"{base}{path}", headers={"accept": "application/json"})
+                    except Exception:
+                        continue
+                    if resp.status_code == 200:
+                        return True
+        except Exception:
+            return False
+        return False
+
     with db.connect() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -5850,11 +5870,90 @@ def mesh_inventory() -> dict[str, Any]:
             )
             active_swaps = cur.fetchall()
 
+    runtime_store = get_default_runtime_state_store()
     apply_mw_effective_status(
         lanes,
         mw_state_db=mw_state_db,
         stale_seconds=settings.default_lease_stale_seconds,
+        runtime_store=runtime_store,
     )
+
+    # If MW cache is cold, attempt a bounded direct probe per request and write a short-lived
+    # runtime fact so subsequent inventory reads reflect the host's real state.
+    # This prevents false "offline" when Kafka/MW state ingestion lags but the worker is alive.
+    if runtime_store is not None:
+        probe_reasons = {"mw_cache_miss", "mw_state_missing", "mw_state_unavailable", "stale_heartbeat"}
+        candidates: list[dict[str, Any]] = []
+        for row in lanes:
+            try:
+                if str(row.get("lane_type") or "").strip().lower() == "router":
+                    continue
+                if row.get("active_swap") or row.get("blocked_by_swap"):
+                    continue
+                if str(row.get("lane_status") or "").strip().lower() == "suspended":
+                    continue
+                if str(row.get("effective_status") or "").strip().lower() != "offline":
+                    continue
+                if str(row.get("readiness_reason") or "").strip() not in probe_reasons:
+                    continue
+                if not str(row.get("base_url") or "").strip():
+                    continue
+                binding = _candidate_mw_binding(
+                    {
+                        "host_name": row.get("host_name") or row.get("host") or row.get("host"),
+                        "lane_name": row.get("lane_name"),
+                        "lane_type": row.get("lane_type"),
+                        "proxy_auth_metadata": row.get("proxy_auth_metadata"),
+                    }
+                )
+                if binding is None:
+                    continue
+                candidates.append(row)
+            except Exception:
+                continue
+
+        # Keep probes bounded to avoid UI polling causing a thundering herd.
+        max_probes = 6
+        if len(candidates) > max_probes:
+            random.shuffle(candidates)
+            candidates = candidates[:max_probes]
+
+        now = datetime.now(tz=UTC)
+        for row in candidates:
+            base_url = str(row.get("base_url") or "").strip()
+            if not _probe_lane_alive(base_url):
+                continue
+            binding = _candidate_mw_binding(
+                {
+                    "host_name": row.get("host_name") or row.get("host") or row.get("host"),
+                    "lane_name": row.get("lane_name"),
+                    "lane_type": row.get("lane_type"),
+                    "proxy_auth_metadata": row.get("proxy_auth_metadata"),
+                }
+            )
+            if binding is None:
+                continue
+            host_id, lane_id, _inferred = binding
+            try:
+                runtime_store.write_lane_fact(
+                    host_id=host_id,
+                    lane_id=lane_id,
+                    observed_at=now,
+                    ttl_seconds=20,
+                    source="inventory_probe",
+                    fact={
+                        "actual_state": "ready",
+                        "health_status": "healthy",
+                        "actual_model": row.get("current_model_name") or row.get("current_model") or None,
+                        "backend_type": row.get("backend_type") or None,
+                        "metadata": {"current_backend_type": row.get("backend_type") or None, "source": "inventory_probe"},
+                    },
+                )
+            except Exception:
+                pass
+            row["effective_status"] = "ready"
+            row["readiness_reason"] = None
+            row["mw_last_heartbeat_at"] = now
 
     models_by_lane: dict[str, set[str]] = {}
     model_context_by_lane: dict[str, dict[str, int | None]] = {}

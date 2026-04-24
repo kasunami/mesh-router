@@ -174,29 +174,17 @@ def apply_mw_effective_status(
         except Exception as exc:  # pragma: no cover - defensive guard around cache plugins/fakes
             logger.warning("MW runtime-state cache read failed: %s", exc)
 
-    # Explicit MW lanes (control_plane=mw) are served exclusively from Redis cache —
-    # no DB fallback. Cache miss → offline immediately.
-    for row in rows:
-        binding = _candidate_mw_binding(row)
-        if binding is None or binding[2]:  # skip inferred
-            continue
-        if (binding[0], binding[1]) not in facts:
-            row["effective_status"] = "offline"
-            row["readiness_reason"] = "mw_cache_miss"
-
-    # For inferred lanes only: fall back to mw_state_db when cache is cold.
-    inferred_missing = [
-        pair for pair in mw_pairs
-        if pair not in facts and pair not in explicit_bindings
-    ]
+    # When cache is cold, fall back to mw_state_db for both explicit and inferred lanes.
+    # If MW is fully unavailable (no cache + no DB), we mark lanes offline with a reason.
+    missing_pairs = [pair for pair in mw_pairs if pair not in facts]
     db_unavailable = False
-    if inferred_missing:
+    if missing_pairs:
         try:
             with mw_state_db.connect() as conn:
                 with conn.cursor() as cur:
-                    values_sql = ",".join(["(%s,%s)"] * len(inferred_missing))
+                    values_sql = ",".join(["(%s,%s)"] * len(missing_pairs))
                     params: list[Any] = []
-                    for host_id, lane_id in inferred_missing:
+                    for host_id, lane_id in missing_pairs:
                         params.extend([host_id, lane_id])
                     cur.execute(
                         f"""
@@ -235,6 +223,15 @@ def apply_mw_effective_status(
                 continue
             row["effective_status"] = "offline"
             row["readiness_reason"] = "mw_state_unavailable"
+
+    # If both cache and DB are missing for an explicit MW lane, mark as offline with cache miss.
+    for row in rows:
+        binding = _candidate_mw_binding(row)
+        if binding is None or binding[2]:
+            continue
+        if (binding[0], binding[1]) not in facts and not db_unavailable:
+            row["effective_status"] = "offline"
+            row["readiness_reason"] = "mw_cache_miss"
 
     now = datetime.now(tz=UTC)
     stale_cutoff = now - timedelta(seconds=int(stale_seconds))
