@@ -833,7 +833,7 @@ def _pick_lane_for_model_single(
                 backend_type=str(r0.get("backend_type") or "llama"),
                 current_model_name=r0.get("current_model_name"),
                 current_model_max_ctx=int(r0["current_model_max_ctx"]) if r0.get("current_model_max_ctx") is not None else None,
-                resolved_model_name=str(r0.get("current_model_name") or "").strip() or None,
+                resolved_model_name=model.strip() or None,
             )
         if context_mismatched:
             max_available_ctx = max(
