@@ -773,6 +773,56 @@ SWAP_TERMINAL_STATES = {"ready", "failed", "canceled"}
 IMAGE_DEFAULT_WIDTH = 1024
 IMAGE_DEFAULT_HEIGHT = 1024
 
+_PUBLIC_MODEL_SUPPORT_NAMES = {
+    ".gitattributes",
+    ".gitignore",
+    "added_tokens.json",
+    "chat_template.jinja",
+    "config.json",
+    "generation_config.json",
+    "main",
+    "merges.txt",
+}
+_PUBLIC_MODEL_SUPPORT_TOKENS = (
+    "adapter",
+    "clip",
+    "embedding",
+    "embeddings",
+    "embed",
+    "lora",
+    "mmproj",
+    "text-encoder",
+    "text_encoder",
+    "tokenizer",
+    "vae",
+)
+
+
+def _is_public_model_name(model: str) -> bool:
+    m = (model or "").strip()
+    if not m:
+        return False
+    # Avoid downstream aliases like filesystem paths or URLs.
+    if "/" in m or "\\" in m or "://" in m:
+        return False
+    if len(m) > 128:
+        return False
+    lowered = m.lower()
+    if lowered.endswith((".lock", ".metadata", ".incomplete")):
+        return False
+    if lowered in _PUBLIC_MODEL_SUPPORT_NAMES:
+        return False
+    if lowered.startswith("ggml-vocab-"):
+        return False
+    if re.fullmatch(r"[0-9a-f]{16,}", lowered):
+        return False
+    if any(token in lowered for token in _PUBLIC_MODEL_SUPPORT_TOKENS):
+        return False
+    suffix = Path(m).suffix.lower()
+    if suffix and suffix != ".gguf":
+        return False
+    return True
+
 
 def _bytes_from_gib(value: Any) -> int | None:
     try:
@@ -2551,19 +2601,6 @@ def api_lane_set_status(lane_id: str, req: LaneSetStatusRequest) -> dict[str, An
 
 @app.get("/v1/models")
 def v1_models() -> dict[str, Any]:
-    def _is_canonical(model: str) -> bool:
-        m = (model or "").strip()
-        if not m:
-            return False
-        # Avoid downstream aliases like filesystem paths or URLs.
-        if "/" in m or "\\" in m:
-            return False
-        if "://" in m:
-            return False
-        if len(m) > 128:
-            return False
-        return True
-
     with db.connect() as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT model_name, tags FROM models ORDER BY model_name")
@@ -2574,7 +2611,7 @@ def v1_models() -> dict[str, Any]:
             tags=_normalized_model_tags(r.get("tags") or []),
         )
         for r in rows
-        if _is_canonical(str(r["model_name"]))
+        if _is_public_model_name(str(r["model_name"]))
     ]
     resp = ModelsResponse(data=data)
     return resp.model_dump()
