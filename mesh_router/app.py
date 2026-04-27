@@ -3279,13 +3279,15 @@ def _call_lane_service_action(
                     command_host_id = mw_target.host_id
             except Exception:
                 command_host_id = str(host_id)
-            result = _send_mw_command_require_ready(
+            result = _mw_client().send_command(
                 host_id=command_host_id,
                 message_type=message_type,
                 payload={"lane_id": lane_id},
-                timeout_seconds=max(300, settings.mw_command_timeout_seconds),
+                wait=False,
             )
-            return dict(result.get("result") or {})
+            payload_result = dict(result.get("result") or {})
+            payload_result.update({"ok": bool(result.get("ok", False)), "accepted": True, "request_id": result.get("request_id")})
+            return payload_result
         except RuntimeError as exc:
             if action == "stop" and "no active service configured" in str(exc).lower():
                 return {"ok": True, "noop": True, "reason": str(exc)}
