@@ -218,6 +218,77 @@ class PreferMwLanePlacementTests(unittest.TestCase):
         self.assertEqual(choice.lane_id, "chat-lane")
         self.assertEqual(choice.worker_id, "packhub02")
 
+    def test_explicit_image_request_can_demand_start_backend_mismatch_lane_with_stale_swap_marker(self) -> None:
+        rows = [
+            {
+                "lane_id": "image-lane",
+                "lane_name": "image-gpu",
+                "host_name": "Static-Deskix",
+                "base_url": "http://10.0.0.99:21440",
+                "lane_type": "gpu",
+                "backend_type": "sd",
+                "status": "suspended",
+                "suspension_reason": "swap:old:stopping_siblings",
+                "proxy_auth_metadata": {"control_plane": "mw", "mw_host_id": "static-deskix", "mw_lane_id": "gpu"},
+                "current_model_name": "qwen3.5-9b",
+                "current_model_tags": [],
+                "current_model_max_ctx": None,
+                "local_viable_models": [{"model_name": "flux1-schnell-Q4_K_S", "tags": [], "max_ctx": None}],
+                "remote_viable_models": [],
+            }
+        ]
+        state_rows = [
+            {
+                "host_id": "static-deskix",
+                "lane_id": "gpu",
+                "last_heartbeat_at": datetime.now(tz=timezone.utc),
+                "actual_state": "running",
+                "health_status": "healthy",
+                "actual_model": "qwen3.5-9b",
+                "backend_type": "llama.cpp",
+            }
+        ]
+
+        class _StateCur:
+            def execute(self, *args, **kwargs):  # noqa: ANN001
+                return None
+
+            def fetchall(self):  # noqa: ANN001
+                return state_rows
+
+            def __enter__(self):  # noqa: ANN001
+                return self
+
+            def __exit__(self, exc_type, exc, tb):  # noqa: ANN001
+                return False
+
+        class _StateConn:
+            def cursor(self):  # noqa: ANN001
+                return _StateCur()
+
+            def __enter__(self):  # noqa: ANN001
+                return self
+
+            def __exit__(self, exc_type, exc, tb):  # noqa: ANN001
+                return False
+
+        class _StateDb:
+            def connect(self):  # noqa: ANN001
+                return _StateConn()
+
+        with (
+            mock.patch.object(router_module, "db", _Db()),
+            mock.patch.object(router_module, "mw_state_db", _StateDb()),
+            mock.patch.object(router_module, "q", return_value=rows),
+        ):
+            choice = router_module.pick_lane_for_model(
+                model="flux1-schnell-Q4_K_S",
+                backend_type="sd",
+            )
+
+        self.assertEqual(choice.lane_id, "image-lane")
+        self.assertEqual(choice.worker_id, "Static-Deskix")
+
     def test_policy_disallowed_viability_is_not_swappable(self) -> None:
         rows = [
             {

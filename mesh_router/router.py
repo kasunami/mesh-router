@@ -112,6 +112,21 @@ def _backend_matches_request(row: dict[str, Any], backend_type: str | None) -> b
     return requested == "llama"
 
 
+def _suspension_blocks_demand_start(row: dict[str, Any], backend_type: str | None) -> bool:
+    reason = str(row.get("suspension_reason") or "").strip()
+    if not reason:
+        return False
+    if (
+        backend_type is not None
+        and row.get("readiness_reason") == "backend_mismatch"
+        and reason.startswith("swap:")
+    ):
+        # MW is the source of truth for MW-managed lane readiness. A stale router-side
+        # swap marker must not permanently block explicit demand-start requests.
+        return False
+    return True
+
+
 
 def _pick_viable_model_name(*, requested_model: str, lane_row: dict[str, Any], request_context_tokens: int | None) -> str | None:
     """Choose a concrete model artifact for a generic request tag.
@@ -858,7 +873,7 @@ def _pick_lane_for_model_single(
             if _status(row) == "ready"
             or (
                 _status(row) == "suspended"
-                and not row.get("suspension_reason")
+                and not _suspension_blocks_demand_start(row, backend_type)
                 # Backend-mismatch lanes are demand-startable only for explicit backend requests
                 # (for example image generation -> sd). Do not let inactive image rows steal
                 # normal chat traffic just because they advertise a text model candidate.
