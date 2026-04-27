@@ -3287,6 +3287,8 @@ def _call_lane_service_action(
             )
             return dict(result.get("result") or {})
         except RuntimeError as exc:
+            if action == "stop" and "no active service configured" in str(exc).lower():
+                return {"ok": True, "noop": True, "reason": str(exc)}
             raise HTTPException(status_code=502, detail=str(exc)) from exc
         except HTTPException:
             raise
