@@ -149,7 +149,7 @@ def run_mw_command(client: httpx.Client, base_url: str, host_id: str, lane_id: s
                 status_body = {"raw": status.text[:500]}
             details["poll_status"] = status.status_code
             details["poll_body"] = status_body
-            if isinstance(status_body, dict) and status_body.get("status") in {"completed", "failed", "rejected", "cancelled"}:
+            if isinstance(status_body, dict) and status_body.get("status") in {"ready", "completed", "failed", "rejected", "cancelled"}:
                 return _result("mw-command", bool(status_body.get("ok")), str(status_body.get("status")), **details)
             time.sleep(2)
         return _result("mw-command", False, "poll_timeout", **details)

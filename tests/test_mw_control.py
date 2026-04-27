@@ -254,6 +254,19 @@ class MWControlApiTests(unittest.TestCase):
         self.assertFalse(result["pending"])
         waiter.assert_called_once_with(request_id="req-pending-1", timeout_seconds=60)
 
+    def test_ready_transition_is_terminal_success(self) -> None:
+        with patch.object(
+            mw_commands_module,
+            "fetch_mw_transition_status",
+            return_value={"request_id": "req-ready-1", "status": "ready"},
+        ):
+            result = mw_commands_module.wait_for_mw_transition_terminal(
+                request_id="req-ready-1",
+                timeout_seconds=1,
+            )
+
+        self.assertEqual(result["status"], "ready")
+
 
 if __name__ == "__main__":
     unittest.main()

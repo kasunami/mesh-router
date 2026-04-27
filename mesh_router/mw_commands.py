@@ -28,7 +28,7 @@ def fetch_mw_transition_status(request_id: str) -> dict[str, Any] | None:
 
 def wait_for_mw_transition_terminal(*, request_id: str, timeout_seconds: int) -> dict[str, Any]:
     deadline = time.monotonic() + max(1, int(timeout_seconds))
-    terminal = {"completed", "failed", "cancelled", "canceled", "rejected"}
+    terminal = {"ready", "completed", "failed", "cancelled", "canceled", "rejected"}
     last_row: dict[str, Any] | None = None
     while time.monotonic() < deadline:
         row = fetch_mw_transition_status(request_id)
@@ -36,7 +36,7 @@ def wait_for_mw_transition_terminal(*, request_id: str, timeout_seconds: int) ->
             last_row = row
             status = str(row.get("status") or "").strip().lower()
             if status in terminal:
-                if status == "completed":
+                if status in {"ready", "completed"}:
                     return row
                 raise RuntimeError(str(row.get("error_message") or row.get("error_kind") or f"MW transition {status}"))
         time.sleep(1)
