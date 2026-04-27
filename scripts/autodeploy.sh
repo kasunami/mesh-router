@@ -79,7 +79,12 @@ from pathlib import Path
 import re
 p = Path("${K3S_MANIFESTS_DIR}/${MANIFEST_PATH}")
 text = p.read_text()
-text = re.sub(r"(^\\s*image:\\s*)(\\S*mesh-router\\S*)\\s*$", r"\\1${IMAGE_DIGEST}", text, flags=re.M)
+text = re.sub(
+    r"(^\\s*image:\\s*)(\\S*mesh-router\\S*)\\s*$",
+    lambda match: f"{match.group(1)}${IMAGE_DIGEST}",
+    text,
+    flags=re.M,
+)
 text = re.sub(r"(^\\s*imagePullPolicy:\\s*)Never\\s*$", r"\\1IfNotPresent", text, flags=re.M)
 p.write_text(text)
 print("updated", p)
