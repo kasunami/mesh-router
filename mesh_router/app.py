@@ -145,6 +145,99 @@ def _maybe_remap_vlm_model(*, requested_model: str, has_images: bool) -> str:
     return requested_model
 
 
+def _is_reasoning_model(model_name: str) -> bool:
+    lowered = (model_name or "").strip().lower().replace("_", "-")
+    if not lowered:
+        return False
+    patterns = [
+        item.strip().lower().replace("_", "-")
+        for item in str(settings.reasoning_model_patterns or "").split(",")
+        if item.strip()
+    ]
+    return any(pattern in lowered for pattern in patterns)
+
+
+def _requested_visible_tokens(payload: dict[str, Any]) -> int | None:
+    value = payload.get("max_tokens")
+    if value is None:
+        return None
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _backend_max_tokens_for_model(*, model_name: str, payload: dict[str, Any]) -> int | None:
+    requested = _requested_visible_tokens(payload)
+    if not _is_reasoning_model(model_name):
+        return requested
+    visible_budget = requested
+    applied_threshold = max(1, int(settings.reasoning_min_visible_tokens)) + max(0, int(settings.reasoning_budget_tokens))
+    if visible_budget is not None and visible_budget >= applied_threshold:
+        return min(visible_budget, max(1, int(settings.reasoning_max_backend_tokens)))
+    if visible_budget is None or visible_budget <= 0:
+        visible_budget = max(1, int(settings.reasoning_min_visible_tokens))
+    else:
+        visible_budget = max(visible_budget, int(settings.reasoning_min_visible_tokens))
+    backend_budget = visible_budget + max(0, int(settings.reasoning_budget_tokens))
+    return min(backend_budget, max(1, int(settings.reasoning_max_backend_tokens)))
+
+
+def _apply_reasoning_token_budget(*, model_name: str, payload: dict[str, Any]) -> dict[str, Any]:
+    adjusted = dict(payload)
+    backend_max_tokens = _backend_max_tokens_for_model(model_name=model_name, payload=adjusted)
+    if backend_max_tokens is not None:
+        adjusted["max_tokens"] = backend_max_tokens
+    return adjusted
+
+
+def _extract_chat_chunk_text(raw: bytes) -> tuple[str | None, str | None, dict[str, Any] | None]:
+    if not raw:
+        return None, None, None
+    try:
+        item = json.loads(raw.decode("utf-8"))
+    except Exception:
+        return raw.decode("utf-8", errors="replace"), None, None
+    choice = ((item or {}).get("choices") or [{}])[0]
+    delta_obj = choice.get("delta") or {}
+    message_obj = choice.get("message") or {}
+    delta = delta_obj.get("content")
+    message = message_obj.get("content")
+    text = delta if delta is not None else message
+    finish_reason = str(choice.get("finish_reason")) if choice.get("finish_reason") else None
+    return str(text) if text else None, finish_reason, item
+
+
+def _sanitize_stream_chat_chunk(raw: bytes) -> bytes | None:
+    if not raw:
+        return None
+    stripped = raw.strip()
+    if stripped == b"[DONE]":
+        return raw
+    try:
+        item = json.loads(stripped.decode("utf-8"))
+    except Exception:
+        return raw
+    choices = item.get("choices") if isinstance(item, dict) else None
+    if not isinstance(choices, list) or not choices:
+        return raw
+    choice = choices[0]
+    if not isinstance(choice, dict):
+        return raw
+    delta = choice.get("delta")
+    if isinstance(delta, dict) and "reasoning_content" in delta and not settings.expose_reasoning_content:
+        delta = dict(delta)
+        delta.pop("reasoning_content", None)
+        choice = dict(choice)
+        choice["delta"] = delta
+        item = dict(item)
+        item["choices"] = [choice, *choices[1:]]
+    content = ((choice.get("delta") or {}).get("content") if isinstance(choice.get("delta"), dict) else None)
+    if content is None and choice.get("finish_reason") is None:
+        return None
+    return json.dumps(item, separators=(",", ":")).encode("utf-8")
+
+
 def _lane_uses_llama_router(*, lane_id: str) -> bool:
     if not lane_id:
         return False
@@ -3924,14 +4017,15 @@ async def _collect_mw_chat_completion(
     usage_completion: int | None = None
     usage_total: int | None = None
     finish_reason: str | None = None
+    backend_payload = _apply_reasoning_token_budget(model_name=model, payload=request_payload)
 
     async for event in MwGrpcClient().stream_chat(
         target=target,
         request_id=request_id,
         model=model,
-        messages=[item.model_dump() if hasattr(item, "model_dump") else dict(item) for item in request_payload.get("messages") or []],
-        temperature=request_payload.get("temperature"),
-        max_tokens=request_payload.get("max_tokens"),
+        messages=[item.model_dump() if hasattr(item, "model_dump") else dict(item) for item in backend_payload.get("messages") or []],
+        temperature=backend_payload.get("temperature"),
+        max_tokens=backend_payload.get("max_tokens"),
         deadline_unix_ms=None,
     ):
         if str(event.event_type or "") in {"failed", "cancelled"}:
@@ -3954,29 +4048,28 @@ async def _collect_mw_chat_completion(
         if raw == b"[DONE]":
             break
         if raw:
-            try:
-                item = json.loads(raw.decode("utf-8"))
-                choice = ((item or {}).get("choices") or [{}])[0]
-                delta = (choice.get("delta") or {}).get("content")
-                message = (choice.get("message") or {}).get("content")
-                text = delta if delta is not None else message
-                if text:
-                    content_parts.append(str(text))
-                if choice.get("finish_reason"):
-                    finish_reason = str(choice.get("finish_reason"))
-                usage = (item or {}).get("usage") or {}
+            text, chunk_finish_reason, item = _extract_chat_chunk_text(raw)
+            if text:
+                content_parts.append(text)
+            if chunk_finish_reason:
+                finish_reason = chunk_finish_reason
+            if item is not None:
+                usage = item.get("usage") or {}
                 if usage.get("prompt_tokens") is not None:
                     usage_prompt = int(usage.get("prompt_tokens"))
                 if usage.get("completion_tokens") is not None:
                     usage_completion = int(usage.get("completion_tokens"))
                 if usage.get("total_tokens") is not None:
                     usage_total = int(usage.get("total_tokens"))
-            except Exception:
-                content_parts.append(raw.decode("utf-8", errors="replace"))
         elif getattr(event, "text_delta", ""):
             content_parts.append(str(getattr(event, "text_delta", "")))
         if str(event.event_type or "") in {"completed"}:
             break
+
+    if finish_reason == "length" and not content_parts and _is_reasoning_model(model):
+        raise RuntimeError(
+            "reasoning_budget_exhausted: model used the backend token budget before producing visible content"
+        )
 
     if usage_total is None and (usage_prompt is not None or usage_completion is not None):
         usage_total = int(usage_prompt or 0) + int(usage_completion or 0)
@@ -4138,6 +4231,8 @@ def _execute_router_request(
                 conn.commit()
 
             request_payload["model"] = downstream_model
+            if route == "chat":
+                request_payload = _apply_reasoning_token_budget(model_name=downstream_model, payload=request_payload)
             try:
                 lease_id, expires_at = _acquire_router_lease(
                     lane_id=choice.lane_id,
@@ -4487,6 +4582,8 @@ def _execute_router_request_streaming(
     pin_lane_type = normalized.get("pin_lane_type")
     pin_lane_id = normalized.get("pin_lane_id")
     request_payload = dict(normalized["request_payload"])
+    has_images = bool(_chat_payload_has_images(request_payload))
+    model_name = _maybe_remap_vlm_model(requested_model=model_name, has_images=has_images)
     request_payload["stream"] = True
     request_context_tokens = _estimate_request_context_tokens(route=route, payload=request_payload)
 
@@ -4552,6 +4649,8 @@ def _execute_router_request_streaming(
             conn.commit()
 
         request_payload["model"] = downstream_model
+        if route == "chat":
+            request_payload = _apply_reasoning_token_budget(model_name=downstream_model, payload=request_payload)
         lease_id, expires_at = _acquire_router_lease(
             lane_id=choice.lane_id,
             model_id=str(model_id),
@@ -4675,6 +4774,8 @@ def _execute_router_request_streaming(
             first_token_at: float | None = None
             usage_prompt: int | None = None
             usage_completion: int | None = None
+            visible_chunks = 0
+            finish_reason: str | None = None
             try:
                 if heartbeat_error:
                     raise RuntimeError(f"request heartbeat failed: {heartbeat_error.get('error')}")
@@ -4705,18 +4806,35 @@ def _execute_router_request_streaming(
                                 done_sent = True
                                 yield b"data: [DONE]\n\n"
                                 break
-                            if first_token_at is None:
-                                first_token_at = time.time()
-                            if raw.startswith(b"data: "):
-                                yield raw + b"\n\n"
+                            text, chunk_finish_reason, _ = _extract_chat_chunk_text(raw.strip())
+                            if chunk_finish_reason:
+                                finish_reason = chunk_finish_reason
+                            sanitized = _sanitize_stream_chat_chunk(raw.strip())
+                            if sanitized is None:
+                                continue
+                            if text:
+                                visible_chunks += 1
+                                if first_token_at is None:
+                                    first_token_at = time.time()
+                            if sanitized.startswith(b"data: "):
+                                yield sanitized + b"\n\n"
                             else:
-                                yield b"data: " + raw + b"\n\n"
+                                yield b"data: " + sanitized + b"\n\n"
                         if str(event.event_type or "") in {"completed"}:
                             break
                         if str(event.event_type or "") in {"failed", "cancelled"}:
                             err_kind = str(event.error_code or "mw_error")
                             err_msg = str(event.error_message or "mw stream failed")
                             break
+                    if (
+                        mw_target is not None
+                        and finish_reason == "length"
+                        and visible_chunks == 0
+                        and _is_reasoning_model(downstream_model)
+                    ):
+                        err_kind = "reasoning_budget_exhausted"
+                        err_msg = "model used the backend token budget before producing visible content"
+                        raise RuntimeError(err_msg)
                 else:
                     # Strict MW authority: if the lane is explicitly MW-managed, never fall back to direct base_url proxy.
                     if settings.mw_control_enabled and lane_id and not has_images:

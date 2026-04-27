@@ -110,5 +110,14 @@ class Settings(BaseSettings):
     vlm_remap_text_model_requests: bool = True
     vlm_default_model: str = "qwen3.5-9b-vlm"
 
+    # Reasoning-model output budgeting. Some backends count hidden reasoning tokens against
+    # the same max_tokens field as user-visible answer tokens, so MR over-allocates backend
+    # tokens and filters hidden reasoning from normal OpenAI responses.
+    reasoning_model_patterns: str = "qwen3.5,qwen3-5,qwen3"
+    reasoning_budget_tokens: int = 1024
+    reasoning_min_visible_tokens: int = 256
+    reasoning_max_backend_tokens: int = 4096
+    expose_reasoning_content: bool = False
+
 
 settings = Settings()
