@@ -3270,11 +3270,20 @@ def _call_lane_service_action(
             "restart": "restart_service",
         }[action]
         try:
+            command_host_id = str(host_id)
+            try:
+                with db.connect() as conn:
+                    with conn.cursor() as cur:
+                        mw_target = _mw_target_for_lane(cur=cur, lane_id=str(lane_id))
+                if mw_target is not None:
+                    command_host_id = mw_target.host_id
+            except Exception:
+                command_host_id = str(host_id)
             result = _send_mw_command_require_ready(
-                host_id=host_id,
+                host_id=command_host_id,
                 message_type=message_type,
                 payload={"lane_id": lane_id},
-                timeout_seconds=max(30, settings.mw_command_timeout_seconds),
+                timeout_seconds=max(300, settings.mw_command_timeout_seconds),
             )
             return dict(result.get("result") or {})
         except RuntimeError as exc:
