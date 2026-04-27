@@ -85,6 +85,12 @@ text = re.sub(
     text,
     flags=re.M,
 )
+text = re.sub(
+    r"(^\\s*- name:\\s*MESH_ROUTER_DEPLOYMENT_REVISION\\s*\\n\\s*value:\\s*)[\"']?[^\"'\\n]+[\"']?\\s*$",
+    lambda match: f"{match.group(1)}\"${COMMIT_SHA}\"",
+    text,
+    flags=re.M,
+)
 text = re.sub(r"(^\\s*imagePullPolicy:\\s*)Never\\s*$", r"\\1IfNotPresent", text, flags=re.M)
 p.write_text(text)
 print("updated", p)
