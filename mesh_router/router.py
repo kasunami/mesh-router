@@ -375,10 +375,10 @@ def _pick_lane_for_model_single(
     def _augment_declared_models(row: dict[str, Any]) -> None:
         meta = row.get("proxy_auth_metadata") or {}
         if not isinstance(meta, dict):
-            return
+            meta = {}
         declared = meta.get("declared_models") or meta.get("supported_models") or []
         if not isinstance(declared, list):
-            return
+            declared = []
         tags_by_model = meta.get("declared_model_tags") if isinstance(meta.get("declared_model_tags"), dict) else {}
         max_ctx_by_model = meta.get("declared_max_ctx") if isinstance(meta.get("declared_max_ctx"), dict) else {}
         out: list[dict[str, Any]] = list(row.get("local_viable_models") or [])
@@ -391,6 +391,20 @@ def _pick_lane_for_model_single(
                     "model_name": model_name,
                     "tags": list(tags_by_model.get(model_name) or []),
                     "max_ctx": max_ctx_by_model.get(model_name),
+                    "allowed": True,
+                }
+            )
+        for item in row.get("validated_candidates") or []:
+            if not isinstance(item, dict):
+                continue
+            model_name = str(item.get("canonical_id") or item.get("model_name") or "").strip()
+            if not model_name:
+                continue
+            out.append(
+                {
+                    "model_name": model_name,
+                    "tags": list(item.get("tags") or []),
+                    "max_ctx": item.get("max_ctx"),
                     "allowed": True,
                 }
             )
@@ -842,7 +856,14 @@ def _pick_lane_for_model_single(
         swappable_rows = [
             row for row in rows
             if _status(row) == "ready"
-            or (_status(row) == "suspended" and not row.get("suspension_reason"))
+            or (
+                _status(row) == "suspended"
+                and not row.get("suspension_reason")
+                # Backend-mismatch lanes are demand-startable only for explicit backend requests
+                # (for example image generation -> sd). Do not let inactive image rows steal
+                # normal chat traffic just because they advertise a text model candidate.
+                and (row.get("readiness_reason") != "backend_mismatch" or backend_type is not None)
+            )
         ]
 
         # Fallback: find a lane that can serve this model after a swap (has it in viable_models)

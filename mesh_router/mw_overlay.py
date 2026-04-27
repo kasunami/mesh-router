@@ -276,12 +276,22 @@ def apply_mw_effective_status(
             and row_backend != current_backend_type
             and (row_backend == "sd" or current_backend_type == "sd")
         )
+        if f.get("actual_model"):
+            row["current_model_name"] = f.get("actual_model")
+        if f.get("desired_model"):
+            row["desired_model_name"] = f.get("desired_model")
+        effective_base_url = _base_url_with_listen_port(row.get("base_url"), listen_port=f.get("listen_port"))
+        if effective_base_url:
+            row["base_url"] = effective_base_url
+        validated_candidates = f.get("validated_candidates")
+        if validated_candidates is not None:
+            row["validated_candidates"] = validated_candidates
         if shared_explicit_binding and backend_conflicts:
-            row["effective_status"] = "offline"
+            row["effective_status"] = "suspended"
             row["readiness_reason"] = "backend_mismatch"
             continue
         if not inferred and backend_conflicts:
-            row["effective_status"] = "offline"
+            row["effective_status"] = "suspended"
             row["readiness_reason"] = "backend_mismatch"
             continue
         row["effective_status"] = effective_status
@@ -306,10 +316,6 @@ def apply_mw_effective_status(
         except Exception:
             pass
 
-        if f.get("actual_model"):
-            row["current_model_name"] = f.get("actual_model")
-        if f.get("desired_model"):
-            row["desired_model_name"] = f.get("desired_model")
         if current_backend_type:
             row["backend_type"] = current_backend_type
         if isinstance(metadata, dict):
@@ -333,14 +339,6 @@ def apply_mw_effective_status(
             ):
                 if key in metadata:
                     row[key] = metadata.get(key)
-        effective_base_url = _base_url_with_listen_port(row.get("base_url"), listen_port=f.get("listen_port"))
-        if effective_base_url:
-            row["base_url"] = effective_base_url
-
-        validated_candidates = f.get("validated_candidates")
-        if validated_candidates is not None:
-            row["validated_candidates"] = validated_candidates
-
         active_job = f.get("active_job")
         if isinstance(active_job, dict):
             row["active_job"] = active_job

@@ -44,7 +44,7 @@ class _FakeDb:
         return _FakeConn(self._rows)
 
 
-def test_explicit_image_lane_stays_offline_when_underlying_mw_lane_is_in_text_backend():
+def test_explicit_image_lane_is_suspended_when_underlying_mw_lane_is_in_text_backend():
     now = datetime.now(tz=timezone.utc)
     rows = [
         {
@@ -72,10 +72,10 @@ def test_explicit_image_lane_stays_offline_when_underlying_mw_lane_is_in_text_ba
 
     apply_mw_effective_status(rows, mw_state_db=_FakeDb(mw_rows), stale_seconds=45)
 
-    assert rows[0]["effective_status"] == "offline"
+    assert rows[0]["effective_status"] == "suspended"
     assert rows[0]["readiness_reason"] == "backend_mismatch"
     assert rows[0]["backend_type"] == "sd"
-    assert rows[0]["current_model_name"] == "flux1-schnell-Q4_K_S"
+    assert rows[0]["current_model_name"] == "qwen3.5-9b"
 
 
 def test_mw_metadata_backend_does_not_make_image_row_ready_for_chat_gpu():
@@ -107,10 +107,10 @@ def test_mw_metadata_backend_does_not_make_image_row_ready_for_chat_gpu():
 
     apply_mw_effective_status(rows, mw_state_db=_FakeDb(mw_rows), stale_seconds=45)
 
-    assert rows[0]["effective_status"] == "offline"
+    assert rows[0]["effective_status"] == "suspended"
     assert rows[0]["readiness_reason"] == "backend_mismatch"
     assert rows[0]["backend_type"] == "sd"
-    assert rows[0]["current_model_name"] == "flux1-schnell-Q4_K_S"
+    assert rows[0]["current_model_name"] == "qwen3.5-9b"
 
 
 def test_inferred_gpu_lane_stays_offline_when_explicit_image_lane_owns_same_mw_binding():
@@ -151,10 +151,10 @@ def test_inferred_gpu_lane_stays_offline_when_explicit_image_lane_owns_same_mw_b
 
     apply_mw_effective_status(rows, mw_state_db=_FakeDb(mw_rows), stale_seconds=45)
 
-    assert rows[0]["effective_status"] == "offline"
+    assert rows[0]["effective_status"] == "suspended"
     assert rows[0]["readiness_reason"] == "backend_mismatch"
     assert rows[0]["backend_type"] == "llama"
-    assert rows[0]["current_model_name"] == "LFM2.5-350M-Q4_K_M.gguf"
+    assert rows[0]["current_model_name"] == "flux1-schnell-Q4_K_S"
     assert rows[1]["effective_status"] == "ready"
     assert rows[1]["readiness_reason"] is None
     assert rows[1]["backend_type"] == "sd"
