@@ -167,7 +167,7 @@ class MeshWorkerCommandClient:
             raise MWControlError("response wait requested without consumer")
         timeout = int(timeout_seconds or settings.mw_command_timeout_seconds)
         deadline = time.time() + timeout
-        terminal = {"completed", "failed", "cancelled", "rejected"}
+        terminal = {"ready", "completed", "failed", "cancelled", "rejected"}
         while time.time() < deadline:
             msg = consumer.poll(0.5)
             if msg is None:

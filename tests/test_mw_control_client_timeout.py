@@ -44,6 +44,35 @@ class _Consumer:
         return None
 
 
+class _KafkaMessage:
+    def __init__(self, payload: dict[str, object]) -> None:
+        self._payload = payload
+
+    def error(self):  # noqa: ANN001
+        return None
+
+    def value(self):  # noqa: ANN001
+        import json
+
+        return json.dumps(self._payload).encode("utf-8")
+
+
+class _PollingConsumer(_Consumer):
+    def __init__(self, *_args, **_kwargs):  # noqa: ANN001
+        self.messages = [
+            _KafkaMessage({"request_id": "req-ready-1", "payload": {"response_type": "started", "ok": True}}),
+            _KafkaMessage({"request_id": "req-ready-1", "payload": {"response_type": "ready", "ok": True, "result": {"loaded": True}}}),
+        ]
+
+    def poll(self, _timeout):  # noqa: ANN001
+        if self.messages:
+            return self.messages.pop(0)
+        return None
+
+    def commit(self, *_args, **_kwargs):  # noqa: ANN001
+        return None
+
+
 class MWControlClientTimeoutTests(unittest.TestCase):
     def test_send_command_timeout_returns_pending(self) -> None:
         with mock.patch.object(mw_control, "Producer", _Producer), mock.patch.object(mw_control, "Consumer", _Consumer):
@@ -97,6 +126,28 @@ class MWControlClientTimeoutTests(unittest.TestCase):
 
         self.assertFalse(result.get("ok"))
         self.assertEqual(result.get("result"), {"accepted": True})
+
+    def test_ready_response_is_terminal_success(self) -> None:
+        with mock.patch.object(mw_control, "Producer", _Producer), mock.patch.object(mw_control, "Consumer", _PollingConsumer):
+            client = mw_control.MeshWorkerCommandClient(
+                bootstrap_servers="localhost:9092",
+                commands_topic="mw.commands",
+                responses_topic="mw.responses",
+                client_id="test",
+            )
+
+            result = client.send_command(
+                host_id="worker-a",
+                message_type="load_model",
+                payload={"lane_id": "gpu", "model_name": "qwen3.5-4b"},
+                request_id="req-ready-1",
+                wait=True,
+                timeout_seconds=7,
+            )
+
+        self.assertTrue(result.get("ok"))
+        self.assertFalse(result.get("pending", False))
+        self.assertEqual(result.get("result"), {"loaded": True})
 
 
 if __name__ == "__main__":

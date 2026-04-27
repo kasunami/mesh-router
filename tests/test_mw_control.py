@@ -175,6 +175,38 @@ class MWControlApiTests(unittest.TestCase):
         self.assertEqual(self.fake.calls[-1]["message_type"], "health_probe")
         self.assertEqual(self.fake.calls[-1]["payload"], {"service_id": "llama-gpu"})
 
+    def test_unload_lane_command_endpoint(self) -> None:
+        response = self.client.post(
+            "/api/mw/commands",
+            json={
+                "host_id": "static-deskix",
+                "message_type": "unload_lane",
+                "payload": {"lane_id": "gpu"},
+                "wait": True,
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertTrue(body["ok"])
+        self.assertEqual(self.fake.calls[-1]["message_type"], "unload_lane")
+        self.assertEqual(self.fake.calls[-1]["payload"], {"lane_id": "gpu"})
+
+    def test_unload_service_command_endpoint(self) -> None:
+        response = self.client.post(
+            "/api/mw/commands",
+            json={
+                "host_id": "static-deskix",
+                "message_type": "unload_service",
+                "payload": {"service_id": "llama-gpu"},
+                "wait": True,
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertTrue(body["ok"])
+        self.assertEqual(self.fake.calls[-1]["message_type"], "unload_service")
+        self.assertEqual(self.fake.calls[-1]["payload"], {"service_id": "llama-gpu"})
+
     def test_lane_gateway_health_prefers_mw(self) -> None:
         ok = app_module._lane_gateway_healthy(  # type: ignore[attr-defined]
             "http://127.0.0.1:21434",

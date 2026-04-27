@@ -347,6 +347,8 @@ class MWCommandRequest(BaseModel):
         "stop_service",
         "restart_service",
         "health_probe",
+        "unload_service",
+        "unload_lane",
         "cancel_request",
     ]
     payload: dict[str, Any] = Field(default_factory=dict)
