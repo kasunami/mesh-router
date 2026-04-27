@@ -145,7 +145,7 @@ class MeshWorkerCommandClient:
                     "timeout_seconds": exc.timeout_seconds,
                 }
             payload_obj = (result["response"] or {}).get("payload", {}) if result.get("response") else {}
-            result["ok"] = bool(payload_obj.get("ok", True))
+            result["ok"] = bool(payload_obj.get("ok", False))
             error_obj = payload_obj.get("error")
             if isinstance(error_obj, dict):
                 result["error"] = error_obj.get("message") or str(error_obj)

@@ -62,7 +62,7 @@ class MWLaneReadinessOverlayTests(unittest.TestCase):
         app_module.db = self.original_db  # type: ignore[assignment]
         app_module.mw_state_db = self.original_mw_state_db  # type: ignore[assignment]
 
-    def skip_test_api_lanes_overlays_mw_readiness_and_model(self) -> None:
+    def test_api_lanes_overlays_mw_readiness_and_model(self) -> None:
         # Base lanes listing: lane is offline in MR DB but MW control plane should override.
         base_rows = [
             {
@@ -115,7 +115,7 @@ class MWLaneReadinessOverlayTests(unittest.TestCase):
         self.assertIsNone(item["readiness_reason"])
         self.assertEqual(item["current_model_name"], "Qwen3.5-9B-Q4_K_M.gguf")
 
-    def skip_test_api_lanes_reports_machine_readable_reason_when_mw_lane_not_running(self) -> None:
+    def test_api_lanes_reports_machine_readable_reason_when_mw_lane_not_running(self) -> None:
         base_rows = [
             {
                 "lane_id": "lane-1",

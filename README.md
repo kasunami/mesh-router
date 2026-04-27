@@ -73,7 +73,7 @@ This will output a JSON payload containing identified models (`.gguf`, `.safeten
 To scan an archive model root:
 
 ```bash
-mesh-router archive-inventory /path/to/archive archive-id --provider packhub
+mesh-router archive-inventory /path/to/archive archive-id --provider model-archive
 ```
 
 ## APIs
@@ -96,7 +96,7 @@ Control-plane / operator APIs:
   - `GET /api/perf/expectations` — fetch p50 expectations from recent observations.
 
 Notes:
-- `perf.host_id` is canonicalized to MW-style ids (`Static-Deskix` → `static-deskix`) at ingest to avoid silent lookup mismatches during routing.
+- `perf.host_id` is canonicalized to MW-style ids (`Worker A` → `worker-a`) at ingest to avoid silent lookup mismatches during routing.
 - Tag-based route resolution ranks candidates using perf expectations when available (decode TPS / first-token latency for chat, total_ms for images); otherwise it falls back to deterministic defaults.
 
 ## Requestor Routing Controls (OpenAI-compatible)

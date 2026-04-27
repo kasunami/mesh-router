@@ -10,8 +10,8 @@ import httpx
 
 def main() -> int:
     p = argparse.ArgumentParser(prog="mw_command_smoke")
-    p.add_argument("--mr", default="http://10.0.1.47:4010", help="Mesh-Router base URL")
-    p.add_argument("--host-id", required=True, help="MW host_id (e.g. static-deskix)")
+    p.add_argument("--mr", default="http://mesh-router.example:4010", help="Mesh-Router base URL")
+    p.add_argument("--host-id", required=True, help="MW host_id (e.g. worker-a)")
     p.add_argument("--command", required=True, help="activate_profile|load_model|health_probe|...")
     p.add_argument("--payload", default="{}", help="JSON payload for the command")
     p.add_argument("--timeout-seconds", type=int, default=None, help="Override MW wait timeout for this command")

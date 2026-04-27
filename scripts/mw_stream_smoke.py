@@ -8,7 +8,7 @@ import httpx
 
 def main() -> int:
     p = argparse.ArgumentParser(prog="mw_stream_smoke")
-    p.add_argument("--mr", default="http://10.0.1.47:4010", help="Mesh-Router base URL")
+    p.add_argument("--mr", default="http://mesh-router.example:4010", help="Mesh-Router base URL")
     p.add_argument("--model", required=True, help="Model name")
     p.add_argument("--prompt", default="Hello from MW stream smoke test.", help="Prompt")
     p.add_argument("--lines", type=int, default=50, help="Max SSE lines to print")

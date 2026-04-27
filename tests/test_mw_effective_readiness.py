@@ -61,7 +61,7 @@ class MwEffectiveReadinessTests(unittest.TestCase):
         router_module.db = self.orig_db  # type: ignore[assignment]
         router_module.mw_state_db = self.orig_mw_state_db  # type: ignore[assignment]
 
-    def skip_test_pick_lane_for_model_accepts_mw_effective_ready(self) -> None:
+    def test_pick_lane_for_model_accepts_mw_effective_ready(self) -> None:
         base_rows = [
             {
                 "lane_id": "lane-1",
@@ -135,4 +135,3 @@ class MwEffectiveReadinessTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

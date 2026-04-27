@@ -54,8 +54,8 @@ CREATE TABLE IF NOT EXISTS hosts (
   notes text NULL,
 
   -- Canonical access/management info
-  mgmt_ssh_host text NULL,          -- e.g. 10.0.0.95
-  mgmt_ssh_user text NULL,          -- e.g. kasunami
+  mgmt_ssh_host text NULL,          -- e.g. worker-a.example
+  mgmt_ssh_user text NULL,          -- e.g. mesh
   docs text NULL,                   -- short ops notes/instructions
 
   -- Capacity snapshots (best-effort, updated by probes)
@@ -103,7 +103,7 @@ CREATE TABLE IF NOT EXISTS lanes (
   lane_name citext NOT NULL,        -- e.g. "gpu", "cpu", "mlx", "router"
   lane_type lane_type NOT NULL,
 
-  base_url text NOT NULL,           -- e.g. http://10.0.0.95:11434
+  base_url text NOT NULL,           -- e.g. http://worker-a.example:11434
   openai_path_prefix text NOT NULL DEFAULT '', -- optional prefix if not /v1
 
   status lane_status NOT NULL DEFAULT 'offline',
@@ -148,12 +148,12 @@ CREATE TABLE IF NOT EXISTS models (
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 
--- Where a model can be fetched from (packhub store, HF, local path, etc.)
+-- Where a model can be fetched from (archive store, HF, local path, etc.)
 CREATE TABLE IF NOT EXISTS model_sources (
   source_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   model_id uuid NOT NULL REFERENCES models(model_id) ON DELETE CASCADE,
-  source_kind text NOT NULL,        -- e.g. "packhub", "huggingface", "local_path"
-  source_ref text NOT NULL,         -- e.g. "packhub://qwen3.5-9b/Q4_K_M" or "hf://org/repo/file"
+  source_kind text NOT NULL,        -- e.g. "model_archive", "huggingface", "local_path"
+  source_ref text NOT NULL,         -- e.g. "model-archive://qwen3.5-9b/Q4_K_M" or "hf://org/repo/file"
   sha256 text NULL,
   created_at timestamptz NOT NULL DEFAULT now(),
   UNIQUE (model_id, source_kind, source_ref)
@@ -268,4 +268,3 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE INDEX IF NOT EXISTS idx_events_time ON events(created_at DESC);
 
 COMMIT;
-

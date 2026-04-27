@@ -7,6 +7,7 @@ import httpx
 
 from .config import settings
 from .db import db, q
+from .mw_overlay import is_explicit_mw_managed
 
 
 def _is_recoverable_terminal_swap_suspension(reason: str | None) -> bool:
@@ -64,6 +65,10 @@ def _probe_lane_model(base_url: str) -> str | None:
     return None
 
 
+def _lane_is_mw_managed(lane: dict[str, Any]) -> bool:
+    return is_explicit_mw_managed(lane)
+
+
 def _enforce_dualboot_mutual_exclusion(cur: Any) -> None:
     """
     Enforces dual-boot mutual exclusion by ensuring only one host per
@@ -78,7 +83,7 @@ def _enforce_dualboot_mutual_exclusion(cur: Any) -> None:
     selected 'active' host will be updated to 'offline' status and their
     associated lanes will be set to 'suspended'. This mechanism prevents
     conflicting operations in dual-boot configurations. For example, if
-    'packpup1' and 'pupix1' are configured with the same `dualboot_group_id`
+    two host rows are configured with the same `dualboot_group_id`
     in the `host_dualboot_members` table, this function ensures only one
     can be 'ready' at a time.
 
@@ -142,6 +147,10 @@ def probe_once() -> None:
             )
 
             for lane in lanes:
+                if _lane_is_mw_managed(lane):
+                    # MW state snapshots are authoritative for MW-managed lanes. Direct HTTP
+                    # probes can race model swaps and incorrectly overwrite lane state/model.
+                    continue
                 lane_id = lane["lane_id"]
                 host_id = lane["host_id"]
                 base_url = str(lane["base_url"])

@@ -53,7 +53,10 @@ def main() -> int:
     parser.add_argument("--no-mw-consume", action="store_true", help="Disable MW Kafka state/heartbeat consumer")
     args = parser.parse_args(sys.argv[start_idx:])
 
+    from .config import settings, validate_runtime_settings
     from .db import init_db
+
+    validate_runtime_settings(settings)
 
     # Run database migrations on startup
     init_db()
@@ -63,7 +66,7 @@ def main() -> int:
     from .probe import run_forever as probe_forever
     from .sync import run_forever
 
-    if not args.no_sync:
+    if settings.meshbench_sync_enabled and not args.no_sync:
         t = threading.Thread(target=run_forever, name="mesh-router-sync", daemon=True)
         t.start()
 

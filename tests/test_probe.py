@@ -18,6 +18,16 @@ class ProbeRecoveryTests(unittest.TestCase):
     def test_non_swap_suspension_is_not_detected(self) -> None:
         self.assertFalse(probe_module._is_recoverable_terminal_swap_suspension("dualboot_other_side_active: packpup1"))
 
+    def test_mw_managed_lane_is_detected(self) -> None:
+        self.assertTrue(
+            probe_module._lane_is_mw_managed(
+                {"proxy_auth_metadata": {"control_plane": "mw", "mw_host_id": "worker-a", "mw_lane_id": "gpu"}}
+            )
+        )
+
+    def test_non_mw_lane_is_not_detected(self) -> None:
+        self.assertFalse(probe_module._lane_is_mw_managed({"proxy_auth_metadata": {"control_plane": "legacy"}}))
+
 
 if __name__ == "__main__":
     unittest.main()

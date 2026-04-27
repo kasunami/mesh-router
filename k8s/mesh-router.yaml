@@ -38,16 +38,15 @@ spec:
         #   so a rollout happens even if the tag string is accidentally reused.
         mesh-router.openai.com/deploy-revision: "__SET_BY_DEPLOY__"
     spec:
-      # Prefer packserv for control-plane services.
-      nodeSelector:
-        # kubernetes.io/hostname: <your-node>  # Pin to a specific node if needed
-        kubernetes.io/hostname: packserv
+      # Optional: pin to a specific node in a private overlay if needed.
+      # nodeSelector:
+      #   kubernetes.io/hostname: <your-node>
       initContainers:
         - name: migrate-db
           # Deploy hygiene:
           # - Prefer immutable digest refs (registry/repo@sha256:...) OR unique tags (e.g. git SHA).
           # - Never reuse tags for different digests.
-          image: 10.0.1.48:5000/mesh-router:__SET_BY_DEPLOY__
+          image: registry.example/mesh-router:__SET_BY_DEPLOY__
           # Control-plane safety: always pull when a tag is used.
           # If you deploy by digest (repo@sha256:...), `IfNotPresent` is also safe.
           imagePullPolicy: Always
@@ -63,7 +62,7 @@ spec:
       containers:
         - name: mesh-router
           # Deploy hygiene: prefer digest refs or unique tags; never reuse tags.
-          image: 10.0.1.48:5000/mesh-router:__SET_BY_DEPLOY__
+          image: registry.example/mesh-router:__SET_BY_DEPLOY__
           # Control-plane safety: always pull when a tag is used.
           # If you deploy by digest (repo@sha256:...), `IfNotPresent` is also safe.
           imagePullPolicy: Always

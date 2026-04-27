@@ -75,7 +75,7 @@ class InventoryApiTests(unittest.TestCase):
         app_module.mw_state_db = self.original_app_mw_state_db  # type: ignore[assignment]
         inventory_module.mw_state_db = self.original_inventory_mw_state_db  # type: ignore[assignment]
 
-    def skip_test_api_inventory_overlays_mw_effective_status(self) -> None:
+    def test_api_inventory_overlays_mw_effective_status(self) -> None:
         base_rows = [
             {
                 "lane_id": "lane-1",
@@ -233,7 +233,7 @@ class InventoryApiTests(unittest.TestCase):
             ["Qwen3.5-9B-6bit"],
         )
 
-    def skip_test_mesh_inventory_uses_mw_effective_lane_truth(self) -> None:
+    def test_mesh_inventory_uses_mw_effective_lane_truth(self) -> None:
         now = datetime.now(tz=timezone.utc)
         lanes = [
             {
@@ -285,7 +285,7 @@ class InventoryApiTests(unittest.TestCase):
         self.assertIn("falcon3-10b", lane["known_models"])
         self.assertEqual(lane["mw_state_source"], "mw_state_snapshot")
 
-    def skip_test_mesh_inventory_suppresses_stale_swap_and_suspension_when_mw_is_newer(self) -> None:
+    def test_mesh_inventory_suppresses_stale_swap_and_suspension_when_mw_is_newer(self) -> None:
         now = datetime.now(tz=timezone.utc)
         old = now - timedelta(minutes=5)
         lanes = [
@@ -355,7 +355,7 @@ class InventoryApiTests(unittest.TestCase):
         self.assertEqual(lane["current_model"], "Qwen3.5-27B-Q4_K_M")
         self.assertEqual(lane["mw_state_source"], "mw_response_snapshot")
 
-    def skip_test_api_lane_lease_status_uses_mw_effective_lane_truth(self) -> None:
+    def test_api_lane_lease_status_uses_mw_effective_lane_truth(self) -> None:
         now = datetime.now(tz=timezone.utc)
         cursor = _FakeCursor(
             fetchall_rows=[[]],

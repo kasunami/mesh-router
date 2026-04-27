@@ -56,11 +56,16 @@ def _normalize_mw_host_id(host_name: str | None) -> str:
     return str(host_name or "").strip().lower().replace(" ", "-")
 
 
+def is_explicit_mw_managed(row: dict[str, Any]) -> bool:
+    meta = row.get("proxy_auth_metadata") or {}
+    return isinstance(meta, dict) and str(meta.get("control_plane") or "").strip().lower() == "mw"
+
+
 def _candidate_mw_binding(row: dict[str, Any]) -> tuple[str, str, bool] | None:
     pam = row.get("proxy_auth_metadata") or {}
     if isinstance(pam, dict) and pam.get("mw_ignore") is True:
         return None
-    if isinstance(pam, dict) and str(pam.get("control_plane") or "").strip().lower() == "mw":
+    if is_explicit_mw_managed(row):
         host_id = str(pam.get("mw_host_id") or "").strip() or _normalize_mw_host_id(str(row.get("host_name") or ""))
         lane_id = str(pam.get("mw_lane_id") or "").strip()
         if not lane_id:

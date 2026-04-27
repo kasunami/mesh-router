@@ -77,7 +77,27 @@ class MWControlClientTimeoutTests(unittest.TestCase):
         self.assertEqual(result.get("request_id"), "req-1")
         self.assertEqual(result.get("timeout_seconds"), 7)
 
+    def test_send_command_missing_payload_ok_fails_closed(self) -> None:
+        with mock.patch.object(mw_control, "Producer", _Producer), mock.patch.object(mw_control, "Consumer", _Consumer):
+            client = mw_control.MeshWorkerCommandClient(
+                bootstrap_servers="localhost:9092",
+                commands_topic="mw.commands",
+                responses_topic="mw.responses",
+                client_id="test",
+            )
+            client._wait_for_response = lambda *_args, **_kwargs: {"payload": {"result": {"accepted": True}}}  # type: ignore[method-assign]
+
+            result = client.send_command(
+                host_id="static-deskix",
+                message_type="load_model",
+                payload={"lane_id": "gpu", "model_name": "qwen3.5-4b"},
+                request_id="req-2",
+                wait=True,
+            )
+
+        self.assertFalse(result.get("ok"))
+        self.assertEqual(result.get("result"), {"accepted": True})
+
 
 if __name__ == "__main__":
     unittest.main()
-

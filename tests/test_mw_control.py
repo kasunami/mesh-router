@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
 from mesh_router import app as app_module
+from mesh_router import mw_commands as mw_commands_module
 
 
 class FakeMWClient:
@@ -192,6 +194,33 @@ class MWControlApiTests(unittest.TestCase):
         )
         self.assertEqual(result["echo"], {"lane_id": "gpu"})
         self.assertEqual(self.fake.calls[-1]["message_type"], "stop_service")
+
+    def test_pending_mw_load_waits_for_terminal_transition(self) -> None:
+        self.fake.next_result = {
+            "ok": True,
+            "pending": True,
+            "host_id": "static-deskix",
+            "request_id": "req-pending-1",
+            "message_type": "load_model",
+        }
+        with patch.object(  # type: ignore[name-defined]
+            app_module,
+            "_mw_client",
+            lambda: self.fake,
+        ), patch.object(
+            mw_commands_module,
+            "wait_for_mw_transition_terminal",
+            return_value={"request_id": "req-pending-1", "status": "completed"},
+        ) as waiter:
+            result = app_module._send_mw_command_require_ready(  # type: ignore[attr-defined]
+                host_id="static-deskix",
+                message_type="load_model",
+                payload={"lane_id": "gpu", "model_name": "qwen3.5-4b"},
+                timeout_seconds=60,
+            )
+        self.assertTrue(result["ok"])
+        self.assertFalse(result["pending"])
+        waiter.assert_called_once_with(request_id="req-pending-1", timeout_seconds=60)
 
 
 if __name__ == "__main__":

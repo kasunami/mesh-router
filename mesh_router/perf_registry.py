@@ -13,8 +13,8 @@ def normalize_host_id(host_id: str) -> str:
     """
     Canonicalize host ids to match MW state tables (e.g. mw_hosts.host_id / mw_lanes.host_id).
 
-    Operators often use friendly host names like "Static-Deskix"; MW state typically uses
-    normalized ids like "static-deskix". We normalize at ingest to avoid silent mismatches
+    Operators often use friendly host names like "Worker A"; MW state typically uses
+    normalized ids like "worker-a". We normalize at ingest to avoid silent mismatches
     when looking up perf expectations during routing.
     """
 

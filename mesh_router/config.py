@@ -13,11 +13,13 @@ class Settings(BaseSettings):
 
     # MeshBench lease gate + proxy
     meshbench_base_url: str = "http://localhost:8787"
+    meshbench_sync_enabled: bool = False
 
     # Lease tokens (validated by worker gateways). Only mesh-router should know this secret.
     # Tokens are JWT-like (HS256) with an exp claim; worker gateways call back to mesh-router
     # to validate, so the secret does not need to exist on worker nodes.
     lease_token_secret: str = "replace-with-random-secret"
+    allow_dev_secrets: bool = False
 
     # Router behavior
     default_lease_ttl_seconds: int = 600
@@ -25,6 +27,7 @@ class Settings(BaseSettings):
     default_lease_stale_seconds: int = 45
     default_owner: str = "mesh-router"
     default_job_type: str = "openai_proxy"
+    deployment_revision: str = os.getenv("MESH_ROUTER_DEPLOYMENT_REVISION", "dev")
 
     # Sync behavior
     sync_interval_seconds: int = 30
@@ -37,7 +40,7 @@ class Settings(BaseSettings):
     # Must exceed worker-side WORKER_SWITCH_TIMEOUT_S so the router does not time out first.
     swap_proxy_timeout_seconds: int = 240
     # Public callback URL reachable by worker nodes for swap progress events.
-    router_public_base_url: str = "http://10.0.1.47:4010"
+    router_public_base_url: str = "http://localhost:4010"
 
     # MeshWorker control plane
     mw_kafka_bootstrap_servers: str = (
@@ -73,7 +76,7 @@ class Settings(BaseSettings):
 
     # Routing policy: treat some hosts as opportunistic/preemptible by default.
     # Requests can explicitly opt into opportunistic routing; otherwise MR prefers stable hosts.
-    opportunistic_hosts: str = "pupix1,tiffs-macbook,packpup1,packpup2"
+    opportunistic_hosts: str = ""
 
     # Perf observation ingestion guard. When set, POST /api/perf/observations requires
     # X-Mesh-Internal-Token to match this value.
@@ -97,12 +100,12 @@ class Settings(BaseSettings):
     vlm_seed_enabled: bool = False
     # Optional: seed multiple VLM lanes.
     # JSON array of objects like:
-    #   [{"host_ref":"Static-Deskix","lane_name":"vlm-deskix","base_url":"http://10.0.0.99:21437","llama_router":false}]
+    #   [{"host_ref":"worker-a","lane_name":"vlm-worker-a","base_url":"http://worker-a.example:21437","llama_router":false}]
     # When set, takes precedence over vlm_lane_host_ref/vlm_lane_name/vlm_lane_base_url.
     vlm_lane_specs_json: str | None = None
-    vlm_lane_host_ref: str = "packhub"
+    vlm_lane_host_ref: str = "model-router"
     vlm_lane_name: str = "vlm-router"
-    vlm_lane_base_url: str = "http://llama-vision-router.ai-tools.svc.cluster.local:4012"
+    vlm_lane_base_url: str = "http://llama-vision-router.example:4012"
     vlm_declared_models: str = "qwen3.5-9b-vlm,Qwen3.5-9B-VLM-Q4_K_M"
 
     # If true, a chat request containing image parts can be remapped from a text-only model
@@ -121,3 +124,24 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+def validate_runtime_settings(current: Settings = settings) -> None:
+    """Fail closed on known placeholder secrets outside explicit development mode."""
+    if current.allow_dev_secrets:
+        return
+    placeholders = {
+        "lease_token_secret": "replace-with-random-secret",
+        "swap_auth_token": "replace-with-worker-swap-token",
+    }
+    invalid = [
+        name
+        for name, placeholder in placeholders.items()
+        if str(getattr(current, name, "") or "").strip() == placeholder
+    ]
+    if invalid:
+        joined = ", ".join(sorted(invalid))
+        raise RuntimeError(
+            f"refusing to start with placeholder runtime secret(s): {joined}; "
+            "set real MESH_ROUTER_* values or MESH_ROUTER_ALLOW_DEV_SECRETS=1 for local development"
+        )

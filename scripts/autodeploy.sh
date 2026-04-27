@@ -1,21 +1,21 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-MESH_ROUTER_REPO_URL="${MESH_ROUTER_REPO_URL:-git@github.com:kasunami/mesh-router.git}"
+MESH_ROUTER_REPO_URL="${MESH_ROUTER_REPO_URL:-ssh://<user>@<your-git-server>/mesh-router.git}"
 K3S_MANIFESTS_REPO_URL="${K3S_MANIFESTS_REPO_URL:-ssh://<user>@<your-git-server>/git-registry/k3s-manifests.git}"
 
-BASE_DIR="${BASE_DIR:-/home/kasunami/srv}"
+BASE_DIR="${BASE_DIR:-/srv/mesh}"
 MESH_ROUTER_DIR="${MESH_ROUTER_DIR:-${BASE_DIR}/mesh-router}"
 K3S_MANIFESTS_DIR="${K3S_MANIFESTS_DIR:-${BASE_DIR}/k3s-manifests}"
 
 BRANCH="${BRANCH:-main}"
 K3S_BRANCH="${K3S_BRANCH:-master}"
 
-IMAGE_REPO="${IMAGE_REPO:-10.0.1.48:5000/mesh-router}"
+IMAGE_REPO="${IMAGE_REPO:-registry.example/mesh-router}"
 MANIFEST_PATH="${MANIFEST_PATH:-apps/ai-tools/mesh-router/mesh-router.yaml}"
 
 GIT_USER_NAME="${GIT_USER_NAME:-mesh-router-autodeploy}"
-GIT_USER_EMAIL="${GIT_USER_EMAIL:-mesh-router-autodeploy@packserv}"
+GIT_USER_EMAIL="${GIT_USER_EMAIL:-mesh-router-autodeploy@example.invalid}"
 
 mkdir -p "${BASE_DIR}"
 

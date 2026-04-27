@@ -7,6 +7,31 @@ from typing import List
 from .schemas import ArtifactItem
 
 
+_SUPPORT_FILE_TOKENS = (
+    "embedding",
+    "embeddings",
+    "embed",
+    "tokenizer",
+    "mmproj",
+    "adapter",
+    "lora",
+    "vae",
+    "clip",
+    "text-encoder",
+    "text_encoder",
+)
+
+
+def _is_probable_runnable_model_file(path: Path) -> bool:
+    suffix = path.suffix.lower()
+    if suffix not in {".gguf", ".safetensors"}:
+        return False
+    lowered = path.name.lower()
+    if any(token in lowered for token in _SUPPORT_FILE_TOKENS):
+        return False
+    return True
+
+
 def scan_model_root(root_path: str) -> List[ArtifactItem]:
     """Scan the local model root for model artifacts."""
     root = Path(root_path)
@@ -49,8 +74,8 @@ def scan_model_root(root_path: str) -> List[ArtifactItem]:
 
         # If not an MLX directory, check for individual model files
         for filename in filenames:
-            if filename.endswith((".gguf", ".safetensors")):
-                file_path = path / filename
+            file_path = path / filename
+            if _is_probable_runnable_model_file(file_path):
                 artifacts.append(
                     ArtifactItem(
                         name=filename,

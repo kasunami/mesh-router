@@ -5,8 +5,7 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-User=kasunami
-Group=kasunami
-WorkingDirectory=/home/kasunami
+User=mesh-router
+Group=mesh-router
+WorkingDirectory=/srv/mesh
 ExecStart=/usr/local/bin/mesh-router-autodeploy.sh
-

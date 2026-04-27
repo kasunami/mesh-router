@@ -9,6 +9,7 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from mesh_router import app as app_module
+from mesh_router import request_store as request_store_module
 from mesh_router.router import LaneChoice
 from mesh_router.mw_grpc import MwGrpcTarget
 
@@ -101,6 +102,7 @@ class StreamingMwTests(unittest.TestCase):
             patch.object(app_module, "_mw_target_for_lane", return_value=target),
             patch.object(app_module, "_mw_client", lambda: fake_mw_client),
             patch.object(app_module, "db", fake_db),
+            patch.object(request_store_module, "db", fake_db),
             patch.object(app_module.MwGrpcClient, "stream_chat", fake_grpc_stream_chat),
         ):
             client = TestClient(app_module.app)
@@ -145,6 +147,7 @@ class StreamingMwTests(unittest.TestCase):
             patch.object(app_module, "_mw_target_for_lane", return_value=target),
             patch.object(app_module, "_mw_client", lambda: fake_mw_client),
             patch.object(app_module, "db", fake_db),
+            patch.object(request_store_module, "db", fake_db),
             patch.object(app_module.MwGrpcClient, "stream_chat", fake_reasoning_only_stream_chat),
         ):
             client = TestClient(app_module.app)
@@ -190,6 +193,7 @@ class StreamingMwTests(unittest.TestCase):
             patch.object(app_module, "_mw_target_for_lane", return_value=target),
             patch.object(app_module, "_mw_client", lambda: fake_mw_client),
             patch.object(app_module, "db", fake_db),
+            patch.object(request_store_module, "db", fake_db),
             patch.object(app_module.MwGrpcClient, "stream_chat", fake_grpc_stream_chat),
         ):
             client = TestClient(app_module.app)
