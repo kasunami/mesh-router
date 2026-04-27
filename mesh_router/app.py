@@ -427,6 +427,13 @@ def _backend_compatibility_reason(
     return None
 
 
+def _model_name_looks_image_generation(model_name: str | None) -> bool:
+    lowered = str(model_name or "").strip().lower()
+    if not lowered:
+        return False
+    return lowered.startswith("flux") or "stable-diffusion" in lowered or "sdxl" in lowered
+
+
 def _should_include_candidate_for_capabilities(*, mw_authoritative: bool, source_locality: str) -> bool:
     if not mw_authoritative:
         return True
@@ -5555,7 +5562,8 @@ def api_lane_swap_model(lane_id: str, req: SwapModelRequest) -> dict[str, Any]:
         if not ok:
             if mw_target is not None and settings.mw_control_enabled:
                 lane_backend = _normalize_router_backend_type(str(lane_state["lane"].get("backend_type") or ""))
-                mw_timeout_seconds = max(300 if lane_backend == "sd" else 30, settings.mw_command_timeout_seconds)
+                image_generation_swap = lane_backend == "sd" or _model_name_looks_image_generation(preflight.model_name)
+                mw_timeout_seconds = max(300 if image_generation_swap else 30, settings.mw_command_timeout_seconds)
                 result = _send_mw_command_require_ready(
                     host_id=mw_target.host_id,
                     message_type="load_model",
