@@ -71,6 +71,71 @@ class PreferMwLanePlacementTests(unittest.TestCase):
         self.assertEqual(choice.lane_id, "lane-mw")
         self.assertEqual(choice.worker_id, "Static-Deskix")
 
+    def test_multimodal_requests_can_use_seeded_mw_ignored_vlm_lane(self) -> None:
+        rows = [
+            {
+                "lane_id": "vlm-router-lane",
+                "host_name": "model-router",
+                "base_url": "http://llama-vision-router.example:4012",
+                "lane_type": "other",
+                "backend_type": "llama",
+                "status": "ready",
+                "proxy_auth_metadata": {
+                    "mw_ignore": True,
+                    "supports_multimodal": True,
+                    "declared_models": ["qwen3.5-9b-vlm"],
+                },
+                "current_model_name": "DeepSeek-R1-14B",
+                "current_model_tags": ["multimodal", "vlm", "vision"],
+                "current_model_max_ctx": 8192,
+                "local_viable_models": [],
+                "remote_viable_models": [],
+            }
+        ]
+
+        with (
+            mock.patch.object(router_module, "db", _Db()),
+            mock.patch.object(router_module, "q", return_value=rows),
+            mock.patch.object(router_module, "apply_mw_effective_status", lambda *args, **kwargs: None),
+        ):
+            choice = router_module.pick_lane_for_model(
+                model="qwen3.5-9b-vlm",
+                requires_multimodal=True,
+            )
+
+        self.assertEqual(choice.lane_id, "vlm-router-lane")
+        self.assertEqual(choice.resolved_model_name, "qwen3.5-9b-vlm")
+
+    def test_seeded_mw_ignored_vlm_lane_does_not_steal_normal_text_traffic(self) -> None:
+        rows = [
+            {
+                "lane_id": "vlm-router-lane",
+                "host_name": "model-router",
+                "base_url": "http://llama-vision-router.example:4012",
+                "lane_type": "other",
+                "backend_type": "llama",
+                "status": "ready",
+                "proxy_auth_metadata": {
+                    "mw_ignore": True,
+                    "supports_multimodal": True,
+                    "declared_models": ["qwen3.5-9b-vlm"],
+                },
+                "current_model_name": "qwen3.5-9b",
+                "current_model_tags": [],
+                "current_model_max_ctx": 8192,
+                "local_viable_models": [],
+                "remote_viable_models": [],
+            }
+        ]
+
+        with (
+            mock.patch.object(router_module, "db", _Db()),
+            mock.patch.object(router_module, "q", return_value=rows),
+            mock.patch.object(router_module, "apply_mw_effective_status", lambda *args, **kwargs: None),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "no READY lanes available"):
+                router_module.pick_lane_for_model(model="qwen3.5-9b")
+
     def test_mw_overlay_backend_change_filters_image_lane_from_chat_swap_candidates(self) -> None:
         rows = [
             {

@@ -753,7 +753,8 @@ def _pick_lane_for_model_single(
             pam = row.get("proxy_auth_metadata") or {}
             return isinstance(pam, dict) and pam.get("mw_ignore") is True
 
-        rows = [row for row in rows if not _is_mw_ignored(row)]
+        if not requires_multimodal:
+            rows = [row for row in rows if not _is_mw_ignored(row)]
 
         if requires_multimodal:
             rows = [
