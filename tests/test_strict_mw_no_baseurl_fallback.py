@@ -64,6 +64,33 @@ class FakeDb:
         return FakeConn()
 
 
+class FakeResponse:
+    status_code = 200
+    text = "{}"
+
+    def __init__(self, payload: dict) -> None:
+        self._payload = payload
+
+    def json(self) -> dict:
+        return self._payload
+
+
+class FakeHttpClient:
+    def __init__(self, payload: dict) -> None:
+        self.payload = payload
+        self.posts: list[dict] = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):  # noqa: ANN001
+        return False
+
+    def post(self, url: str, json: dict, headers: dict):  # noqa: ANN001
+        self.posts.append({"url": url, "json": json, "headers": headers})
+        return FakeResponse(self.payload)
+
+
 class StrictMwFallbackTests(unittest.TestCase):
     def test_explicit_mw_lane_without_target_refuses_base_url_fallback(self) -> None:
         lane = SimpleNamespace(
@@ -113,7 +140,7 @@ class StrictMwFallbackTests(unittest.TestCase):
         self.assertIn("refusing base_url fallback", str(ctx.exception).lower())
 
 
-    def test_embeddings_explicit_mw_lane_without_target_refuses_base_url_fallback(self) -> None:
+    def test_embeddings_use_http_backend_even_when_lane_is_mw_managed(self) -> None:
         lane = SimpleNamespace(
             lane_id="lane-1",
             worker_id="Static-Deskix",
@@ -131,6 +158,8 @@ class StrictMwFallbackTests(unittest.TestCase):
         def _fake_acquire_router_lease(*, lane_id: str, model_id: str, owner: str, job_type: str, ttl_seconds: int, details: dict):  # noqa: ANN001
             return "lease-1", datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds)
 
+        fake_client = FakeHttpClient({"object": "list", "data": [{"embedding": [0.1, 0.2]}]})
+
         with (
             mock.patch.object(app_module, "db", FakeDb()),
             mock.patch.object(app_module, "pick_lane_for_model", side_effect=_fake_pick_lane_for_model),
@@ -143,22 +172,22 @@ class StrictMwFallbackTests(unittest.TestCase):
             mock.patch.object(app_module, "_resolve_downstream_model_for_lane", side_effect=lambda *a, **k: k.get("requested_model_name") or "qwen3.5:0.8B"),
             mock.patch.object(app_module, "_mw_target_for_lane", return_value=None),
             mock.patch.object(app_module, "_maybe_record_perf_observation", return_value=None),
+            mock.patch.object(app_module.httpx, "Client", return_value=fake_client),
         ):
-            with self.assertRaises(RuntimeError) as ctx:
-                app_module._execute_router_request(
-                    request_id="req-1",
-                    route="embeddings",
-                    raw_payload={
-                        "model": "qwen3.5:0.8B",
-                        "input": ["hi"],
-                    },
-                    owner="test",
-                    job_type="test",
-                )
+            app_module._execute_router_request(
+                request_id="req-1",
+                route="embeddings",
+                raw_payload={
+                    "model": "qwen3.5:0.8B",
+                    "input": ["hi"],
+                },
+                owner="test",
+                job_type="test",
+            )
 
-        self.assertIn("refusing base_url fallback", str(ctx.exception).lower())
+        self.assertEqual(fake_client.posts[0]["url"], "http://10.0.0.99:21434/v1/embeddings")
 
-    def test_images_explicit_mw_lane_without_target_refuses_base_url_fallback(self) -> None:
+    def test_images_use_http_backend_even_when_lane_is_mw_managed(self) -> None:
         lane = SimpleNamespace(
             lane_id="lane-1",
             worker_id="Static-Deskix",
@@ -176,6 +205,8 @@ class StrictMwFallbackTests(unittest.TestCase):
         def _fake_acquire_router_lease(*, lane_id: str, model_id: str, owner: str, job_type: str, ttl_seconds: int, details: dict):  # noqa: ANN001
             return "lease-1", datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds)
 
+        fake_client = FakeHttpClient({"images": [{"data": "abc"}]})
+
         with (
             mock.patch.object(app_module, "db", FakeDb()),
             mock.patch.object(app_module, "pick_lane_for_model", side_effect=_fake_pick_lane_for_model),
@@ -188,20 +219,20 @@ class StrictMwFallbackTests(unittest.TestCase):
             mock.patch.object(app_module, "_resolve_downstream_model_for_lane", side_effect=lambda *a, **k: k.get("requested_model_name") or "flux1:schnell"),
             mock.patch.object(app_module, "_mw_target_for_lane", return_value=None),
             mock.patch.object(app_module, "_maybe_record_perf_observation", return_value=None),
+            mock.patch.object(app_module.httpx, "Client", return_value=fake_client),
         ):
-            with self.assertRaises(RuntimeError) as ctx:
-                app_module._execute_router_request(
-                    request_id="req-1",
-                    route="images",
-                    raw_payload={
-                        "model": "flux1:schnell",
-                        "prompt": "a cat",
-                    },
-                    owner="test",
-                    job_type="test",
-                )
+            app_module._execute_router_request(
+                request_id="req-1",
+                route="images",
+                raw_payload={
+                    "model": "flux1:schnell",
+                    "prompt": "a cat",
+                },
+                owner="test",
+                job_type="test",
+            )
 
-        self.assertIn("refusing base_url fallback", str(ctx.exception).lower())
+        self.assertEqual(fake_client.posts[0]["url"], "http://10.0.0.99:21434/sdapi/v1/txt2img")
 
 
 if __name__ == "__main__":

@@ -4043,7 +4043,7 @@ def _execute_router_request(
             endpoint = "/v1/chat/completions" if route == "chat" else "/v1/embeddings" if route == "embeddings" else "/sdapi/v1/txt2img"
             request_timeout = 300.0 if route == "images" else float(max(30, settings.default_lease_ttl_seconds))
             mw_target: MwGrpcTarget | None = None
-            if settings.mw_control_enabled and lane_id:
+            if route == "chat" and settings.mw_control_enabled and lane_id:
                 try:
                     with db.connect() as conn:
                         with conn.cursor() as cur:
@@ -4078,7 +4078,7 @@ def _execute_router_request(
                 downstream_status_code = 200
             else:
                 # Strict MW authority: if the lane is explicitly MW-managed, never fall back to direct base_url proxy.
-                if settings.mw_control_enabled and lane_id and not has_images:
+                if route == "chat" and settings.mw_control_enabled and lane_id and not has_images:
                     try:
                         _refuse_base_url_fallback_if_mw_managed(lane_id=str(lane_id), context=f"route={route}")
                     except RuntimeError:
