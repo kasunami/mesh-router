@@ -208,6 +208,9 @@ def _upsert_transition(cur: Any, *, request_id: str, host_id: str, payload: dict
     ok = payload.get("ok")
     error = payload.get("error") or {}
     error_message = error.get("message") if isinstance(error, dict) else str(error)
+    status = response_type or "unknown"
+    if ok is False and status == "completed":
+        status = "failed"
     cur.execute(
         """
         INSERT INTO mw_transitions (
@@ -227,12 +230,12 @@ def _upsert_transition(cur: Any, *, request_id: str, host_id: str, payload: dict
             request_id,
             host_id,
             command_type or "unknown",
-            response_type or "unknown",
+            status,
             "mw-kafka",
             observed_at if response_type in {"accepted", "started"} else None,
-            observed_at if response_type in {"completed", "failed", "cancelled", "rejected"} else None,
+            observed_at if status in {"completed", "failed", "cancelled", "rejected"} else None,
             None if (ok is True or ok is None) else str(error_message or ""),
-            Jsonb({"ok": ok, "payload": payload}),
+            Jsonb({"ok": ok, "status": status, "payload": payload}),
         ),
     )
 
