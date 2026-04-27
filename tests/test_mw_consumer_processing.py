@@ -208,6 +208,25 @@ class MwConsumerProcessingTests(unittest.TestCase):
         self.assertEqual(transition_params[3], "failed")
         self.assertEqual(transition_params[7], "target service health check failed")
 
+    def test_ready_response_is_stored_as_terminal_success(self) -> None:
+        cursor = CapturingCursor()
+        db_connect = make_db(cursor)
+        now = datetime.now(UTC)
+        process_message(
+            payload={
+                "message_type": "response",
+                "host_id": "static-deskix",
+                "request_id": "00000000-0000-0000-0000-000000000004",
+                "payload": {"response_type": "ready", "command_type": "load_model", "ok": True, "result": {}},
+            },
+            observed_at=now,
+            db_connect=db_connect,
+        )
+
+        transition_params = next(params for (sql, params) in cursor.executed if "INSERT INTO mw_transitions" in sql)
+        self.assertEqual(transition_params[3], "ready")
+        self.assertEqual(transition_params[6], now)
+
 
 if __name__ == "__main__":
     unittest.main()

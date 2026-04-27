@@ -233,7 +233,7 @@ def _upsert_transition(cur: Any, *, request_id: str, host_id: str, payload: dict
             status,
             "mw-kafka",
             observed_at if response_type in {"accepted", "started"} else None,
-            observed_at if status in {"completed", "failed", "cancelled", "rejected"} else None,
+            observed_at if status in {"ready", "completed", "failed", "cancelled", "rejected"} else None,
             None if (ok is True or ok is None) else str(error_message or ""),
             Jsonb({"ok": ok, "status": status, "payload": payload}),
         ),

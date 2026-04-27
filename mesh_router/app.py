@@ -2192,7 +2192,7 @@ def api_mw_command_status(request_id: str) -> MWCommandStatusResponse:
 
     status = str(row.get("status") or "")
     ok: bool | None = None
-    if status in {"completed"}:
+    if status in {"ready", "completed"}:
         ok = True
     if status in {"failed", "rejected", "cancelled"}:
         ok = False
