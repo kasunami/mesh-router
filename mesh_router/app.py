@@ -2050,7 +2050,7 @@ def health_dependencies() -> dict[str, Any]:
         "mw_control_enabled": {"ok": bool(settings.mw_control_enabled)},
     }
     return {
-        "ok": all(item.get("ok") for item in deps.values() if isinstance(item, dict)),
+        "ok": all(item.get("ok") for item in deps.values() if isinstance(item, dict) and "ok" in item),
         "revision": settings.deployment_revision,
         "dependencies": deps,
     }
