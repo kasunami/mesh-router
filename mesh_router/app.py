@@ -5554,11 +5554,13 @@ def api_lane_swap_model(lane_id: str, req: SwapModelRequest) -> dict[str, Any]:
                 ok = True
         if not ok:
             if mw_target is not None and settings.mw_control_enabled:
+                lane_backend = _normalize_router_backend_type(str(lane_state["lane"].get("backend_type") or ""))
+                mw_timeout_seconds = max(300 if lane_backend == "sd" else 30, settings.mw_command_timeout_seconds)
                 result = _send_mw_command_require_ready(
                     host_id=mw_target.host_id,
                     message_type="load_model",
                     payload={"lane_id": mw_target.lane_id, "model_name": preflight.model_name},
-                    timeout_seconds=max(30, settings.mw_command_timeout_seconds),
+                    timeout_seconds=mw_timeout_seconds,
                 )
                 data = {
                     "ok": True,
