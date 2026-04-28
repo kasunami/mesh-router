@@ -227,6 +227,100 @@ class MWControlApiTests(unittest.TestCase):
         self.assertEqual(result["echo"], {"lane_id": "gpu"})
         self.assertEqual(self.fake.calls[-1]["message_type"], "stop_service")
 
+    def test_activate_profile_reconciles_mw_managed_lane_rows(self) -> None:
+        original_db = app_module.db
+        updates: list[tuple[object, ...]] = []
+
+        class _Cur:
+            def execute(self, sql, params=None):  # noqa: ANN001
+                if "SELECT l.lane_id" in sql:
+                    return None
+                if "UPDATE lanes" in sql:
+                    updates.append(tuple(params or ()))
+
+            def fetchall(self):  # noqa: ANN001
+                return [
+                    {
+                        "lane_id": "gpu-row",
+                        "backend_type": "llama",
+                        "proxy_auth_metadata": {
+                            "control_plane": "mw",
+                            "mw_host_id": "static-deskix",
+                            "mw_lane_id": "gpu",
+                        },
+                    },
+                    {
+                        "lane_id": "image-row",
+                        "backend_type": "sd",
+                        "proxy_auth_metadata": {
+                            "control_plane": "mw",
+                            "mw_host_id": "static-deskix",
+                            "mw_lane_id": "gpu",
+                        },
+                    },
+                ]
+
+            def __enter__(self):  # noqa: ANN001
+                return self
+
+            def __exit__(self, exc_type, exc, tb):  # noqa: ANN001
+                return False
+
+        class _Conn:
+            def cursor(self):  # noqa: ANN001
+                return _Cur()
+
+            def commit(self):  # noqa: ANN001
+                return None
+
+            def __enter__(self):  # noqa: ANN001
+                return self
+
+            def __exit__(self, exc_type, exc, tb):  # noqa: ANN001
+                return False
+
+        class _Db:
+            def connect(self):  # noqa: ANN001
+                return _Conn()
+
+        self.fake.next_result = {
+            "ok": True,
+            "host_id": "static-deskix",
+            "request_id": "req-profile-1",
+            "message_type": "activate_profile",
+            "result": {
+                "host_state": {
+                    "lane_states": [
+                        {
+                            "lane_id": "gpu",
+                            "actual_state": "running",
+                            "health_status": "healthy",
+                            "actual_model": "qwen3.5-9b",
+                            "backend_type": "llama.cpp",
+                        }
+                    ]
+                }
+            },
+        }
+
+        try:
+            app_module.db = _Db()  # type: ignore[assignment]
+            response = self.client.post(
+                "/api/mw/commands",
+                json={
+                    "host_id": "static-deskix",
+                    "message_type": "activate_profile",
+                    "payload": {"profile_id": "split_default"},
+                    "wait": True,
+                },
+            )
+        finally:
+            app_module.db = original_db
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(("ready", "qwen3.5-9b", "gpu-row"), updates)
+        self.assertIn(("suspended", "qwen3.5-9b", "image-row"), updates)
+
     def test_pending_mw_load_waits_for_terminal_transition(self) -> None:
         self.fake.next_result = {
             "ok": True,

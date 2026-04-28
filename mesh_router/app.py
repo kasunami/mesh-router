@@ -2083,6 +2083,66 @@ def _dependency_check(label: str, check: Any) -> dict[str, Any]:
         return {"ok": False, "error": str(exc)[:240], "label": label}
 
 
+def _reconcile_mw_host_state_lanes(*, mw_host_id: str, host_state: dict[str, Any] | None) -> None:
+    if not isinstance(host_state, dict):
+        return
+    lane_states = host_state.get("lane_states")
+    if not isinstance(lane_states, list):
+        return
+    facts: dict[str, dict[str, Any]] = {
+        str(item.get("lane_id") or "").strip(): item
+        for item in lane_states
+        if isinstance(item, dict) and str(item.get("lane_id") or "").strip()
+    }
+    if not facts:
+        return
+    normalized_mw_host_id = _normalize_mw_host_id(str(mw_host_id))
+    with db.connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT l.lane_id, l.backend_type, l.proxy_auth_metadata
+                FROM lanes l
+                JOIN hosts h ON h.host_id=l.host_id
+                WHERE lower(replace(h.host_name, ' ', '-'))=%s
+                   OR l.proxy_auth_metadata->>'mw_host_id'=%s
+                """,
+                (normalized_mw_host_id, normalized_mw_host_id),
+            )
+            rows = cur.fetchall()
+            for row in rows:
+                meta = row.get("proxy_auth_metadata") or {}
+                if not isinstance(meta, dict):
+                    continue
+                if str(meta.get("control_plane") or "").strip().lower() != "mw":
+                    continue
+                if str(meta.get("mw_host_id") or "").strip().lower() != normalized_mw_host_id:
+                    continue
+                mw_lane_id = str(meta.get("mw_lane_id") or "").strip()
+                fact = facts.get(mw_lane_id)
+                if not fact:
+                    continue
+                actual_model = str(fact.get("actual_model") or "").strip() or None
+                actual_state = str(fact.get("actual_state") or "").strip().lower()
+                health_status = str(fact.get("health_status") or "").strip().lower()
+                row_backend = _normalize_router_backend_type(str(row.get("backend_type") or ""))
+                fact_backend = _normalize_router_backend_type(str(fact.get("backend_type") or ""))
+                backend_matches = bool(row_backend and fact_backend and row_backend == fact_backend)
+                new_status = "ready" if actual_state == "running" and health_status == "healthy" and backend_matches else "suspended"
+                cur.execute(
+                    """
+                    UPDATE lanes
+                    SET status=%s::lane_status,
+                        suspension_reason=NULL,
+                        current_model_name=COALESCE(%s, current_model_name),
+                        updated_at=now()
+                    WHERE lane_id=%s
+                    """,
+                    (new_status, actual_model, row["lane_id"]),
+                )
+        conn.commit()
+
+
 @app.get("/health/dependencies")
 def health_dependencies() -> dict[str, Any]:
     def _check_primary_db() -> None:
@@ -2150,6 +2210,14 @@ def api_mw_command(req: MWCommandRequest) -> MWCommandResponse:
                 "Retry-After": "2",
             },
         )
+    if resp.ok and req.message_type == "activate_profile":
+        try:
+            _reconcile_mw_host_state_lanes(
+                mw_host_id=req.host_id,
+                host_state=resp.result.get("host_state") if isinstance(resp.result, dict) else None,
+            )
+        except Exception as exc:
+            logger.warning("Failed to reconcile MW host state for %s: %s", req.host_id, exc)
     return resp
 
 

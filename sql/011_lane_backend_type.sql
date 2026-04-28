@@ -11,7 +11,7 @@ BEGIN
     WHERE conname = 'lanes_backend_type_check'
   ) THEN
     ALTER TABLE lanes
-      ADD CONSTRAINT lanes_backend_type_check CHECK (backend_type IN ('llama', 'sd'));
+      ADD CONSTRAINT lanes_backend_type_check CHECK (backend_type IN ('llama', 'sd', 'bitnet', 'mlx'));
   END IF;
 END$$;
 
