@@ -256,6 +256,7 @@ class InventoryLane(BaseModel):
     effective_status: str | None = None
     readiness_reason: str | None = None
     current_model_name: str | None = None
+    current_model_max_ctx: int | None = None
     proxy_auth_metadata: dict[str, Any] | None = None
 
     # Capability hints (best-effort)

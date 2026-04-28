@@ -1751,22 +1751,28 @@ def _build_lane_capability_payload(cur, lane_ref: str) -> tuple[dict[str, Any], 
         )
         if compatibility_reason is None:
             current_model_max_ctx = None
-            cur.execute(
-                """
-                SELECT p.max_ctx
-                FROM models m
-                LEFT JOIN lane_model_policy p ON p.lane_id=%s AND p.model_id=m.model_id
-                WHERE m.model_name=%s
-                LIMIT 1
-                """,
-                (resolved_lane_id, current_model_name),
-            )
-            current_policy = cur.fetchone() or {}
             try:
-                if current_policy.get("max_ctx") is not None:
-                    current_model_max_ctx = int(current_policy["max_ctx"])
+                if lane_row.get("current_model_max_ctx") is not None:
+                    current_model_max_ctx = int(lane_row["current_model_max_ctx"])
             except Exception:
                 current_model_max_ctx = None
+            if current_model_max_ctx is None:
+                cur.execute(
+                    """
+                    SELECT p.max_ctx
+                    FROM models m
+                    LEFT JOIN lane_model_policy p ON p.lane_id=%s AND p.model_id=m.model_id
+                    WHERE m.model_name=%s
+                    LIMIT 1
+                    """,
+                    (resolved_lane_id, current_model_name),
+                )
+                current_policy = cur.fetchone() or {}
+                try:
+                    if current_policy.get("max_ctx") is not None:
+                        current_model_max_ctx = int(current_policy["max_ctx"])
+                except Exception:
+                    current_model_max_ctx = None
             candidates_by_model[current_model_name] = LaneModelCandidate(
                 model_name=current_model_name,
                 tags=runtime_tags,
@@ -2431,6 +2437,7 @@ def api_inventory() -> InventoryResponse:
                 "effective_status": str(lane.get("effective_status") or "") or None,
                 "readiness_reason": str(lane.get("readiness_reason") or "") or None,
                 "current_model_name": lane.get("current_model_name"),
+                "current_model_max_ctx": lane.get("current_model_max_ctx"),
                 "current_backend_type": lane.get("current_backend_type"),
                 "desired_model_name": lane.get("desired_model_name"),
                 "desired_backend_type": lane.get("desired_backend_type"),
