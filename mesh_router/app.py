@@ -322,13 +322,17 @@ def _startup_seed_vlm() -> None:
                 host_ref = str(item.get("host_ref") or settings.vlm_lane_host_ref or "model-router").strip()
                 lane_name = str(item.get("lane_name") or settings.vlm_lane_name or "vlm-router").strip() or "vlm-router"
                 llama_router = bool(item.get("llama_router")) if item.get("llama_router") is not None else False
+                try:
+                    declared_max_ctx = int(item.get("declared_max_ctx") or settings.vlm_declared_max_ctx or 0)
+                except (TypeError, ValueError):
+                    declared_max_ctx = 0
 
                 lane_meta: dict[str, Any] = {
                     "supports_multimodal": True,
                     "mw_ignore": True,
                     "declared_models": declared,
                     "declared_model_tags": {m: ["multimodal", "vlm", "vision"] for m in declared},
-                    "declared_max_ctx": {m: 8192 for m in declared},
+                    "declared_max_ctx": {m: declared_max_ctx for m in declared} if declared_max_ctx > 0 else {},
                 }
                 if llama_router:
                     lane_meta["llama_router"] = True

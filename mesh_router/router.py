@@ -810,8 +810,38 @@ def _pick_lane_for_model_single(
         # model to appear in lane_model_viability. The lane itself is the capability boundary.
         if requires_multimodal:
             ready_mm = [row for row in rows if _status(row) == "ready"]
-            if ready_mm:
-                r0 = ready_mm[0]
+            context_limited_mm: list[dict[str, Any]] = []
+            for row in ready_mm:
+                resolved_candidate = _pick_viable_model_name(
+                    requested_model=model,
+                    lane_row=row,
+                    request_context_tokens=request_context_tokens,
+                )
+                matching_candidates = [
+                    item
+                    for group in ("local_viable_models", "remote_viable_models")
+                    for item in (row.get(group) or [])
+                    if _model_item_allowed(item)
+                    and _model_matches_request(model, item.get("model_name"), item.get("tags") or [])
+                ]
+                if matching_candidates and not resolved_candidate:
+                    context_limited_mm.append(row)
+                    continue
+                if matching_candidates:
+                    candidate_max_ctx = next(
+                        (
+                            int(item["max_ctx"])
+                            for item in matching_candidates
+                            if item.get("model_name") == resolved_candidate and item.get("max_ctx") is not None
+                        ),
+                        None,
+                    )
+                else:
+                    candidate_max_ctx = None
+                if not matching_candidates and not _context_is_sufficient(request_context_tokens, row.get("current_model_max_ctx")):
+                    context_limited_mm.append(row)
+                    continue
+                r0 = row
                 return LaneChoice(
                     lane_id=str(r0["lane_id"]),
                     worker_id=str(r0["host_name"]),
@@ -819,8 +849,33 @@ def _pick_lane_for_model_single(
                     lane_type=str(r0["lane_type"]),
                     backend_type=str(r0.get("backend_type") or "llama"),
                     current_model_name=r0.get("current_model_name"),
-                    current_model_max_ctx=int(r0["current_model_max_ctx"]) if r0.get("current_model_max_ctx") is not None else None,
-                    resolved_model_name=model.strip() or None,
+                    current_model_max_ctx=(
+                        candidate_max_ctx
+                        if candidate_max_ctx is not None
+                        else int(r0["current_model_max_ctx"]) if r0.get("current_model_max_ctx") is not None else None
+                    ),
+                    resolved_model_name=resolved_candidate or model.strip() or None,
+                )
+            if context_limited_mm and request_context_tokens:
+                max_available_ctx = 0
+                for row in context_limited_mm:
+                    for group in ("local_viable_models", "remote_viable_models"):
+                        for item in row.get(group) or []:
+                            if (
+                                _model_item_allowed(item)
+                                and _model_matches_request(model, item.get("model_name"), item.get("tags") or [])
+                                and item.get("max_ctx") is not None
+                            ):
+                                max_available_ctx = max(max_available_ctx, int(item["max_ctx"]))
+                    if row.get("current_model_max_ctx") is not None:
+                        max_available_ctx = max(max_available_ctx, int(row["current_model_max_ctx"]))
+                raise LanePlacementError(
+                    _context_limit_message(
+                        model=model,
+                        required_tokens=request_context_tokens,
+                        max_available_ctx=max_available_ctx or None,
+                    ),
+                    status_code=422,
                 )
 
         # Only 'ready' lanes are eligible for direct dispatch.

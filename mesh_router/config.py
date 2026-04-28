@@ -107,6 +107,7 @@ class Settings(BaseSettings):
     vlm_lane_name: str = "vlm-router"
     vlm_lane_base_url: str = "http://llama-vision-router.example:4012"
     vlm_declared_models: str = "qwen3.5-9b-vlm,Qwen3.5-9B-VLM-Q4_K_M"
+    vlm_declared_max_ctx: int = 32768
 
     # If true, a chat request containing image parts can be remapped from a text-only model
     # request (e.g. Qwen3.5-9B) to the default VLM alias.
