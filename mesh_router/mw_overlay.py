@@ -280,9 +280,6 @@ def apply_mw_effective_status(
             row["current_model_name"] = f.get("actual_model")
         if f.get("desired_model"):
             row["desired_model_name"] = f.get("desired_model")
-        effective_base_url = _base_url_with_listen_port(row.get("base_url"), listen_port=f.get("listen_port"))
-        if effective_base_url:
-            row["base_url"] = effective_base_url
         validated_candidates = f.get("validated_candidates")
         if validated_candidates is not None:
             row["validated_candidates"] = validated_candidates
@@ -294,6 +291,9 @@ def apply_mw_effective_status(
             row["effective_status"] = "suspended"
             row["readiness_reason"] = "backend_mismatch"
             continue
+        effective_base_url = _base_url_with_listen_port(row.get("base_url"), listen_port=f.get("listen_port"))
+        if effective_base_url:
+            row["base_url"] = effective_base_url
         row["effective_status"] = effective_status
         row["readiness_reason"] = readiness_reason
 

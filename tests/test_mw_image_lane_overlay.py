@@ -55,6 +55,7 @@ def test_explicit_image_lane_is_suspended_when_underlying_mw_lane_is_in_text_bac
             "host_name": "Static-Deskix",
             "proxy_auth_metadata": {"control_plane": "mw", "mw_host_id": "static-deskix", "mw_lane_id": "gpu"},
             "status": "offline",
+            "base_url": "http://10.0.0.99:21440",
             "current_model_name": "flux1-schnell-Q4_K_S",
         }
     ]
@@ -67,6 +68,7 @@ def test_explicit_image_lane_is_suspended_when_underlying_mw_lane_is_in_text_bac
             "health_status": "healthy",
             "actual_model": "qwen3.5-9b",
             "backend_type": "llama.cpp",
+            "listen_port": 21434,
         }
     ]
 
@@ -75,6 +77,7 @@ def test_explicit_image_lane_is_suspended_when_underlying_mw_lane_is_in_text_bac
     assert rows[0]["effective_status"] == "suspended"
     assert rows[0]["readiness_reason"] == "backend_mismatch"
     assert rows[0]["backend_type"] == "sd"
+    assert rows[0]["base_url"] == "http://10.0.0.99:21440"
     assert rows[0]["current_model_name"] == "qwen3.5-9b"
 
 
