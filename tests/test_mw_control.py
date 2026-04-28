@@ -113,6 +113,22 @@ class MWControlApiTests(unittest.TestCase):
         self.assertEqual(body["message_type"], "load_model")
         self.assertEqual(body["result"]["echo"]["model_name"], "qwen3.5-4b")
 
+    def test_mw_command_normalizes_display_host_id(self) -> None:
+        response = self.client.post(
+            "/api/mw/commands",
+            json={
+                "host_id": "Static Mobile 2",
+                "message_type": "health_probe",
+                "payload": {"lane_id": "gpu"},
+                "wait": True,
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["host_id"], "static-mobile-2")
+        self.assertEqual(self.fake.calls[-1]["host_id"], "static-mobile-2")
+
     def test_load_model_accepts_model_id_alias(self) -> None:
         response = self.client.post(
             "/api/mw/commands",

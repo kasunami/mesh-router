@@ -2178,6 +2178,7 @@ def health_dependencies() -> dict[str, Any]:
 
 @app.post("/api/mw/commands", response_model=MWCommandResponse)
 def api_mw_command(req: MWCommandRequest) -> MWCommandResponse:
+    mw_host_id = _normalize_mw_host_id(req.host_id)
     payload = dict(req.payload or {})
     if req.message_type == "load_model":
         # Operator safety / back-compat: accept model_id as an alias for model_name.
@@ -2187,7 +2188,7 @@ def api_mw_command(req: MWCommandRequest) -> MWCommandResponse:
             raise HTTPException(status_code=400, detail="load_model requires payload.model_name (or model_id alias)")
     try:
         result = _mw_client().send_command(
-            host_id=req.host_id,
+            host_id=mw_host_id,
             message_type=req.message_type,
             payload=payload,
             request_id=req.request_id,
@@ -2200,7 +2201,7 @@ def api_mw_command(req: MWCommandRequest) -> MWCommandResponse:
     resp = MWCommandResponse(
         ok=bool(result.get("ok", False)),
         pending=bool(result.get("pending", False)),
-        host_id=req.host_id,
+        host_id=mw_host_id,
         request_id=str(result.get("request_id") or req.request_id or ""),
         message_type=req.message_type,
         result=dict(result.get("result") or {}),
@@ -2223,11 +2224,11 @@ def api_mw_command(req: MWCommandRequest) -> MWCommandResponse:
     if resp.ok and req.message_type == "activate_profile":
         try:
             _reconcile_mw_host_state_lanes(
-                mw_host_id=req.host_id,
+                mw_host_id=mw_host_id,
                 host_state=resp.result.get("host_state") if isinstance(resp.result, dict) else None,
             )
         except Exception as exc:
-            logger.warning("Failed to reconcile MW host state for %s: %s", req.host_id, exc)
+            logger.warning("Failed to reconcile MW host state for %s: %s", mw_host_id, exc)
     return resp
 
 
