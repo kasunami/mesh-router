@@ -221,6 +221,18 @@ def _model_matches_request(
     return bool(request_keys & _candidate_tags_with_inferred(candidate, candidate_tags))
 
 
+def _resolved_model_for_pinned_choice(
+    requested_model: str,
+    current_model: str | None,
+    current_tags: list[str] | None = None,
+) -> str | None:
+    requested = str(requested_model or "").strip()
+    current = str(current_model or "").strip()
+    if current and _model_matches_request(requested, current, current_tags or []):
+        return current
+    return requested or None
+
+
 def pick_lane_for_model(
     *,
     model: str,
@@ -495,7 +507,11 @@ def _pick_lane_for_model_single(
             backend_type=str(r0.get("backend_type") or "llama"),
             current_model_name=r0.get("current_model_name"),
             current_model_max_ctx=int(r0["current_model_max_ctx"]) if r0.get("current_model_max_ctx") is not None else None,
-            resolved_model_name=str(r0.get("current_model_name") or "").strip() or None,
+            resolved_model_name=_resolved_model_for_pinned_choice(
+                model,
+                r0.get("current_model_name"),
+                r0.get("current_model_tags") or [],
+            ),
         )
 
     if pin_worker and pin_base_url:
@@ -553,7 +569,11 @@ def _pick_lane_for_model_single(
             backend_type=str(r0.get("backend_type") or "llama"),
             current_model_name=r0.get("current_model_name"),
             current_model_max_ctx=int(r0["current_model_max_ctx"]) if r0.get("current_model_max_ctx") is not None else None,
-            resolved_model_name=str(r0.get("current_model_name") or "").strip() or None,
+            resolved_model_name=_resolved_model_for_pinned_choice(
+                model,
+                r0.get("current_model_name"),
+                r0.get("current_model_tags") or [],
+            ),
         )
 
     if pin_worker and not pin_base_url:
@@ -667,7 +687,11 @@ def _pick_lane_for_model_single(
             backend_type=str(r0.get("backend_type") or "llama"),
             current_model_name=r0.get("current_model_name"),
             current_model_max_ctx=int(r0["current_model_max_ctx"]) if r0.get("current_model_max_ctx") is not None else None,
-            resolved_model_name=str(r0.get("current_model_name") or "").strip() or None,
+            resolved_model_name=_resolved_model_for_pinned_choice(
+                model,
+                r0.get("current_model_name"),
+                r0.get("current_model_tags") or [],
+            ),
         )
 
     def _pick() -> LaneChoice | None:

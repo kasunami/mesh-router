@@ -66,6 +66,35 @@ class PinWorkerPlacementTests(unittest.TestCase):
 
         self.assertEqual(choice.worker_id, "Static-Deskix")
         self.assertEqual(choice.lane_id, "lane-1")
+        self.assertEqual(choice.resolved_model_name, "qwen3.5-9b")
+
+    def test_pin_worker_unmatched_lane_resolves_to_requested_model_for_swap(self) -> None:
+        rows = [
+            {
+                "lane_id": "lane-cpu",
+                "host_name": "Static-Mobile-2",
+                "base_url": "http://10.0.0.132:21435",
+                "lane_type": "cpu",
+                "backend_type": "llama",
+                "status": "ready",
+                "proxy_auth_metadata": {},
+                "current_model_name": "Qwen3.5-9B-Q4_K_M.gguf",
+                "current_model_tags": [],
+                "current_model_max_ctx": 32768,
+            }
+        ]
+
+        with mock.patch.object(router_module, "db", _Db()), mock.patch.object(router_module, "q", return_value=rows):
+            choice = router_module.pick_lane_for_model(
+                model="google_gemma-4-26B-A4B-it-Q4_K_M.gguf",
+                pin_worker="Static-Mobile-2",
+                pin_lane_type="cpu",
+            )
+
+        self.assertEqual(choice.worker_id, "Static-Mobile-2")
+        self.assertEqual(choice.lane_id, "lane-cpu")
+        self.assertEqual(choice.current_model_name, "Qwen3.5-9B-Q4_K_M.gguf")
+        self.assertEqual(choice.resolved_model_name, "google_gemma-4-26B-A4B-it-Q4_K_M.gguf")
 
     def test_pin_worker_allows_mw_lane_when_state_db_reports_ready(self) -> None:
         rows = [
@@ -159,6 +188,7 @@ class PinWorkerPlacementTests(unittest.TestCase):
         self.assertEqual(choice.worker_id, "pupix1")
         self.assertEqual(choice.lane_id, "lane-cpu")
         self.assertEqual(choice.current_model_name, "qwen3.5-4b")
+        self.assertEqual(choice.resolved_model_name, "qwen3.5-4b")
 
     def test_pin_worker_treats_canonical_falcon_request_as_loaded_when_alias_matches(self) -> None:
         rows = [
