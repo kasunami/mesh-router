@@ -4161,7 +4161,11 @@ def _execute_router_request(
             if has_images:
                 mw_target = None
             if mw_target is not None:
-                if downstream_model and not _model_request_matches_candidate(downstream_model, choice.current_model_name or ""):
+                if (
+                    downstream_model
+                    and not did_swap
+                    and not _model_request_matches_candidate(downstream_model, choice.current_model_name or "")
+                ):
                     try:
                         _send_mw_command_require_ready(
                             host_id=mw_target.host_id,
