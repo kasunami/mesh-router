@@ -836,6 +836,19 @@ def _pick_lane_for_model_single(
         # model to appear in lane_model_viability. The lane itself is the capability boundary.
         if requires_multimodal:
             ready_mm = [row for row in rows if _status(row) == "ready"]
+            ready_mm.sort(
+                key=lambda row: (
+                    0
+                    if _model_matches_request(
+                        model,
+                        row.get("current_model_name"),
+                        row.get("current_model_tags") or [],
+                    )
+                    else 1,
+                    1 if (row.get("proxy_auth_metadata") or {}).get("llama_router") is True else 0,
+                    str(row.get("host_name") or ""),
+                )
+            )
             context_limited_mm: list[dict[str, Any]] = []
             for row in ready_mm:
                 resolved_candidate = _pick_viable_model_name(

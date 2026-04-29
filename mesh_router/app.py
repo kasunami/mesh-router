@@ -4171,14 +4171,33 @@ def _execute_router_request(
                         )
                     except Exception as exc:
                         raise RuntimeError(f"MW pre-chat load_model failed: {exc}") from exc
-                resp_data = asyncio.run(
-                    _collect_mw_chat_completion(
-                        target=mw_target,
-                        request_id=request_id,
-                        model=downstream_model,
-                        request_payload=request_payload,
+                try:
+                    resp_data = asyncio.run(
+                        _collect_mw_chat_completion(
+                            target=mw_target,
+                            request_id=request_id,
+                            model=downstream_model,
+                            request_payload=request_payload,
+                        )
                     )
-                )
+                except Exception as exc:
+                    if not did_swap:
+                        raise
+                    logger.warning(
+                        "MW dispatch failed immediately after swap; retrying once lane_id=%s model=%s error=%s",
+                        lane_id,
+                        downstream_model,
+                        exc,
+                    )
+                    time.sleep(2.0)
+                    resp_data = asyncio.run(
+                        _collect_mw_chat_completion(
+                            target=mw_target,
+                            request_id=request_id,
+                            model=downstream_model,
+                            request_payload=request_payload,
+                        )
+                    )
                 downstream_status_code = 200
             else:
                 # Strict MW authority: if the lane is explicitly MW-managed, never fall back to direct base_url proxy.
@@ -4229,6 +4248,19 @@ def _execute_router_request(
                         json=request_payload,
                         headers={"Authorization": f"Bearer {token}"},
                     )
+                    if did_swap and downstream_response.status_code >= 400:
+                        logger.warning(
+                            "Direct dispatch failed immediately after swap; retrying once lane_id=%s model=%s status=%s",
+                            lane_id,
+                            downstream_model,
+                            downstream_response.status_code,
+                        )
+                        time.sleep(2.0)
+                        downstream_response = client.post(
+                            f"{choice.base_url.rstrip('/')}{endpoint}",
+                            json=request_payload,
+                            headers={"Authorization": f"Bearer {token}"},
+                        )
                 downstream_status_code = downstream_response.status_code
                 try:
                     resp_data = downstream_response.json()
