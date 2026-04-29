@@ -96,3 +96,28 @@ def test_runtime_state_store_can_label_response_snapshots() -> None:
 
     fact = store.get_lane_facts([("static-deskix", "gpu")])[("static-deskix", "gpu")]
     assert fact["metadata"]["source"] == "mw_response_snapshot"
+
+
+def test_runtime_state_store_maps_top_level_validated_candidates_to_lanes() -> None:
+    redis = FakeRedis()
+    store = RuntimeStateStore(redis)  # type: ignore[arg-type]
+    now = datetime(2026, 4, 15, 12, 2, tzinfo=UTC)
+
+    store.write_host_snapshot(
+        host_id="static-deskix",
+        snapshot={
+            "service_states": [],
+            "validated_candidates": [
+                {"canonical_id": "Qwen3.5-9B-Q4_K_M.gguf", "lane_ids": ["gpu"]},
+                {"canonical_id": "falcon3-10b", "lane_ids": ["cpu"]},
+            ],
+            "lane_states": [
+                {"lane_id": "gpu", "actual_state": "running", "health_status": "healthy"},
+            ],
+        },
+        observed_at=now,
+        ttl_seconds=90,
+    )
+
+    fact = store.get_lane_facts([("static-deskix", "gpu")])[("static-deskix", "gpu")]
+    assert fact["validated_candidates"] == [{"canonical_id": "Qwen3.5-9B-Q4_K_M.gguf", "lane_ids": ["gpu"]}]

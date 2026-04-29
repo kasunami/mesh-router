@@ -202,6 +202,31 @@ def _upsert_lanes(cur: Any, *, host_id: str, lane_states: Iterable[dict[str, Any
         )
 
 
+def _attach_snapshot_candidates_to_lanes(snapshot: dict[str, Any], lane_states: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    candidates = snapshot.get("validated_candidates") or []
+    if not isinstance(candidates, list):
+        return lane_states
+    by_lane: dict[str, list[dict[str, Any]]] = {}
+    for item in candidates:
+        if not isinstance(item, dict):
+            continue
+        lane_ids = item.get("lane_ids") or []
+        if not isinstance(lane_ids, list):
+            continue
+        for lane_id in lane_ids:
+            by_lane.setdefault(str(lane_id), []).append(dict(item))
+    if not by_lane:
+        return lane_states
+    enriched: list[dict[str, Any]] = []
+    for lane in lane_states:
+        lane_copy = dict(lane)
+        lane_id = str(lane_copy.get("lane_id") or "")
+        if lane_copy.get("validated_candidates") is None and lane_id in by_lane:
+            lane_copy["validated_candidates"] = by_lane[lane_id]
+        enriched.append(lane_copy)
+    return enriched
+
+
 def _upsert_transition(cur: Any, *, request_id: str, host_id: str, payload: dict[str, Any], observed_at: datetime) -> None:
     response_type = str(payload.get("response_type") or "")
     command_type = str(payload.get("command_type") or "")
@@ -312,7 +337,7 @@ def process_message(
                     notes_patch={"mw": {"last_state": payload}},
                 )
                 service_states = list(snapshot.get("service_states") or [])
-                lane_states = list(snapshot.get("lane_states") or [])
+                lane_states = _attach_snapshot_candidates_to_lanes(snapshot, list(snapshot.get("lane_states") or []))
                 # Some MW versions may omit `service_states` or not include every service_id referenced by lanes.
                 # `mw_lanes` has an FK to `mw_services`, so ensure at least stub service rows exist.
                 known_services: set[str] = {
@@ -351,9 +376,10 @@ def process_message(
                     _insert_transition_event(cur, request_id=request_id, host_id=host_id, payload=body, observed_at=observed_at)
                 snapshot = _response_host_state_snapshot(body)
                 if runtime_store is not None and snapshot is not None:
+                    lane_states = _attach_snapshot_candidates_to_lanes(snapshot, list(snapshot.get("lane_states") or []))
                     runtime_store.write_host_snapshot(
                         host_id=host_id,
-                        snapshot=snapshot,
+                        snapshot={**snapshot, "lane_states": lane_states},
                         observed_at=observed_at,
                         ttl_seconds=settings.runtime_state_ttl_seconds,
                         source="mw_response_snapshot",

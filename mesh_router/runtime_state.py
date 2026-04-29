@@ -38,6 +38,21 @@ def _parse_datetime(value: Any) -> datetime | None:
         return None
 
 
+def _validated_candidates_for_lane(snapshot: dict[str, Any], lane_id: str) -> list[dict[str, Any]]:
+    candidates = snapshot.get("validated_candidates") or []
+    if not isinstance(candidates, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for item in candidates:
+        if not isinstance(item, dict):
+            continue
+        lane_ids = item.get("lane_ids") or []
+        if not isinstance(lane_ids, list) or str(lane_id) not in {str(value) for value in lane_ids}:
+            continue
+        out.append(dict(item))
+    return out
+
+
 class RuntimeStateStore:
     """Redis-backed cache for fast-changing MW host/lane runtime state.
 
@@ -94,6 +109,9 @@ class RuntimeStateStore:
             lane_id = str(lane.get("lane_id") or "")
             if not lane_id:
                 continue
+            validated_candidates = lane.get("validated_candidates")
+            if validated_candidates is None:
+                validated_candidates = _validated_candidates_for_lane(snapshot, lane_id)
             service_id = str(lane.get("service_id") or "")
             service = service_by_id.get(service_id) or {}
             metadata = {
@@ -122,7 +140,7 @@ class RuntimeStateStore:
                 "metadata": metadata,
                 "service_id": service_id or None,
                 "listen_port": service.get("listen_port"),
-                "validated_candidates": _json_safe(list(lane.get("validated_candidates") or [])),
+                "validated_candidates": _json_safe(list(validated_candidates or [])),
                 "active_job": _json_safe(lane.get("active_job")) if isinstance(lane.get("active_job"), dict) else None,
             }
             self._set_json(self.lane_key(host_id, lane_id), payload, ttl)

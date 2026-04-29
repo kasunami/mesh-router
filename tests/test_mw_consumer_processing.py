@@ -96,6 +96,10 @@ class MwConsumerProcessingTests(unittest.TestCase):
                             "active_mode": "gpu-llama-text",
                         }
                     ],
+                    "validated_candidates": [
+                        {"canonical_id": "qwen3.5-4b", "lane_ids": ["gpu"]},
+                        {"canonical_id": "falcon3-10b", "lane_ids": ["cpu"]},
+                    ],
                 },
             },
             observed_at=now,
@@ -109,6 +113,10 @@ class MwConsumerProcessingTests(unittest.TestCase):
         self.assertEqual(len(runtime_store.snapshots), 1)
         self.assertEqual(runtime_store.snapshots[0]["host_id"], "static-deskix")
         self.assertEqual(runtime_store.snapshots[0]["snapshot"]["lane_states"][0]["actual_model"], "qwen3.5-4b")
+        self.assertEqual(
+            runtime_store.snapshots[0]["snapshot"]["lane_states"][0]["validated_candidates"],
+            [{"canonical_id": "qwen3.5-4b", "lane_ids": ["gpu"]}],
+        )
 
 
     def test_process_response_refreshes_runtime_cache_from_host_state(self) -> None:
