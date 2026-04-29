@@ -2685,14 +2685,25 @@ def v1_models() -> dict[str, Any]:
         with conn.cursor() as cur:
             cur.execute("SELECT model_name, tags FROM models ORDER BY model_name")
             rows = cur.fetchall()
-    data = [
-        ModelInfo(
-            id=str(r["model_name"]),
-            tags=_normalized_model_tags(r.get("tags") or []),
+    data: list[ModelInfo] = []
+    seen: set[str] = set()
+    for r in rows:
+        model_name = str(r["model_name"])
+        if not _is_public_model_name(model_name):
+            continue
+        try:
+            pick_lane_for_model(model=model_name)
+        except Exception:
+            continue
+        if model_name in seen:
+            continue
+        seen.add(model_name)
+        data.append(
+            ModelInfo(
+                id=model_name,
+                tags=_normalized_model_tags(r.get("tags") or []),
+            )
         )
-        for r in rows
-        if _is_public_model_name(str(r["model_name"]))
-    ]
     resp = ModelsResponse(data=data)
     return resp.model_dump()
 
