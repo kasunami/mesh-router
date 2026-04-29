@@ -8,7 +8,7 @@ from typing import Any
 
 from .db import db, mw_state_db, q
 from .config import settings
-from .mw_overlay import apply_mw_effective_status
+from .mw_overlay import apply_mw_effective_status, is_explicit_mw_managed
 
 _RECENT_PROXY_ERROR_COOLDOWN_S = 900
 
@@ -396,7 +396,9 @@ def _pick_lane_for_model_single(
             declared = []
         tags_by_model = meta.get("declared_model_tags") if isinstance(meta.get("declared_model_tags"), dict) else {}
         max_ctx_by_model = meta.get("declared_max_ctx") if isinstance(meta.get("declared_max_ctx"), dict) else {}
-        out: list[dict[str, Any]] = list(row.get("local_viable_models") or [])
+        validated_candidates = row.get("validated_candidates")
+        mw_authoritative = is_explicit_mw_managed(row) and validated_candidates is not None
+        out: list[dict[str, Any]] = [] if mw_authoritative else list(row.get("local_viable_models") or [])
         for name in declared:
             model_name = str(name or "").strip()
             if not model_name:
@@ -409,7 +411,7 @@ def _pick_lane_for_model_single(
                     "allowed": True,
                 }
             )
-        for item in row.get("validated_candidates") or []:
+        for item in validated_candidates or []:
             if not isinstance(item, dict):
                 continue
             model_name = str(item.get("canonical_id") or item.get("model_name") or "").strip()

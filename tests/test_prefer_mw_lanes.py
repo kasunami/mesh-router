@@ -398,6 +398,37 @@ class PreferMwLanePlacementTests(unittest.TestCase):
         self.assertIn("p.allowed IS DISTINCT FROM false", query_text)
         self.assertIn("jsonb_array_length(COALESCE(h.model_store_paths", query_text)
 
+    def test_mw_validated_candidates_replace_stale_db_viability(self) -> None:
+        rows = [
+            {
+                "lane_id": "mw-gpu",
+                "host_name": "worker",
+                "base_url": "http://worker.example:21434",
+                "lane_type": "gpu",
+                "backend_type": "llama",
+                "status": "ready",
+                "proxy_auth_metadata": {"control_plane": "mw", "mw_host_id": "worker", "mw_lane_id": "gpu"},
+                "current_model_name": "Qwen3.5-9B-Q4_K_M.gguf",
+                "current_model_tags": [],
+                "current_model_max_ctx": 32768,
+                "local_viable_models": [
+                    {"model_name": "Qwen3.5-2B-Q4_K_M.gguf", "tags": [], "max_ctx": 8192, "allowed": True}
+                ],
+                "validated_candidates": [
+                    {"canonical_id": "Qwen3.5-9B-Q4_K_M.gguf", "tags": ["qwen3.5-9b"], "max_ctx": 32768}
+                ],
+                "remote_viable_models": [],
+            }
+        ]
+
+        with (
+            mock.patch.object(router_module, "db", _Db()),
+            mock.patch.object(router_module, "q", return_value=rows),
+            mock.patch.object(router_module, "apply_mw_effective_status", lambda *args, **kwargs: None),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "no READY lanes"):
+                router_module.pick_lane_for_model(model="Qwen3.5-2B-Q4_K_M.gguf")
+
     def test_qwen_selection_tag_matches_quantized_viable_model(self) -> None:
         rows = [
             {
