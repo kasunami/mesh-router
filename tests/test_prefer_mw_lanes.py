@@ -71,6 +71,49 @@ class PreferMwLanePlacementTests(unittest.TestCase):
         self.assertEqual(choice.lane_id, "lane-mw")
         self.assertEqual(choice.worker_id, "Static-Deskix")
 
+    def test_mw_lane_survives_stale_db_backend_prefilter(self) -> None:
+        rows = [
+            {
+                "lane_id": "lane-cpu",
+                "host_name": "Static-Deskix",
+                "base_url": "http://10.0.0.99:21435",
+                "lane_type": "cpu",
+                "backend_type": "bitnet",
+                "status": "suspended",
+                "proxy_auth_metadata": {"control_plane": "mw", "mw_host_id": "static-deskix", "mw_lane_id": "cpu"},
+                "current_model_name": "falcon3-10b",
+                "current_model_tags": [],
+                "current_model_max_ctx": 8192,
+                "local_viable_models": [],
+                "remote_viable_models": [],
+            }
+        ]
+        seen_sql: list[str] = []
+
+        def _q(_cur, sql, _params):  # noqa: ANN001
+            seen_sql.append(sql)
+            return rows
+
+        def _overlay(overlay_rows, **_kwargs):  # noqa: ANN001
+            overlay_rows[0].update(
+                {
+                    "effective_status": "ready",
+                    "backend_type": "llama",
+                    "current_model_name": "qwen3.5-4b",
+                }
+            )
+
+        with (
+            mock.patch.object(router_module, "db", _Db()),
+            mock.patch.object(router_module, "q", _q),
+            mock.patch.object(router_module, "apply_mw_effective_status", _overlay),
+        ):
+            choice = router_module.pick_lane_for_model(model="qwen3.5-4b", backend_type="llama")
+
+        self.assertEqual(choice.lane_id, "lane-cpu")
+        self.assertEqual(choice.backend_type, "llama")
+        self.assertTrue(any("(l.proxy_auth_metadata->>'control_plane')='mw'" in sql for sql in seen_sql))
+
     def test_multimodal_requests_can_use_seeded_mw_ignored_vlm_lane(self) -> None:
         rows = [
             {

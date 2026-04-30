@@ -461,7 +461,11 @@ def _pick_lane_for_model_single(
                     WHERE l.lane_id=%s
                       AND (%s::text IS NULL OR h.host_name=%s::text)
                       AND (%s::text IS NULL OR l.base_url=%s::text)
-                      AND (%s::text IS NULL OR l.backend_type = %s::text)
+                      AND (
+                        %s::text IS NULL
+                        OR l.backend_type = %s::text
+                        OR (l.proxy_auth_metadata->>'control_plane')='mw'
+                      )
                       AND (%s::text IS NULL OR l.lane_type::text = %s::text)
                       AND (%s::text[] IS NULL OR l.lane_id::text <> ALL(%s::text[]))
                       AND (l.status='ready' OR (l.proxy_auth_metadata->>'control_plane')='mw')
@@ -533,7 +537,11 @@ def _pick_lane_for_model_single(
                     LEFT JOIN lane_model_policy cmp ON cmp.lane_id=l.lane_id AND cmp.model_id=cm.model_id
                     WHERE h.host_name=%s
                       AND (l.status IN ('ready', 'suspended') OR (l.proxy_auth_metadata->>'control_plane')='mw')
-                      AND (%s::text IS NULL OR l.backend_type = %s::text)
+                      AND (
+                        %s::text IS NULL
+                        OR l.backend_type = %s::text
+                        OR (l.proxy_auth_metadata->>'control_plane')='mw'
+                      )
                       AND (%s::text IS NULL OR l.lane_type::text = %s::text)
                       AND (%s::text[] IS NULL OR l.lane_id::text <> ALL(%s::text[]))
                     ORDER BY
@@ -610,7 +618,11 @@ def _pick_lane_for_model_single(
                           AND rr.released_at > now() - (%s * interval '1 second')
                       )
                       AND (%s::text IS NULL OR l.lane_type::text = %s::text)
-                      AND (%s::text IS NULL OR l.backend_type = %s::text)
+                      AND (
+                        %s::text IS NULL
+                        OR l.backend_type = %s::text
+                        OR (l.proxy_auth_metadata->>'control_plane')='mw'
+                      )
                       AND (%s::text[] IS NULL OR l.lane_id::text <> ALL(%s::text[]))
                     ORDER BY
                       CASE l.lane_type WHEN 'gpu' THEN 0 WHEN 'mlx' THEN 1 WHEN 'cpu' THEN 2 ELSE 9 END,
@@ -773,8 +785,15 @@ def _pick_lane_for_model_single(
                       AND (%s::text IS NULL OR l.lane_type::text = %s::text)
                       AND (
                         CASE
-                          WHEN %s::text IS NOT NULL THEN l.backend_type = %s::text
-                          ELSE l.backend_type IN ('llama', 'mlx') OR l.backend_type IS NULL
+                          WHEN %s::text IS NOT NULL THEN (
+                            l.backend_type = %s::text
+                            OR (l.proxy_auth_metadata->>'control_plane')='mw'
+                          )
+                          ELSE (
+                            l.backend_type IN ('llama', 'mlx')
+                            OR l.backend_type IS NULL
+                            OR (l.proxy_auth_metadata->>'control_plane')='mw'
+                          )
                         END
                       )
                       AND (%s::text[] IS NULL OR l.lane_id::text <> ALL(%s::text[]))

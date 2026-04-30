@@ -79,6 +79,29 @@ class RouteResolveApiTests(unittest.TestCase):
         self.assertTrue(body["ok"])
         self.assertEqual(body["choice"]["resolved_model"], "qwen3.5:4B")
 
+    def test_route_resolve_passes_lane_id_pin_to_picker(self) -> None:
+        seen: list[dict] = []
+
+        def _pick(**kwargs):  # noqa: ANN001
+            seen.append(kwargs)
+            return _Choice()
+
+        resolver_module.pick_lane_for_model = _pick  # type: ignore[assignment]
+
+        client = TestClient(app_module.app)
+        resp = client.post(
+            "/api/routes/resolve",
+            json={
+                "modality": "chat",
+                "model": "qwen3.5-4b",
+                "lane_id": "8a37c3e3-eefc-43b0-90b7-737c57198287",
+                "allow_opportunistic": True,
+            },
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.json()["ok"])
+        self.assertEqual(seen[0]["pin_lane_id"], "8a37c3e3-eefc-43b0-90b7-737c57198287")
+
 
 if __name__ == "__main__":
     unittest.main()

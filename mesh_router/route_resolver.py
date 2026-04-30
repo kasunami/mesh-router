@@ -162,6 +162,7 @@ def resolve_route(
                 model=cand_model,
                 backend_type="sd" if modality == "images" else "llama" if modality == "chat" else None,
                 pin_worker=host_name,
+                pin_lane_id=lane_id,
                 exclude_lane_ids=excluded_lane_ids,
             )
         except Exception:
