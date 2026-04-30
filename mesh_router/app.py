@@ -1990,6 +1990,56 @@ def _resolve_lane_downstream_alias(cur, *, lane_id: str, model_id: str) -> str |
     return None
 
 
+def _artifact_path_looks_servable(local_path: str) -> bool:
+    path = str(local_path or "").strip()
+    if not path:
+        return False
+    blocked_parts = ("/.locks/", "/blobs/", "/refs/", "/.cache/")
+    if any(part in path for part in blocked_parts):
+        return False
+    lowered_name = Path(path).name.lower()
+    if lowered_name.endswith((".lock", ".metadata", ".incomplete")):
+        return False
+    return True
+
+
+def _resolve_lane_downstream_artifact_by_request(cur, *, lane_id: str, requested_model_name: str) -> str | None:
+    lane_row = _resolve_lane(cur, lane_id)
+    host_row = _resolve_host(cur, str(lane_row["host_id"])) if lane_row else None
+    host_id = str((lane_row or {}).get("host_id") or "").strip()
+    if not host_id:
+        return None
+    local_model_root = _local_model_root(host_row, lane_row)
+    cur.execute(
+        """
+        SELECT m.model_name, a.local_path
+        FROM host_model_artifacts a
+        JOIN models m ON m.model_id = a.model_id
+        WHERE a.host_id=%s
+          AND a.present=true
+          AND a.eligible=true
+        ORDER BY char_length(a.local_path) ASC
+        """,
+        (host_id,),
+    )
+    for row in cur.fetchall() or []:
+        model_name = str((row or {}).get("model_name") or "").strip()
+        local_path = str((row or {}).get("local_path") or "").strip()
+        if not _artifact_path_looks_servable(local_path):
+            continue
+        if local_model_root and not _path_matches_local_model_root(
+            artifact_path=local_path,
+            local_model_root=local_model_root,
+        ):
+            continue
+        if _model_request_matches_candidate(requested_model_name, model_name) or _model_request_matches_candidate(
+            requested_model_name,
+            local_path,
+        ):
+            return local_path
+    return None
+
+
 def _resolve_downstream_model_for_lane(
     cur,
     *,
@@ -2024,12 +2074,26 @@ def _resolve_downstream_model_for_lane(
             )
             if downstream_model:
                 return downstream_model
+        downstream_model = _resolve_lane_downstream_artifact_by_request(
+            cur,
+            lane_id=lane_id,
+            requested_model_name=requested_model_name,
+        )
+        if downstream_model:
+            return downstream_model
         return current_model_name
 
     if model_id:
         downstream_model = _resolve_lane_downstream_alias(cur, lane_id=lane_id, model_id=model_id)
         if downstream_model:
             return downstream_model
+    downstream_model = _resolve_lane_downstream_artifact_by_request(
+        cur,
+        lane_id=lane_id,
+        requested_model_name=requested_model_name,
+    )
+    if downstream_model:
+        return downstream_model
 
     return requested_model_name
 

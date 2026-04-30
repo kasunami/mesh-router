@@ -71,6 +71,54 @@ class StreamingMwTests(unittest.TestCase):
         self.assertEqual(adjusted["max_tokens"], 1280)
         self.assertEqual(payload["max_tokens"], 16)
 
+    def test_downstream_model_resolution_uses_mlx_artifact_path_for_alias(self) -> None:
+        class _Cursor:
+            def __init__(self) -> None:
+                self._result: object = None
+
+            def execute(self, sql: str, params: tuple | None = None) -> None:  # noqa: ARG002
+                if "SELECT l.current_model_name" in sql:
+                    self._result = {"current_model_name": "Qwen3.5-9B-6bit", "current_model_tags": []}
+                elif "FROM lane_model_aliases" in sql:
+                    self._result = None
+                elif "FROM lanes" in sql and "WHERE lane_id::text" in sql:
+                    self._result = {
+                        "lane_id": "mac-mlx",
+                        "host_id": "host-1",
+                        "lane_type": "mlx",
+                        "backend_type": "mlx",
+                    }
+                elif "FROM hosts" in sql:
+                    self._result = {"host_id": "host-1", "model_store_paths": ["/Users/kasunami/models"]}
+                elif "FROM host_model_artifacts" in sql:
+                    self._result = [
+                        {
+                            "model_name": "Qwen3.5-4B-MLX-4bit",
+                            "local_path": "/Users/kasunami/models/Qwen3.5-4B-MLX-4bit",
+                        },
+                        {
+                            "model_name": "model.safetensors",
+                            "local_path": "/Users/kasunami/models/Qwen3.5-4B-MLX-4bit/model.safetensors",
+                        },
+                    ]
+                else:
+                    self._result = None
+
+            def fetchone(self):  # noqa: ANN001
+                return self._result if isinstance(self._result, dict) else None
+
+            def fetchall(self):  # noqa: ANN001
+                return self._result if isinstance(self._result, list) else []
+
+        resolved = app_module._resolve_downstream_model_for_lane(  # type: ignore[attr-defined]
+            _Cursor(),
+            lane_id="mac-mlx",
+            requested_model_name="qwen3.5-4b",
+            model_id="alias-model-id",
+        )
+
+        self.assertEqual(resolved, "/Users/kasunami/models/Qwen3.5-4B-MLX-4bit")
+
     def test_reasoning_chunk_filter_hides_hidden_reasoning(self) -> None:
         raw = b'{"choices":[{"finish_reason":null,"delta":{"reasoning_content":"thinking"}}]}'
         self.assertIsNone(app_module._sanitize_stream_chat_chunk(raw))  # type: ignore[attr-defined]
