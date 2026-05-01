@@ -123,6 +123,10 @@ class StreamingMwTests(unittest.TestCase):
         raw = b'{"choices":[{"finish_reason":null,"delta":{"reasoning_content":"thinking"}}]}'
         self.assertIsNone(app_module._sanitize_stream_chat_chunk(raw))  # type: ignore[attr-defined]
 
+    def test_reasoning_chunk_filter_hides_mlx_reasoning_field(self) -> None:
+        raw = b'{"choices":[{"finish_reason":null,"delta":{"reasoning":"thinking"}}]}'
+        self.assertIsNone(app_module._sanitize_stream_chat_chunk(raw))  # type: ignore[attr-defined]
+
     def test_chat_streaming_uses_mw_grpc_when_enabled(self) -> None:
         app_module._mw_client.cache_clear()
         fake_mw_client = SimpleNamespace(send_command=lambda **kwargs: {"ok": True})

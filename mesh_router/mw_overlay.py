@@ -61,6 +61,13 @@ def is_explicit_mw_managed(row: dict[str, Any]) -> bool:
     return isinstance(meta, dict) and str(meta.get("control_plane") or "").strip().lower() == "mw"
 
 
+def _operator_suspension_reason(row: dict[str, Any]) -> str | None:
+    reason = str(row.get("suspension_reason") or "").strip()
+    if not reason or reason.startswith("swap:"):
+        return None
+    return reason
+
+
 def _candidate_mw_binding(row: dict[str, Any]) -> tuple[str, str, bool] | None:
     pam = row.get("proxy_auth_metadata") or {}
     if isinstance(pam, dict) and pam.get("mw_ignore") is True:
@@ -283,6 +290,11 @@ def apply_mw_effective_status(
         validated_candidates = f.get("validated_candidates")
         if validated_candidates is not None:
             row["validated_candidates"] = validated_candidates
+        operator_suspension = _operator_suspension_reason(row)
+        if operator_suspension:
+            row["effective_status"] = "suspended"
+            row["readiness_reason"] = "operator_suspended"
+            continue
         if shared_explicit_binding and backend_conflicts:
             row["effective_status"] = "suspended"
             row["readiness_reason"] = "backend_mismatch"

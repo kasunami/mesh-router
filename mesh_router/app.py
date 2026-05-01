@@ -251,9 +251,14 @@ def _sanitize_stream_chat_chunk(raw: bytes) -> bytes | None:
     if not isinstance(choice, dict):
         return raw
     delta = choice.get("delta")
-    if isinstance(delta, dict) and "reasoning_content" in delta and not settings.expose_reasoning_content:
+    if (
+        isinstance(delta, dict)
+        and ("reasoning_content" in delta or "reasoning" in delta)
+        and not settings.expose_reasoning_content
+    ):
         delta = dict(delta)
         delta.pop("reasoning_content", None)
+        delta.pop("reasoning", None)
         choice = dict(choice)
         choice["delta"] = delta
         item = dict(item)
@@ -3213,6 +3218,8 @@ def _active_swap_stale_under_mw(row: dict[str, Any], active_swap: dict[str, Any]
 
 def _suspension_stale_under_mw(row: dict[str, Any], suspension_reason: str | None) -> bool:
     if not suspension_reason:
+        return False
+    if not str(suspension_reason).startswith("swap:"):
         return False
     if str(row.get("effective_status") or "") != "ready":
         return False

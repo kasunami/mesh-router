@@ -162,6 +162,57 @@ class MWLaneReadinessOverlayTests(unittest.TestCase):
         self.assertEqual(item["status"], "offline")
         self.assertEqual(item["readiness_reason"], "not_running")
 
+    def test_api_lanes_respects_operator_suspension_when_mw_ready(self) -> None:
+        base_rows = [
+            {
+                "lane_id": "lane-1",
+                "host_id": "host-1",
+                "host_name": "tiffs-macbook",
+                "lane_name": "mlx",
+                "lane_type": "mlx",
+                "backend_type": "mlx",
+                "base_url": "http://10.0.0.97:11435",
+                "status": "offline",
+                "current_model_name": None,
+                "ram_budget_bytes": None,
+                "vram_budget_bytes": None,
+                "proxy_auth_mode": None,
+                "proxy_auth_metadata": {"control_plane": "mw", "mw_host_id": "tiffs-macbook", "mw_lane_id": "mlx"},
+                "suspension_reason": "ui_disabled",
+                "last_probe_at": None,
+                "last_ok_at": None,
+                "created_at": None,
+                "updated_at": None,
+            }
+        ]
+        now = datetime.now(tz=timezone.utc)
+        mw_execute_rows = [
+            [
+                {
+                    "host_id": "tiffs-macbook",
+                    "lane_id": "mlx",
+                    "last_heartbeat_at": now,
+                    "actual_model": "/Users/kasunami/models/Qwen3.5-9B-MLX-4bit",
+                    "actual_state": "running",
+                    "health_status": "healthy",
+                    "backend_type": "mlx",
+                    "listen_port": 11434,
+                }
+            ],
+        ]
+
+        app_module.db = _FakeDb(_FakeCursor(execute_rows=[base_rows]))  # type: ignore[assignment]
+        app_module.mw_state_db = _FakeDb(_FakeCursor(execute_rows=mw_execute_rows))  # type: ignore[assignment]
+
+        client = TestClient(app_module.app)
+        resp = client.get("/api/lanes")
+        self.assertEqual(resp.status_code, 200)
+        item = resp.json()["items"][0]
+        self.assertEqual(item["status"], "suspended")
+        self.assertEqual(item["readiness_reason"], "operator_suspended")
+        self.assertEqual(item["suspension_reason"], "ui_disabled")
+        self.assertEqual(item["current_model_name"], "/Users/kasunami/models/Qwen3.5-9B-MLX-4bit")
+
     def test_api_lanes_infers_mw_for_legacy_cpu_lane_without_metadata(self) -> None:
         base_rows = [
             {
