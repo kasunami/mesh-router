@@ -1002,6 +1002,22 @@ def _model_request_matches_candidate(
     return bool(request_keys & set(_model_tags_with_inferred(candidate_model_name, candidate_tags)))
 
 
+def _lane_already_serves_model_request(
+    *,
+    requested_model_name: str | None,
+    downstream_model_name: str | None,
+    current_model_name: str | None,
+) -> bool:
+    current = str(current_model_name or "").strip()
+    if not current:
+        return False
+    for candidate in (requested_model_name, downstream_model_name):
+        requested = str(candidate or "").strip()
+        if requested and _model_request_matches_candidate(requested, current):
+            return True
+    return False
+
+
 def _resolve_swap_candidate(
     capabilities: LaneCapabilityResponse,
     requested_model_name: str,
@@ -3189,21 +3205,26 @@ def _set_lane_suspension(cur, *, lane_id: str, suspended: bool, reason: str) -> 
             (reason, lane_id),
         )
         return
+    reason = str(reason or "").strip()
+    clear_unreasoned = reason in {"", "ui_disabled"}
     cur.execute(
         """
         UPDATE lanes
         SET status=CASE
-              WHEN status IN ('offline', 'suspended', 'error') AND COALESCE(suspension_reason, '')=%s THEN 'ready'
+              WHEN status IN ('offline', 'suspended', 'error')
+                   AND (COALESCE(suspension_reason, '')=%s OR (%s AND suspension_reason IS NULL))
+                THEN 'ready'
               ELSE status
             END,
             suspension_reason=CASE
               WHEN COALESCE(suspension_reason, '')=%s THEN NULL
+              WHEN %s AND suspension_reason IS NULL THEN NULL
               ELSE suspension_reason
             END,
             updated_at=now()
         WHERE lane_id=%s
         """,
-        (reason, reason, lane_id),
+        (reason, clear_unreasoned, reason, clear_unreasoned, lane_id),
     )
 
 
@@ -4265,7 +4286,11 @@ def _execute_router_request(
                 if (
                     downstream_model
                     and not did_swap
-                    and not _model_request_matches_candidate(downstream_model, choice.current_model_name or "")
+                    and not _lane_already_serves_model_request(
+                        requested_model_name=model_name,
+                        downstream_model_name=downstream_model,
+                        current_model_name=choice.current_model_name,
+                    )
                 ):
                     try:
                         _send_mw_command_require_ready(
@@ -4693,7 +4718,11 @@ def _execute_router_request_streaming(
 
         # Best-effort: ensure the requested model is loaded on MW-managed lanes before streaming.
         if mw_target is not None and settings.mw_control_enabled:
-            if downstream_model and not _model_request_matches_candidate(downstream_model, choice.current_model_name or ""):
+            if downstream_model and not _lane_already_serves_model_request(
+                requested_model_name=model_name,
+                downstream_model_name=downstream_model,
+                current_model_name=choice.current_model_name,
+            ):
                 try:
                     _send_mw_command_require_ready(
                         host_id=mw_target.host_id,

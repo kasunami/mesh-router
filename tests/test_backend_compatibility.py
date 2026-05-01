@@ -177,6 +177,24 @@ class BackendCompatibilityTests(unittest.TestCase):
             )
         )
 
+    def test_loaded_canonical_model_satisfies_resolved_downstream_artifact_path(self) -> None:
+        self.assertTrue(
+            app_module._lane_already_serves_model_request(  # type: ignore[attr-defined]
+                requested_model_name="qwen3.5-4b",
+                downstream_model_name="/home/kasunami/models/Qwen3.5-4B-Q4_K_M.gguf",
+                current_model_name="qwen3.5-4b",
+            )
+        )
+
+    def test_loaded_generic_model_does_not_satisfy_explicit_path_request(self) -> None:
+        self.assertFalse(
+            app_module._lane_already_serves_model_request(  # type: ignore[attr-defined]
+                requested_model_name="/Users/kasunami/models/Qwen3.5-9B-MLX-4bit",
+                downstream_model_name="/Users/kasunami/models/Qwen3.5-9B-MLX-4bit",
+                current_model_name="qwen3.5-9b",
+            )
+        )
+
     def test_mw_effective_lane_row_for_capabilities_prefers_mw_backend_and_model_truth(self) -> None:
         lane_row = {
             "lane_id": "lane-cpu",
