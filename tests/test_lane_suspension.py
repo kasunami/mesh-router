@@ -25,7 +25,7 @@ class LaneSuspensionTests(unittest.TestCase):
         )
 
         sql, params = cur.calls[-1]
-        self.assertIn("status IN ('offline', 'suspended')", sql)
+        self.assertIn("status IN ('offline', 'suspended', 'error')", sql)
         self.assertEqual(params, ("swap:abc:stopping_siblings", "swap:abc:stopping_siblings", "lane-1"))
 
 

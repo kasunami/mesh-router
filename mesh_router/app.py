@@ -3193,7 +3193,7 @@ def _set_lane_suspension(cur, *, lane_id: str, suspended: bool, reason: str) -> 
         """
         UPDATE lanes
         SET status=CASE
-              WHEN status IN ('offline', 'suspended') AND COALESCE(suspension_reason, '')=%s THEN 'ready'
+              WHEN status IN ('offline', 'suspended', 'error') AND COALESCE(suspension_reason, '')=%s THEN 'ready'
               ELSE status
             END,
             suspension_reason=CASE
