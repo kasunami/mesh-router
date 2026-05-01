@@ -949,11 +949,41 @@ def _is_exact_model_request(model_name: str | None) -> bool:
     return False
 
 
+def _is_path_model_request(model_name: str | None) -> bool:
+    raw = (model_name or "").strip()
+    return "/" in raw or "\\" in raw
+
+
+def _path_model_request_matches_candidate(
+    requested_model_name: str,
+    candidate_model_name: str,
+    candidate_tags: list[str] | None = None,
+) -> bool:
+    requested = (requested_model_name or "").strip()
+    candidate = (candidate_model_name or "").strip()
+    if not requested or not candidate:
+        return False
+    requested_parts = re.split(r"[\\/]+", requested)
+    candidate_parts = re.split(r"[\\/]+", candidate)
+    requested_stem = requested_parts[-1] if requested_parts else requested
+    candidate_stem = candidate_parts[-1] if candidate_parts else candidate
+    if candidate == requested or candidate_stem == requested_stem:
+        return True
+    requested_keys = {requested.lower(), requested_stem.lower()}
+    return bool(requested_keys & set(_normalized_model_tags(candidate_tags)))
+
+
 def _model_request_matches_candidate(
     requested_model_name: str,
     candidate_model_name: str,
     candidate_tags: list[str] | None = None,
 ) -> bool:
+    if _is_path_model_request(requested_model_name):
+        return _path_model_request_matches_candidate(
+            requested_model_name,
+            candidate_model_name,
+            candidate_tags,
+        )
     if _is_exact_model_request(requested_model_name):
         # Also match against the basename so that lanes storing full local paths
         # (e.g. /opt/models/Qwen3.5-9B-6bit) match a bare name request.

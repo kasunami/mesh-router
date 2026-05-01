@@ -163,6 +163,20 @@ class BackendCompatibilityTests(unittest.TestCase):
             )
         self.assertEqual(result, "/Users/kasunami/models/Qwen3.5-4B-MLX-4bit")
 
+    def test_path_request_does_not_resolve_through_generic_qwen_alias(self) -> None:
+        self.assertFalse(
+            app_module._model_request_matches_candidate(  # type: ignore[attr-defined]
+                "/Users/kasunami/models/Qwen3.5-9B-MLX-4bit",
+                "qwen3.5-9b",
+            )
+        )
+        self.assertTrue(
+            app_module._model_request_matches_candidate(  # type: ignore[attr-defined]
+                "/Users/kasunami/models/Qwen3.5-9B-MLX-4bit",
+                "Qwen3.5-9B-MLX-4bit",
+            )
+        )
+
     def test_mw_effective_lane_row_for_capabilities_prefers_mw_backend_and_model_truth(self) -> None:
         lane_row = {
             "lane_id": "lane-cpu",

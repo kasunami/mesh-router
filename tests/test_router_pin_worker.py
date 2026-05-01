@@ -190,6 +190,20 @@ class PinWorkerPlacementTests(unittest.TestCase):
         self.assertEqual(choice.current_model_name, "qwen3.5-4b")
         self.assertEqual(choice.resolved_model_name, "qwen3.5-4b")
 
+    def test_path_model_request_does_not_match_generic_family_alias(self) -> None:
+        self.assertFalse(
+            router_module._model_matches_request(  # type: ignore[attr-defined]
+                "/Users/kasunami/models/Qwen3.5-9B-MLX-4bit",
+                "qwen3.5-9b",
+            )
+        )
+        self.assertTrue(
+            router_module._model_matches_request(  # type: ignore[attr-defined]
+                "/Users/kasunami/models/Qwen3.5-9B-MLX-4bit",
+                "/Users/kasunami/models/Qwen3.5-9B-MLX-4bit",
+            )
+        )
+
     def test_pin_worker_treats_canonical_falcon_request_as_loaded_when_alias_matches(self) -> None:
         rows = [
             {
