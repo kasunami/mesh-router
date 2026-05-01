@@ -29,15 +29,15 @@ class LaneSuspensionTests(unittest.TestCase):
         self.assertEqual(
             params,
             (
-                "swap:abc:stopping_siblings",
                 False,
                 "swap:abc:stopping_siblings",
                 False,
+                "swap:abc:stopping_siblings",
                 "lane-1",
             ),
         )
 
-    def test_unsuspend_default_ui_reason_clears_unreasoned_suspended_lane(self) -> None:
+    def test_unsuspend_default_ui_reason_clears_any_suspended_lane(self) -> None:
         cur = _FakeCursor()
 
         app_module._set_lane_suspension(
@@ -48,8 +48,9 @@ class LaneSuspensionTests(unittest.TestCase):
         )
 
         sql, params = cur.calls[-1]
-        self.assertIn("suspension_reason IS NULL", sql)
-        self.assertEqual(params, ("ui_disabled", True, "ui_disabled", True, "lane-1"))
+        self.assertIn("WHEN %s AND status IN ('offline', 'suspended', 'error')", sql)
+        self.assertIn("WHEN %s THEN NULL", sql)
+        self.assertEqual(params, (True, "ui_disabled", True, "ui_disabled", "lane-1"))
 
 
 if __name__ == "__main__":

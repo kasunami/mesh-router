@@ -3211,20 +3211,22 @@ def _set_lane_suspension(cur, *, lane_id: str, suspended: bool, reason: str) -> 
         """
         UPDATE lanes
         SET status=CASE
+              WHEN %s AND status IN ('offline', 'suspended', 'error')
+                THEN 'ready'
               WHEN status IN ('offline', 'suspended', 'error')
-                   AND (COALESCE(suspension_reason, '')=%s OR (%s AND suspension_reason IS NULL))
+                   AND COALESCE(suspension_reason, '')=%s
                 THEN 'ready'
               ELSE status
             END,
             suspension_reason=CASE
+              WHEN %s THEN NULL
               WHEN COALESCE(suspension_reason, '')=%s THEN NULL
-              WHEN %s AND suspension_reason IS NULL THEN NULL
               ELSE suspension_reason
             END,
             updated_at=now()
         WHERE lane_id=%s
         """,
-        (reason, clear_unreasoned, reason, clear_unreasoned, lane_id),
+        (clear_unreasoned, reason, clear_unreasoned, reason, lane_id),
     )
 
 
