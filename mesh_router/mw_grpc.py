@@ -30,7 +30,8 @@ class MwGrpcClient:
         messages: list[dict[str, Any]],
         temperature: float | None,
         max_tokens: int | None,
-        deadline_unix_ms: int | None,
+        deadline_unix_ms: int | None = None,
+        stream: bool = True,
     ) -> AsyncIterator[meshworker_pb2.ChatStreamEvent]:
         issued_at_ms = int(time.time() * 1000)
         deadline_ms = deadline_unix_ms or (issued_at_ms + 30_000)
@@ -54,7 +55,7 @@ class MwGrpcClient:
             ],
             temperature=float(temperature or 0.0),
             max_tokens=int(max_tokens or 0),
-            stream=True,
+            stream=bool(stream),
             options={},
         )
 

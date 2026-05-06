@@ -3980,6 +3980,7 @@ async def _collect_mw_chat_completion(
         temperature=backend_payload.get("temperature"),
         max_tokens=backend_payload.get("max_tokens"),
         deadline_unix_ms=None,
+        stream=False,
     ):
         if str(event.event_type or "") in {"failed", "cancelled"}:
             code = str(event.error_code or "mw_error")
