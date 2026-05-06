@@ -193,9 +193,33 @@ def _requested_visible_tokens(payload: dict[str, Any]) -> int | None:
         return None
 
 
+def _request_disables_reasoning(payload: dict[str, Any]) -> bool:
+    for key in ("thinking_tokens", "reasoning_budget", "reasoning_budget_tokens"):
+        if key not in payload:
+            continue
+        try:
+            if int(payload.get(key) or 0) <= 0:
+                return True
+        except (TypeError, ValueError):
+            continue
+    for message in payload.get("messages") or []:
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content")
+        if isinstance(content, str) and "/no_think" in content:
+            return True
+        if isinstance(content, list):
+            for part in content:
+                if isinstance(part, dict) and "/no_think" in str(part.get("text") or ""):
+                    return True
+    return False
+
+
 def _backend_max_tokens_for_model(*, model_name: str, payload: dict[str, Any]) -> int | None:
     requested = _requested_visible_tokens(payload)
     if not _is_reasoning_model(model_name):
+        return requested
+    if _request_disables_reasoning(payload):
         return requested
     visible_budget = requested
     applied_threshold = max(1, int(settings.reasoning_min_visible_tokens)) + max(0, int(settings.reasoning_budget_tokens))

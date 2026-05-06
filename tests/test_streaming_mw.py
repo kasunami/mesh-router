@@ -47,12 +47,12 @@ def fake_db_connect():
     yield FakeConn()
 
 
-async def fake_grpc_stream_chat(self, *, target, request_id, model, messages, temperature, max_tokens, deadline_unix_ms):  # noqa: ARG001
+async def fake_grpc_stream_chat(self, *, target, request_id, model, messages, temperature, max_tokens, deadline_unix_ms, stream=True):  # noqa: ARG001
     yield SimpleNamespace(event_type="delta", raw_backend_payload=b'{"choices":[{"delta":{"content":"hi"}}]}')
     yield SimpleNamespace(event_type="completed", raw_backend_payload=b"")
 
 
-async def fake_reasoning_only_stream_chat(self, *, target, request_id, model, messages, temperature, max_tokens, deadline_unix_ms):  # noqa: ARG001
+async def fake_reasoning_only_stream_chat(self, *, target, request_id, model, messages, temperature, max_tokens, deadline_unix_ms, stream=True):  # noqa: ARG001
     yield SimpleNamespace(
         event_type="delta",
         raw_backend_payload=b'{"choices":[{"finish_reason":null,"delta":{"reasoning_content":"thinking"}}]}',
@@ -70,6 +70,16 @@ class StreamingMwTests(unittest.TestCase):
         adjusted = app_module._apply_reasoning_token_budget(model_name="qwen3.5-9b", payload=payload)  # type: ignore[attr-defined]
         self.assertEqual(adjusted["max_tokens"], 1280)
         self.assertEqual(payload["max_tokens"], 16)
+
+    def test_reasoning_budget_respects_disabled_reasoning(self) -> None:
+        payload = {
+            "model": "qwen3.5-9b",
+            "messages": [{"role": "system", "content": "/no_think"}],
+            "max_tokens": 2048,
+            "thinking_tokens": 0,
+        }
+        adjusted = app_module._apply_reasoning_token_budget(model_name="qwen3.5-9b", payload=payload)  # type: ignore[attr-defined]
+        self.assertEqual(adjusted["max_tokens"], 2048)
 
     def test_downstream_model_resolution_uses_mlx_artifact_path_for_alias(self) -> None:
         class _Cursor:
