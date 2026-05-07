@@ -47,6 +47,7 @@ from .request_store import (
     cleanup_expired_router_requests as _cleanup_expired_router_requests,
     create_router_request as _create_router_request,
     fetch_router_request as _fetch_router_request,
+    list_router_requests as _list_router_requests,
     request_cancel_requested as _request_cancel_requested,
     router_request_health as _router_request_health,
     serialize_router_request as _serialize_router_request,
@@ -3900,6 +3901,13 @@ def api_lane_lease_status(lane_id: str) -> dict[str, Any]:
         "heartbeat_interval_seconds": int(settings.default_lease_heartbeat_interval_seconds),
         "stale_after_seconds": int(settings.default_lease_stale_seconds),
     }
+
+
+@app.get("/api/router-requests/active")
+def api_active_router_requests(limit: int = 50) -> dict[str, Any]:
+    rows = _list_router_requests(states=["queued", "acquired", "running"], limit=limit)
+    items = [_serialize_router_request(row) for row in rows]
+    return {"count": len(items), "items": items}
 
 
 @app.get("/api/router-requests/{request_id}")

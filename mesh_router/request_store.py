@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import Any
+from uuid import UUID
 
 from psycopg.types.json import Jsonb
 
@@ -152,6 +153,10 @@ def request_cancel_requested(request_id: str) -> bool:
 
 
 def fetch_router_request(request_id: str) -> dict[str, Any] | None:
+    try:
+        normalized_request_id = str(UUID(str(request_id)))
+    except (TypeError, ValueError):
+        return None
     with db.connect() as conn:
         with conn.cursor() as cur:
             cleanup_expired_router_leases(cur)
@@ -207,10 +212,87 @@ def fetch_router_request(request_id: str) -> dict[str, Any] | None:
                 LEFT JOIN router_leases rl ON rl.lease_id = rr.lease_id
                 WHERE rr.request_id=%s
                 """,
-                (request_id,),
+                (normalized_request_id,),
             )
             row = cur.fetchone()
     return row
+
+
+def list_router_requests(
+    *,
+    states: list[str] | None = None,
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    normalized_states = [str(s).strip().lower() for s in (states or []) if str(s).strip()]
+    limit = max(1, min(200, int(limit or 50)))
+    params: list[Any] = []
+    where = ""
+    if normalized_states:
+        where = "WHERE rr.state = ANY(%s::request_state[])"
+        params.append(normalized_states)
+    params.append(limit)
+    with db.connect() as conn:
+        with conn.cursor() as cur:
+            cleanup_expired_router_leases(cur)
+            cleanup_expired_router_requests(cur)
+            cur.execute(
+                f"""
+                SELECT
+                  rr.request_id,
+                  rr.route,
+                  rr.state,
+                  rr.owner,
+                  rr.job_type,
+                  rr.app_name,
+                  rr.client_request_id,
+                  rr.requested_model_name,
+                  rr.downstream_model_name,
+                  rr.model_id,
+                  rr.lane_id,
+                  rr.lease_id,
+                  rr.worker_id,
+                  rr.base_url,
+                  rr.pin_worker,
+                  rr.pin_base_url,
+                  rr.pin_lane_type,
+                  rr.cancel_requested,
+                  rr.cancel_requested_at,
+                  rr.cancel_reason,
+                  rr.request_payload,
+                  rr.result_payload,
+                  rr.error_kind,
+                  rr.error_message,
+                  rr.queued_at,
+                  rr.acquired_at,
+                  rr.started_at,
+                  rr.last_heartbeat_at,
+                  rr.expires_at,
+                  rr.released_at,
+                  rr.created_at,
+                  rr.updated_at,
+                  m.model_name,
+                  m.context_default,
+                  cmp.max_ctx AS lane_max_ctx,
+                  l.lane_name,
+                  l.lane_type,
+                  l.status AS lane_status,
+                  h.host_name,
+                  rl.state AS lease_state
+                FROM router_requests rr
+                LEFT JOIN models m ON m.model_id = rr.model_id
+                LEFT JOIN lane_model_policy cmp ON cmp.lane_id = rr.lane_id AND cmp.model_id = rr.model_id
+                LEFT JOIN lanes l ON l.lane_id = rr.lane_id
+                LEFT JOIN hosts h ON h.host_id = l.host_id
+                LEFT JOIN router_leases rl ON rl.lease_id = rr.lease_id
+                {where}
+                ORDER BY COALESCE(rr.last_heartbeat_at, rr.started_at, rr.acquired_at, rr.queued_at) DESC NULLS LAST,
+                         rr.updated_at DESC
+                LIMIT %s
+                """,
+                tuple(params),
+            )
+            rows = cur.fetchall()
+    return list(rows or [])
 
 
 def serialize_router_request(row: dict[str, Any]) -> dict[str, Any]:
