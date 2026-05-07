@@ -897,6 +897,12 @@ def _model_lookup_keys(model_name: str | None) -> set[str]:
 
     normalized = stem_no_ext.lower().replace("_", "-").replace(":", "-")
     keys.add(normalized)
+    for value in list(keys):
+        normalized_value = value.replace("_", "-").replace(":", "-")
+        _add_variant(keys, normalized_value)
+        for vendor_prefix in ("google-",):
+            if normalized_value.startswith(vendor_prefix):
+                _add_variant(keys, normalized_value[len(vendor_prefix):])
 
     dequantized = re.sub(r"[-_.]q\d+(?:[-_.]k(?:[-_.][a-z0-9]+)?)?$", "", normalized)
     _add_variant(keys, dequantized)
@@ -940,7 +946,7 @@ def _family_size_tags_from_keys(keys: set[str]) -> set[str]:
             ("qwen3.5", r"qwen3\.5[-_:]?(\d+(?:\.\d+)?)(b|m)\b"),
             ("falcon3", r"falcon3[-_:]?(\d+(?:\.\d+)?)(b|m)\b"),
             ("lfm2.5", r"lfm2\.5[-_:]?(\d+(?:\.\d+)?)(b|m)\b"),
-            ("gemma4", r"gemma4[-_:]?(\d+(?:\.\d+)?)(b|m)\b"),
+            ("gemma4", r"gemma[-_.]?4[-_:]?(\d+(?:\.\d+)?)(b|m)\b"),
         ):
             match = re.search(pattern, key)
             if match:

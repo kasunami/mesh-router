@@ -231,6 +231,34 @@ class PinWorkerPlacementTests(unittest.TestCase):
         self.assertEqual(choice.lane_id, "lane-cpu")
         self.assertEqual(choice.current_model_name, "falcon3-10b")
 
+    def test_google_prefixed_gemma_artifact_matches_loaded_gemma_artifact(self) -> None:
+        rows = [
+            {
+                "lane_id": "lane-cpu",
+                "host_name": "Static-Mobile-2",
+                "base_url": "http://100.109.112.68:21435",
+                "lane_type": "cpu",
+                "backend_type": "llama",
+                "status": "ready",
+                "proxy_auth_metadata": {},
+                "current_model_name": "gemma-4-26B-A4B-it-Q4_K_M.gguf",
+                "current_model_tags": [],
+                "current_model_max_ctx": 131072,
+            }
+        ]
+
+        with mock.patch.object(router_module, "db", _Db()), mock.patch.object(router_module, "q", return_value=rows):
+            choice = router_module.pick_lane_for_model(
+                model="google_gemma-4-26B-A4B-it-Q4_K_M.gguf",
+                pin_worker="Static-Mobile-2",
+                pin_lane_type="cpu",
+            )
+
+        self.assertEqual(choice.worker_id, "Static-Mobile-2")
+        self.assertEqual(choice.lane_id, "lane-cpu")
+        self.assertEqual(choice.current_model_name, "gemma-4-26B-A4B-it-Q4_K_M.gguf")
+        self.assertEqual(choice.resolved_model_name, "gemma-4-26B-A4B-it-Q4_K_M.gguf")
+
     def test_pin_worker_base_url_matches_effective_mw_port(self) -> None:
         rows = [
             {
