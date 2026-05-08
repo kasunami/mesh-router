@@ -1,9 +1,6 @@
 from __future__ import annotations
 
-from unittest.mock import patch
-
 from mesh_router.app import _is_public_model_name
-from mesh_router.router import LaneChoice, LanePlacementError
 
 
 def test_public_model_name_filter_rejects_support_files() -> None:
@@ -31,7 +28,7 @@ def test_public_model_name_filter_allows_runnable_names() -> None:
     assert all(_is_public_model_name(name) for name in accepted)
 
 
-def test_v1_models_only_lists_placeable_public_models(monkeypatch) -> None:
+def test_v1_models_lists_ready_inventory_without_live_placement(monkeypatch) -> None:
     from mesh_router import app as app_module
 
     class _Cursor:
@@ -40,9 +37,21 @@ def test_v1_models_only_lists_placeable_public_models(monkeypatch) -> None:
 
         def fetchall(self):
             return [
-                {"model_name": "ready-model", "tags": ["chat"]},
-                {"model_name": "stale-model", "tags": ["chat"]},
-                {"model_name": "tokenizer.json", "tags": []},
+                {
+                    "status": "ready",
+                    "effective_status": "ready",
+                    "current_model_name": "loaded-model",
+                    "viable_models": [
+                        {"model_name": "ready-model", "tags": ["chat"]},
+                        {"model_name": "tokenizer.json", "tags": []},
+                    ],
+                },
+                {
+                    "status": "ready",
+                    "effective_status": "offline",
+                    "current_model_name": "stale-model",
+                    "viable_models": [{"model_name": "stale-model", "tags": ["chat"]}],
+                },
             ]
 
         def __enter__(self):
@@ -65,20 +74,12 @@ def test_v1_models_only_lists_placeable_public_models(monkeypatch) -> None:
         def connect(self):
             return _Conn()
 
-    def _pick(*, model: str, **_kwargs):
-        if model == "stale-model":
-            raise LanePlacementError("no READY lanes available serving requested model")
-        return LaneChoice(
-            lane_id="lane-1",
-            worker_id="worker",
-            base_url="http://worker.example:11434",
-            lane_type="gpu",
-            backend_type="llama",
-            resolved_model_name=model,
-        )
-
     monkeypatch.setattr(app_module, "db", _DB())
-    with patch.object(app_module, "pick_lane_for_model", side_effect=_pick):
-        result = app_module.v1_models()
+    monkeypatch.setattr(
+        app_module,
+        "pick_lane_for_model",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("placement should not run")),
+    )
+    result = app_module.v1_models()
 
-    assert [item["id"] for item in result["data"]] == ["ready-model"]
+    assert [item["id"] for item in result["data"]] == ["loaded-model", "ready-model"]

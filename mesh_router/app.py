@@ -2827,27 +2827,45 @@ def api_lane_set_status(lane_id: str, req: LaneSetStatusRequest) -> dict[str, An
 
 @app.get("/v1/models")
 def v1_models() -> dict[str, Any]:
+    """OpenAI-compatible model listing.
+
+    Keep this endpoint side-effect free and cheap. Some clients call
+    /v1/models before every run; doing live placement here can block the client
+    before it ever submits a completion request.
+    """
     with db.connect() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT model_name, tags FROM models ORDER BY model_name")
-            rows = cur.fetchall()
+            rows = fetch_lane_inventory(cur=cur)
     data: list[ModelInfo] = []
     seen: set[str] = set()
-    for r in rows:
-        model_name = str(r["model_name"])
-        if not _is_public_model_name(model_name):
+    by_name: dict[str, list[str]] = {}
+    for row in rows:
+        if str(row.get("effective_status") or row.get("status") or "").strip().lower() != "ready":
             continue
-        try:
-            pick_lane_for_model(model=model_name)
-        except Exception:
-            continue
+        viable_models = row.get("viable_models") or []
+        if not isinstance(viable_models, list):
+            viable_models = []
+        for candidate in viable_models:
+            if not isinstance(candidate, dict):
+                continue
+            model_name = str(candidate.get("model_name") or "").strip()
+            if not model_name or not _is_public_model_name(model_name):
+                continue
+            by_name.setdefault(model_name, [])
+            by_name[model_name] = _normalized_model_tags(by_name[model_name] + list(candidate.get("tags") or []))
+
+        current_model = str(row.get("current_model_name") or "").strip()
+        if current_model and _is_public_model_name(current_model):
+            by_name.setdefault(current_model, [])
+
+    for model_name in sorted(by_name.keys(), key=str.lower):
         if model_name in seen:
             continue
         seen.add(model_name)
         data.append(
             ModelInfo(
                 id=model_name,
-                tags=_normalized_model_tags(r.get("tags") or []),
+                tags=_normalized_model_tags(by_name.get(model_name) or []),
             )
         )
     resp = ModelsResponse(data=data)
