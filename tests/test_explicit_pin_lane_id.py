@@ -114,6 +114,56 @@ class PinLaneIdPlacementTests(unittest.TestCase):
                 router_module.pick_lane_for_model(model="qwen", pin_lane_id="22222222-2222-2222-2222-222222222222")
         self.assertEqual(getattr(ctx.exception, "status_code", None), 409)
 
+    def test_pin_lane_id_operator_suspended_overlay_is_409(self) -> None:
+        row = {
+            "lane_id": "33333333-3333-3333-3333-333333333333",
+            "host_name": "pupix1",
+            "base_url": "http://10.0.0.95:11436",
+            "lane_type": "other",
+            "backend_type": "llama",
+            "status": "suspended",
+            "proxy_auth_metadata": {"control_plane": "mw"},
+            "current_model_name": "gemma-4-26B-A4B-it-Q4_K_M",
+            "current_model_max_ctx": None,
+        }
+
+        class _Cur:
+            def __enter__(self):  # noqa: ANN001
+                return self
+
+            def __exit__(self, exc_type, exc, tb):  # noqa: ANN001
+                return False
+
+        class _Conn:
+            def cursor(self):  # noqa: ANN001
+                return _Cur()
+
+            def __enter__(self):  # noqa: ANN001
+                return self
+
+            def __exit__(self, exc_type, exc, tb):  # noqa: ANN001
+                return False
+
+        class _Db:
+            def connect(self):  # noqa: ANN001
+                return _Conn()
+
+        def _overlay(rows, **_kwargs):  # noqa: ANN001
+            rows[0]["effective_status"] = "suspended"
+            rows[0]["readiness_reason"] = "operator_suspended"
+
+        with (
+            mock.patch.object(router_module, "db", _Db()),
+            mock.patch.object(router_module, "q", return_value=[row]),
+            mock.patch.object(router_module, "apply_mw_effective_status", _overlay),
+        ):
+            with self.assertRaises(router_module.LanePlacementError) as ctx:
+                router_module.pick_lane_for_model(
+                    model="gemma-4-26B-A4B-it-Q4_K_M",
+                    pin_lane_id="33333333-3333-3333-3333-333333333333",
+                )
+        self.assertEqual(getattr(ctx.exception, "status_code", None), 409)
+
 
 if __name__ == "__main__":
     unittest.main()
