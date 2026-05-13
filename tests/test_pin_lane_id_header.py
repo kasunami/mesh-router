@@ -28,6 +28,7 @@ class PinLaneIdHeaderTests(unittest.TestCase):
 
         with (
             patch.object(app_module, "_normalize_route_request", side_effect=_fake_normalize_route_request),
+            patch.object(app_module, "resolve_route", return_value=({"lane_id": "lane-123"}, None, None, 1)),
             patch.object(app_module, "_create_router_request", return_value="req-1"),
             patch.object(app_module, "_execute_router_request", return_value={"ok": True}),
             patch.object(app_module, "_fetch_router_request", return_value=None),
@@ -58,7 +59,33 @@ class PinLaneIdHeaderTests(unittest.TestCase):
             self.assertEqual(resp.status_code, 404)
             self.assertIn("pinned lane not found", resp.text)
 
+    def test_chat_rejects_pin_lane_id_when_route_resolver_finds_no_choice(self) -> None:
+        with (
+            patch.object(
+                app_module,
+                "_normalize_route_request",
+                return_value={
+                    "request_payload": {"stream": False},
+                    "requested_model_name": "gemma-4-26B-A4B-it-Q4_K_M",
+                    "pin_lane_id": "79c17e79-052b-48b5-9781-acbb199f81f7",
+                },
+            ),
+            patch.object(
+                app_module,
+                "resolve_route",
+                return_value=(None, None, "no eligible route found for tags/model constraints", 1),
+            ),
+            patch.object(app_module, "_create_router_request", return_value="req-1"),
+            patch.object(app_module, "_execute_router_request", return_value={"ok": True}),
+        ):
+            client = TestClient(app_module.app)
+            resp = client.post(
+                "/v1/chat/completions",
+                json={"model": "gemma-4-26B-A4B-it-Q4_K_M", "messages": [{"role": "user", "content": "hi"}]},
+            )
+            self.assertEqual(resp.status_code, 409)
+            self.assertIn("no eligible route", resp.text)
+
 
 if __name__ == "__main__":
     unittest.main()
-

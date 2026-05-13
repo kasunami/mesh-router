@@ -5157,6 +5157,17 @@ def v1_chat_completions(
     if x_mesh_pin_lane_id is not None:
         raw_payload["mesh_pin_lane_id"] = x_mesh_pin_lane_id
     normalized = _normalize_route_request(route="chat", raw_payload=raw_payload)
+    if normalized.get("pin_lane_id"):
+        choice, _perf, reason, _count = resolve_route(
+            model=str(normalized["requested_model_name"]),
+            modality="chat",
+            tags=[],
+            host_name=None,
+            lane_id=str(normalized["pin_lane_id"]),
+            allow_opportunistic=True,
+        )
+        if not choice:
+            raise HTTPException(status_code=409, detail=reason or "pinned lane is not ready")
     request_id = _create_router_request(
         route="chat",
         request_payload=dict(normalized["request_payload"]),
