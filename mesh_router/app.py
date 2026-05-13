@@ -5164,7 +5164,7 @@ def v1_chat_completions(
             tags=[],
             host_name=None,
             lane_id=str(normalized["pin_lane_id"]),
-            allow_opportunistic=True,
+            allow_opportunistic=False,
         )
         if not choice:
             raise HTTPException(status_code=409, detail=reason or "pinned lane is not ready")
