@@ -45,6 +45,34 @@ class PinLaneIdHeaderTests(unittest.TestCase):
             resolve_route.assert_called_once()
             self.assertFalse(resolve_route.call_args.kwargs["allow_opportunistic"])
 
+    def test_chat_preflight_passes_pin_worker_with_pin_lane_id(self) -> None:
+        with (
+            patch.object(
+                app_module,
+                "_normalize_route_request",
+                return_value={
+                    "request_payload": {"stream": False},
+                    "requested_model_name": "gemma-4-26B-A4B-it-Q4_K_M",
+                    "pin_worker": "pupix1",
+                    "pin_base_url": None,
+                    "pin_lane_type": None,
+                    "pin_lane_id": "79c17e79-052b-48b5-9781-acbb199f81f7",
+                },
+            ),
+            patch.object(app_module, "resolve_route", return_value=({"lane_id": "79c17e79-052b-48b5-9781-acbb199f81f7"}, None, None, 1)) as resolve_route,
+            patch.object(app_module, "_create_router_request", return_value="req-1"),
+            patch.object(app_module, "_execute_router_request", return_value={"ok": True}),
+            patch.object(app_module, "_fetch_router_request", return_value=None),
+        ):
+            client = TestClient(app_module.app)
+            resp = client.post(
+                "/v1/chat/completions",
+                json={"model": "gemma-4-26B-A4B-it-Q4_K_M", "messages": [{"role": "user", "content": "hi"}]},
+            )
+            self.assertEqual(resp.status_code, 200)
+            self.assertEqual(resolve_route.call_args.kwargs["host_name"], "pupix1")
+            self.assertEqual(resolve_route.call_args.kwargs["lane_id"], "79c17e79-052b-48b5-9781-acbb199f81f7")
+
     def test_chat_propagates_http_exception_for_explicit_route_failures(self) -> None:
         # Requestor-grade explicit routing should preserve actionable status codes.
         with (

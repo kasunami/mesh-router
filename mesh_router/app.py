@@ -5162,7 +5162,7 @@ def v1_chat_completions(
             model=str(normalized["requested_model_name"]),
             modality="chat",
             tags=[],
-            host_name=None,
+            host_name=normalized.get("pin_worker"),
             lane_id=str(normalized["pin_lane_id"]),
             allow_opportunistic=False,
         )
