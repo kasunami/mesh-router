@@ -102,6 +102,32 @@ def _normalize_backend_type(value: str | None) -> str:
     return raw
 
 
+def _normalized_host_policy_names(raw: str | None) -> set[str]:
+    names: set[str] = set()
+    for item in str(raw or "").split(","):
+        value = item.strip().lower()
+        if value:
+            names.add(value)
+    return names
+
+
+def _route_host_policy_allows(host_name: str | None) -> bool:
+    host = str(host_name or "").strip().lower()
+    if not host:
+        return False
+    denied = _normalized_host_policy_names(settings.route_denied_hosts)
+    if host in denied:
+        return False
+    allowed = _normalized_host_policy_names(settings.route_allowed_hosts)
+    if allowed and host not in allowed:
+        return False
+    return True
+
+
+def _filter_rows_by_route_host_policy(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [row for row in rows if _route_host_policy_allows(row.get("host_name"))]
+
+
 def _backend_matches_request(row: dict[str, Any], backend_type: str | None) -> bool:
     requested = _normalize_backend_type(backend_type)
     if not requested:
@@ -527,6 +553,8 @@ def _pick_lane_for_model_single(
         if not rows:
             raise LanePlacementError("pinned lane_id not found or not eligible", status_code=404)
         apply_mw_effective_status(rows, mw_state_db=mw_state_db, stale_seconds=settings.default_lease_stale_seconds)
+        if not _route_host_policy_allows(rows[0].get("host_name")):
+            raise LanePlacementError("pinned lane host is blocked by route host policy", status_code=403)
         r0 = rows[0]
         if pin_lane_type and str(r0.get("lane_type") or "") != str(pin_lane_type):
             raise LanePlacementError("pinned lane does not match requested lane_type", status_code=409)
@@ -592,6 +620,7 @@ def _pick_lane_for_model_single(
                     ),
                 )
         apply_mw_effective_status(rows, mw_state_db=mw_state_db, stale_seconds=settings.default_lease_stale_seconds)
+        rows = _filter_rows_by_route_host_policy(rows)
         rows = [
             r for r in rows
             if str(r.get("host_name") or "") == str(pin_worker)
@@ -674,6 +703,7 @@ def _pick_lane_for_model_single(
                     ),
                 )
         apply_mw_effective_status(rows, mw_state_db=mw_state_db, stale_seconds=settings.default_lease_stale_seconds)
+        rows = _filter_rows_by_route_host_policy(rows)
         # Defensive: even if the SQL layer changes, pinning must never route to a different host.
         rows = [
             r for r in rows
@@ -849,6 +879,7 @@ def _pick_lane_for_model_single(
                     ),
                 )
         apply_mw_effective_status(rows, mw_state_db=mw_state_db, stale_seconds=settings.default_lease_stale_seconds)
+        rows = _filter_rows_by_route_host_policy(rows)
         for row in rows:
             _augment_declared_models(row)
         rows = [row for row in rows if _backend_matches_request(row, backend_type)]

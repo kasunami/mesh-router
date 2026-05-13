@@ -259,6 +259,74 @@ class PinWorkerPlacementTests(unittest.TestCase):
         self.assertEqual(choice.current_model_name, "gemma-4-26B-A4B-it-Q4_K_M.gguf")
         self.assertEqual(choice.resolved_model_name, "gemma-4-26B-A4B-it-Q4_K_M.gguf")
 
+    def test_route_denied_hosts_excludes_ready_lane_from_normal_placement(self) -> None:
+        rows = [
+            {
+                "lane_id": "lane-mobile2",
+                "host_name": "Static-Mobile-2",
+                "base_url": "http://10.0.0.132:21435",
+                "lane_type": "gpu",
+                "backend_type": "llama",
+                "status": "ready",
+                "proxy_auth_metadata": {},
+                "current_model_name": "Qwen3.5-9B-Q4_K_M.gguf",
+                "current_model_tags": [],
+                "current_model_max_ctx": 32768,
+                "local_viable_models": [],
+                "remote_viable_models": [],
+            },
+            {
+                "lane_id": "lane-deskix",
+                "host_name": "Static-Deskix",
+                "base_url": "http://10.0.0.99:21434",
+                "lane_type": "gpu",
+                "backend_type": "llama",
+                "status": "ready",
+                "proxy_auth_metadata": {},
+                "current_model_name": "Qwen3.5-9B-Q4_K_M.gguf",
+                "current_model_tags": [],
+                "current_model_max_ctx": 32768,
+                "local_viable_models": [],
+                "remote_viable_models": [],
+            },
+        ]
+
+        with (
+            mock.patch.object(router_module, "db", _Db()),
+            mock.patch.object(router_module, "q", return_value=rows),
+            mock.patch.object(router_module.settings, "route_denied_hosts", "Static-Mobile-2"),
+        ):
+            choice = router_module.pick_lane_for_model(model="qwen3.5-9b")
+
+        self.assertEqual(choice.worker_id, "Static-Deskix")
+        self.assertEqual(choice.lane_id, "lane-deskix")
+
+    def test_route_allowed_hosts_fail_closed_when_only_excluded_lane_matches(self) -> None:
+        rows = [
+            {
+                "lane_id": "lane-mobile2",
+                "host_name": "Static-Mobile-2",
+                "base_url": "http://10.0.0.132:21435",
+                "lane_type": "gpu",
+                "backend_type": "llama",
+                "status": "ready",
+                "proxy_auth_metadata": {},
+                "current_model_name": "Qwen3.5-9B-Q4_K_M.gguf",
+                "current_model_tags": [],
+                "current_model_max_ctx": 32768,
+                "local_viable_models": [],
+                "remote_viable_models": [],
+            },
+        ]
+
+        with (
+            mock.patch.object(router_module, "db", _Db()),
+            mock.patch.object(router_module, "q", return_value=rows),
+            mock.patch.object(router_module.settings, "route_allowed_hosts", "Static-Deskix,static-mobilix,pupix1"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "no READY lanes available"):
+                router_module.pick_lane_for_model(model="qwen3.5-9b")
+
     def test_pin_worker_base_url_matches_effective_mw_port(self) -> None:
         rows = [
             {

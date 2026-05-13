@@ -77,6 +77,10 @@ class Settings(BaseSettings):
     # Routing policy: treat some hosts as opportunistic/preemptible by default.
     # Requests can explicitly opt into opportunistic routing; otherwise MR prefers stable hosts.
     opportunistic_hosts: str = ""
+    # Routing policy: optional host-level gate applied by mesh-router before normal
+    # chat placement. Deny wins over allow.
+    route_allowed_hosts: str = ""
+    route_denied_hosts: str = ""
 
     # Perf observation ingestion guard. When set, POST /api/perf/observations requires
     # X-Mesh-Internal-Token to match this value.
