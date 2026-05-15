@@ -41,7 +41,7 @@ from .mw_overlay import (
 from .runtime_state import get_default_runtime_state_store
 from .perf_registry import get_expectation, insert_observation
 from .route_resolver import resolve_route
-from .router import LanePlacementError, pick_lane_for_model
+from .router import LanePlacementError, normalize_provider_model_name, pick_lane_for_model
 from .request_store import (
     REQUEST_TERMINAL_STATES,
     cleanup_expired_router_requests as _cleanup_expired_router_requests,
@@ -2020,6 +2020,8 @@ def _translate_sd_response_to_openai(
 
 def _downstream_payload(req: ChatCompletionRequest) -> dict[str, Any]:
     raw = req.model_dump(by_alias=True)
+    if raw.get("model") is not None:
+        raw["model"] = normalize_provider_model_name(str(raw["model"]))
     extra_body = raw.pop("extra_body", None) or {}
     # Remove router-only hint fields.
     for k in list(raw.keys()):
@@ -3959,7 +3961,7 @@ def _normalize_route_request(*, route: str, raw_payload: dict[str, Any]) -> dict
             raise HTTPException(status_code=400, detail=str(exc))
         return {
             "route": "chat",
-            "requested_model_name": req.model,
+            "requested_model_name": normalize_provider_model_name(req.model),
             "pin_worker": req.mesh_pin_worker,
             "pin_base_url": req.mesh_pin_base_url,
             "pin_lane_type": req.mesh_pin_lane_type,

@@ -11,6 +11,7 @@ from .config import settings
 from .mw_overlay import apply_mw_effective_status, is_explicit_mw_managed
 
 _RECENT_PROXY_ERROR_COOLDOWN_S = 900
+_PROVIDER_MODEL_PREFIXES = ("openai/",)
 
 
 @dataclass(frozen=True)
@@ -49,6 +50,15 @@ def _context_limit_message(*, model: str, required_tokens: int | None, max_avail
     if required_tokens:
         return f"requested context ({required_tokens} tokens estimated) exceeds the maximum configured context available for model {model}"
     return f"requested context exceeds the maximum configured context available for model {model}"
+
+
+def normalize_provider_model_name(model: str | None) -> str:
+    value = str(model or "").strip()
+    lowered = value.lower()
+    for prefix in _PROVIDER_MODEL_PREFIXES:
+        if lowered.startswith(prefix):
+            return value[len(prefix) :].strip()
+    return value
 
 
 def _normalize_model_tag(tag: str | None) -> str | None:
@@ -256,6 +266,7 @@ def _model_matches_request(
     candidate_model: str | None,
     candidate_tags: list[str] | None = None,
 ) -> bool:
+    requested_model = normalize_provider_model_name(requested_model)
     candidate = (candidate_model or "").strip()
     if not candidate:
         return False
@@ -375,7 +386,7 @@ def _pick_lane_for_model_with_tag_fallback(
     Important: only triggers fallback when placement fails with the generic
     "no READY lanes available..." error and the caller did not pin a specific lane_id.
     """
-    requested = str(model or "").strip()
+    requested = normalize_provider_model_name(model)
     if not requested:
         raise RuntimeError("model is required")
 
@@ -517,8 +528,6 @@ def _pick_lane_for_model_single(
                     LEFT JOIN models cm ON cm.model_name = l.current_model_name
                     LEFT JOIN lane_model_policy cmp ON cmp.lane_id = l.lane_id AND cmp.model_id = cm.model_id
                     WHERE l.lane_id=%s
-                      AND (%s::text IS NULL OR h.host_name=%s::text)
-                      AND (%s::text IS NULL OR l.base_url=%s::text)
                       AND (
                         %s::text IS NULL
                         OR l.backend_type = %s::text
@@ -537,10 +546,6 @@ def _pick_lane_for_model_single(
                     """,
                     (
                         pin_lane_id,
-                        pin_worker,
-                        pin_worker,
-                        pin_base_url,
-                        pin_base_url,
                         backend_type,
                         backend_type,
                         pin_lane_type,
@@ -558,6 +563,10 @@ def _pick_lane_for_model_single(
         r0 = rows[0]
         if pin_lane_type and str(r0.get("lane_type") or "") != str(pin_lane_type):
             raise LanePlacementError("pinned lane does not match requested lane_type", status_code=409)
+        if pin_worker and str(r0.get("host_name") or "") != str(pin_worker):
+            raise LanePlacementError("pinned lane does not match requested worker", status_code=409)
+        if pin_base_url and str(r0.get("base_url") or "").rstrip("/") != str(pin_base_url).rstrip("/"):
+            raise LanePlacementError("pinned lane does not match requested base_url", status_code=409)
         if not _backend_matches_request(r0, backend_type):
             raise LanePlacementError("pinned lane does not match requested backend", status_code=409)
         eff = str(r0.get("effective_status") or r0.get("status") or "")

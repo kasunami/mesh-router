@@ -204,6 +204,14 @@ class PinWorkerPlacementTests(unittest.TestCase):
             )
         )
 
+    def test_openai_provider_prefix_matches_bare_local_model(self) -> None:
+        self.assertTrue(
+            router_module._model_matches_request(  # type: ignore[attr-defined]
+                "openai/qwen3.5-9b",
+                "qwen3.5-9b",
+            )
+        )
+
     def test_pin_worker_treats_canonical_falcon_request_as_loaded_when_alias_matches(self) -> None:
         rows = [
             {

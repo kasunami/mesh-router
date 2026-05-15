@@ -19,6 +19,18 @@ class NormalizePinLaneIdTests(unittest.TestCase):
         )
         self.assertEqual(normalized.get("pin_lane_id"), "lane-123")
 
+    def test_chat_normalization_strips_openai_provider_prefix_for_router(self) -> None:
+        normalized = app_module._normalize_route_request(
+            route="chat",
+            raw_payload={
+                "model": "openai/qwen3.5-9b",
+                "messages": [{"role": "user", "content": "hi"}],
+                "mesh_pin_lane_id": "lane-123",
+            },
+        )
+        self.assertEqual(normalized.get("requested_model_name"), "qwen3.5-9b")
+        self.assertEqual(normalized.get("request_payload", {}).get("model"), "qwen3.5-9b")
+
     def test_embeddings_normalization_includes_pin_lane_id(self) -> None:
         normalized = app_module._normalize_route_request(
             route="embeddings",
@@ -113,6 +125,54 @@ class PinLaneIdPlacementTests(unittest.TestCase):
             with self.assertRaises(router_module.LanePlacementError) as ctx:
                 router_module.pick_lane_for_model(model="qwen", pin_lane_id="22222222-2222-2222-2222-222222222222")
         self.assertEqual(getattr(ctx.exception, "status_code", None), 409)
+
+    def test_pin_lane_id_with_matching_worker_and_base_url_is_accepted(self) -> None:
+        row = {
+            "lane_id": "44444444-4444-4444-4444-444444444444",
+            "host_name": "Static-Deskix",
+            "base_url": "http://10.0.0.99:21434",
+            "lane_type": "gpu",
+            "backend_type": "llama",
+            "status": "ready",
+            "proxy_auth_metadata": {},
+            "current_model_name": "qwen3.5-9b",
+            "current_model_max_ctx": 131072,
+        }
+
+        class _Cur:
+            def __enter__(self):  # noqa: ANN001
+                return self
+
+            def __exit__(self, exc_type, exc, tb):  # noqa: ANN001
+                return False
+
+        class _Conn:
+            def cursor(self):  # noqa: ANN001
+                return _Cur()
+
+            def __enter__(self):  # noqa: ANN001
+                return self
+
+            def __exit__(self, exc_type, exc, tb):  # noqa: ANN001
+                return False
+
+        class _Db:
+            def connect(self):  # noqa: ANN001
+                return _Conn()
+
+        with (
+            mock.patch.object(router_module, "db", _Db()),
+            mock.patch.object(router_module, "q", return_value=[row]),
+            mock.patch.object(router_module, "apply_mw_effective_status", lambda *a, **k: None),
+        ):
+            choice = router_module.pick_lane_for_model(
+                model="openai/qwen3.5-9b",
+                pin_lane_id="44444444-4444-4444-4444-444444444444",
+                pin_worker="Static-Deskix",
+                pin_base_url="http://10.0.0.99:21434/",
+                pin_lane_type="gpu",
+            )
+        self.assertEqual(choice.lane_id, "44444444-4444-4444-4444-444444444444")
 
     def test_pin_lane_id_operator_suspended_overlay_is_409(self) -> None:
         row = {
