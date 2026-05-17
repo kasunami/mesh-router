@@ -80,6 +80,18 @@ class StreamingMwTests(unittest.TestCase):
         }
         adjusted = app_module._apply_reasoning_token_budget(model_name="qwen3.5-9b", payload=payload)  # type: ignore[attr-defined]
         self.assertEqual(adjusted["max_tokens"], 2048)
+        self.assertEqual(adjusted["chat_template_kwargs"], {"enable_thinking": False})
+
+    def test_reasoning_budget_honors_chat_template_disable(self) -> None:
+        payload = {
+            "model": "qwen3.5-4b",
+            "messages": [{"role": "user", "content": "Return exactly OK."}],
+            "max_tokens": 16,
+            "chat_template_kwargs": {"enable_thinking": False},
+        }
+        adjusted = app_module._apply_reasoning_token_budget(model_name="qwen3.5-4b", payload=payload)  # type: ignore[attr-defined]
+        self.assertEqual(adjusted["max_tokens"], 16)
+        self.assertEqual(adjusted["chat_template_kwargs"], {"enable_thinking": False})
 
     def test_downstream_model_resolution_uses_mlx_artifact_path_for_alias(self) -> None:
         class _Cursor:

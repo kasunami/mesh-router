@@ -195,6 +195,9 @@ def _requested_visible_tokens(payload: dict[str, Any]) -> int | None:
 
 
 def _request_disables_reasoning(payload: dict[str, Any]) -> bool:
+    chat_template_kwargs = payload.get("chat_template_kwargs")
+    if isinstance(chat_template_kwargs, dict) and chat_template_kwargs.get("enable_thinking") is False:
+        return True
     for key in ("thinking_tokens", "reasoning_budget", "reasoning_budget_tokens"):
         if key not in payload:
             continue
@@ -236,6 +239,10 @@ def _backend_max_tokens_for_model(*, model_name: str, payload: dict[str, Any]) -
 
 def _apply_reasoning_token_budget(*, model_name: str, payload: dict[str, Any]) -> dict[str, Any]:
     adjusted = dict(payload)
+    if _is_reasoning_model(model_name) and _request_disables_reasoning(adjusted):
+        chat_template_kwargs = dict(adjusted.get("chat_template_kwargs") or {})
+        chat_template_kwargs.setdefault("enable_thinking", False)
+        adjusted["chat_template_kwargs"] = chat_template_kwargs
     backend_max_tokens = _backend_max_tokens_for_model(model_name=model_name, payload=adjusted)
     if backend_max_tokens is not None:
         adjusted["max_tokens"] = backend_max_tokens
