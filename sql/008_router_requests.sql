@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS router_requests (
   pin_worker text NULL,
   pin_base_url text NULL,
   pin_lane_type text NULL,
+  pin_lane_id text NULL,
   cancel_requested boolean NOT NULL DEFAULT false,
   cancel_requested_at timestamptz NULL,
   cancel_reason text NULL,
@@ -50,6 +51,9 @@ CREATE INDEX IF NOT EXISTS idx_router_requests_lease
 
 CREATE INDEX IF NOT EXISTS idx_router_requests_lane_state
   ON router_requests(lane_id, state, updated_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_router_requests_pin_lane_id
+  ON router_requests(pin_lane_id, state, updated_at DESC);
 
 CREATE INDEX IF NOT EXISTS idx_router_requests_requested_model
   ON router_requests(requested_model_name, updated_at DESC);

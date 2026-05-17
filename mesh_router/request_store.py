@@ -45,6 +45,7 @@ def create_router_request(
     pin_worker: str | None = None,
     pin_base_url: str | None = None,
     pin_lane_type: str | None = None,
+    pin_lane_id: str | None = None,
 ) -> str:
     with db.connect() as conn:
         with conn.cursor() as cur:
@@ -61,9 +62,10 @@ def create_router_request(
                   request_payload,
                   pin_worker,
                   pin_base_url,
-                  pin_lane_type
+                  pin_lane_type,
+                  pin_lane_id
                 )
-                VALUES (%s, 'queued', %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s)
+                VALUES (%s, 'queued', %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s)
                 RETURNING request_id
                 """,
                 (
@@ -77,6 +79,7 @@ def create_router_request(
                     pin_worker,
                     pin_base_url,
                     pin_lane_type,
+                    pin_lane_id,
                 ),
             )
             request_id = str(cur.fetchone()["request_id"])
@@ -181,6 +184,7 @@ def fetch_router_request(request_id: str) -> dict[str, Any] | None:
                   rr.pin_worker,
                   rr.pin_base_url,
                   rr.pin_lane_type,
+                  rr.pin_lane_id,
                   rr.cancel_requested,
                   rr.cancel_requested_at,
                   rr.cancel_reason,
@@ -255,6 +259,7 @@ def list_router_requests(
                   rr.pin_worker,
                   rr.pin_base_url,
                   rr.pin_lane_type,
+                  rr.pin_lane_id,
                   rr.cancel_requested,
                   rr.cancel_requested_at,
                   rr.cancel_reason,
@@ -321,6 +326,10 @@ def serialize_router_request(row: dict[str, Any]) -> dict[str, Any]:
         "lease_state": str(row.get("lease_state") or "") or None,
         "worker_id": row.get("worker_id"),
         "base_url": row.get("base_url"),
+        "pin_worker": row.get("pin_worker"),
+        "pin_base_url": row.get("pin_base_url"),
+        "pin_lane_type": row.get("pin_lane_type"),
+        "pin_lane_id": row.get("pin_lane_id"),
         "requested_model_name": row.get("requested_model_name"),
         "downstream_model": row.get("downstream_model_name"),
         "model_name": row.get("model_name") or row.get("requested_model_name"),

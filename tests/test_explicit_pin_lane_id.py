@@ -7,6 +7,47 @@ from mesh_router import app as app_module
 from mesh_router import router as router_module
 
 
+class _Cur:
+    def __enter__(self):  # noqa: ANN001
+        return self
+
+    def __exit__(self, exc_type, exc, tb):  # noqa: ANN001
+        return False
+
+
+class _Conn:
+    def cursor(self):  # noqa: ANN001
+        return _Cur()
+
+    def __enter__(self):  # noqa: ANN001
+        return self
+
+    def __exit__(self, exc_type, exc, tb):  # noqa: ANN001
+        return False
+
+
+class _Db:
+    def connect(self):  # noqa: ANN001
+        return _Conn()
+
+
+def _pin_lane_row(**overrides):
+    row = {
+        "lane_id": "44444444-4444-4444-4444-444444444444",
+        "host_name": "Static-Mobile-2",
+        "base_url": "http://100.109.112.68:21435",
+        "lane_type": "cpu",
+        "backend_type": "llama",
+        "status": "ready",
+        "proxy_auth_metadata": {},
+        "current_model_name": "Qwen3.5-9B-Q4_K_M.gguf",
+        "current_model_max_ctx": 131072,
+        "has_active_lease": False,
+    }
+    row.update(overrides)
+    return row
+
+
 class NormalizePinLaneIdTests(unittest.TestCase):
     def test_chat_normalization_includes_pin_lane_id(self) -> None:
         normalized = app_module._normalize_route_request(
@@ -48,27 +89,6 @@ class NormalizePinLaneIdTests(unittest.TestCase):
 
 class PinLaneIdPlacementTests(unittest.TestCase):
     def test_pin_lane_id_not_found_is_404(self) -> None:
-        class _Cur:
-            def __enter__(self):  # noqa: ANN001
-                return self
-
-            def __exit__(self, exc_type, exc, tb):  # noqa: ANN001
-                return False
-
-        class _Conn:
-            def cursor(self):  # noqa: ANN001
-                return _Cur()
-
-            def __enter__(self):  # noqa: ANN001
-                return self
-
-            def __exit__(self, exc_type, exc, tb):  # noqa: ANN001
-                return False
-
-        class _Db:
-            def connect(self):  # noqa: ANN001
-                return _Conn()
-
         with (
             mock.patch.object(router_module, "db", _Db()),
             mock.patch.object(router_module, "q", return_value=[]),
@@ -84,38 +104,15 @@ class PinLaneIdPlacementTests(unittest.TestCase):
         self.assertEqual(getattr(ctx.exception, "status_code", None), 400)
 
     def test_pin_lane_id_offline_is_409(self) -> None:
-        row = {
-            "lane_id": "22222222-2222-2222-2222-222222222222",
-            "host_name": "Static-Deskix",
-            "base_url": "http://10.0.0.99:11434",
-            "lane_type": "gpu",
-            "backend_type": "llama",
-            "status": "offline",
-            "proxy_auth_metadata": {},
-            "current_model_name": None,
-            "current_model_max_ctx": None,
-        }
-
-        class _Cur:
-            def __enter__(self):  # noqa: ANN001
-                return self
-
-            def __exit__(self, exc_type, exc, tb):  # noqa: ANN001
-                return False
-
-        class _Conn:
-            def cursor(self):  # noqa: ANN001
-                return _Cur()
-
-            def __enter__(self):  # noqa: ANN001
-                return self
-
-            def __exit__(self, exc_type, exc, tb):  # noqa: ANN001
-                return False
-
-        class _Db:
-            def connect(self):  # noqa: ANN001
-                return _Conn()
+        row = _pin_lane_row(
+            lane_id="22222222-2222-2222-2222-222222222222",
+            host_name="Static-Deskix",
+            base_url="http://10.0.0.99:11434",
+            lane_type="gpu",
+            status="offline",
+            current_model_name=None,
+            current_model_max_ctx=None,
+        )
 
         with (
             mock.patch.object(router_module, "db", _Db()),
@@ -126,39 +123,101 @@ class PinLaneIdPlacementTests(unittest.TestCase):
                 router_module.pick_lane_for_model(model="qwen", pin_lane_id="22222222-2222-2222-2222-222222222222")
         self.assertEqual(getattr(ctx.exception, "status_code", None), 409)
 
+    def test_pin_lane_id_busy_active_lease_is_409_not_404(self) -> None:
+        row = _pin_lane_row(has_active_lease=True)
+
+        with (
+            mock.patch.object(router_module, "db", _Db()),
+            mock.patch.object(router_module, "q", return_value=[row]),
+            mock.patch.object(router_module, "apply_mw_effective_status", lambda *a, **k: None),
+        ):
+            with self.assertRaises(router_module.LanePlacementError) as ctx:
+                router_module.pick_lane_for_model(
+                    model="Qwen3.5-9B-Q4_K_M.gguf",
+                    pin_lane_id="44444444-4444-4444-4444-444444444444",
+                    pin_worker="Static-Mobile-2",
+                    pin_base_url="http://100.109.112.68:21435",
+                    pin_lane_type="cpu",
+                )
+        self.assertEqual(getattr(ctx.exception, "status_code", None), 409)
+        self.assertIn("busy", str(ctx.exception))
+
+    def test_pin_lane_id_worker_mismatch_is_409(self) -> None:
+        row = _pin_lane_row()
+
+        with (
+            mock.patch.object(router_module, "db", _Db()),
+            mock.patch.object(router_module, "q", return_value=[row]),
+            mock.patch.object(router_module, "apply_mw_effective_status", lambda *a, **k: None),
+        ):
+            with self.assertRaises(router_module.LanePlacementError) as ctx:
+                router_module.pick_lane_for_model(
+                    model="Qwen3.5-9B-Q4_K_M.gguf",
+                    pin_lane_id="44444444-4444-4444-4444-444444444444",
+                    pin_worker="Static-Deskix",
+                )
+        self.assertEqual(getattr(ctx.exception, "status_code", None), 409)
+        self.assertIn("worker", str(ctx.exception))
+
+    def test_pin_lane_id_base_url_mismatch_is_409(self) -> None:
+        row = _pin_lane_row()
+
+        with (
+            mock.patch.object(router_module, "db", _Db()),
+            mock.patch.object(router_module, "q", return_value=[row]),
+            mock.patch.object(router_module, "apply_mw_effective_status", lambda *a, **k: None),
+        ):
+            with self.assertRaises(router_module.LanePlacementError) as ctx:
+                router_module.pick_lane_for_model(
+                    model="Qwen3.5-9B-Q4_K_M.gguf",
+                    pin_lane_id="44444444-4444-4444-4444-444444444444",
+                    pin_base_url="http://10.0.0.99:21435",
+                )
+        self.assertEqual(getattr(ctx.exception, "status_code", None), 409)
+        self.assertIn("base_url", str(ctx.exception))
+
+    def test_pin_lane_id_excluded_exact_lane_is_409(self) -> None:
+        row = _pin_lane_row()
+
+        with (
+            mock.patch.object(router_module, "db", _Db()),
+            mock.patch.object(router_module, "q", return_value=[row]),
+            mock.patch.object(router_module, "apply_mw_effective_status", lambda *a, **k: None),
+        ):
+            with self.assertRaises(router_module.LanePlacementError) as ctx:
+                router_module.pick_lane_for_model(
+                    model="Qwen3.5-9B-Q4_K_M.gguf",
+                    pin_lane_id="44444444-4444-4444-4444-444444444444",
+                    exclude_lane_ids={"44444444-4444-4444-4444-444444444444"},
+                )
+        self.assertEqual(getattr(ctx.exception, "status_code", None), 409)
+        self.assertIn("excluded", str(ctx.exception))
+
+    def test_pin_lane_id_available_exact_lane_returns_choice(self) -> None:
+        row = _pin_lane_row()
+
+        with (
+            mock.patch.object(router_module, "db", _Db()),
+            mock.patch.object(router_module, "q", return_value=[row]),
+            mock.patch.object(router_module, "apply_mw_effective_status", lambda *a, **k: None),
+        ):
+            choice = router_module.pick_lane_for_model(
+                model="Qwen3.5-9B-Q4_K_M.gguf",
+                pin_lane_id="44444444-4444-4444-4444-444444444444",
+                pin_worker="Static-Mobile-2",
+                pin_base_url="http://100.109.112.68:21435",
+                pin_lane_type="cpu",
+            )
+        self.assertEqual(choice.lane_id, "44444444-4444-4444-4444-444444444444")
+        self.assertEqual(choice.worker_id, "Static-Mobile-2")
+
     def test_pin_lane_id_with_matching_worker_and_base_url_is_accepted(self) -> None:
-        row = {
-            "lane_id": "44444444-4444-4444-4444-444444444444",
-            "host_name": "Static-Deskix",
-            "base_url": "http://10.0.0.99:21434",
-            "lane_type": "gpu",
-            "backend_type": "llama",
-            "status": "ready",
-            "proxy_auth_metadata": {},
-            "current_model_name": "qwen3.5-9b",
-            "current_model_max_ctx": 131072,
-        }
-
-        class _Cur:
-            def __enter__(self):  # noqa: ANN001
-                return self
-
-            def __exit__(self, exc_type, exc, tb):  # noqa: ANN001
-                return False
-
-        class _Conn:
-            def cursor(self):  # noqa: ANN001
-                return _Cur()
-
-            def __enter__(self):  # noqa: ANN001
-                return self
-
-            def __exit__(self, exc_type, exc, tb):  # noqa: ANN001
-                return False
-
-        class _Db:
-            def connect(self):  # noqa: ANN001
-                return _Conn()
+        row = _pin_lane_row(
+            host_name="Static-Deskix",
+            base_url="http://10.0.0.99:21434",
+            lane_type="gpu",
+            current_model_name="qwen3.5-9b",
+        )
 
         with (
             mock.patch.object(router_module, "db", _Db()),
@@ -175,38 +234,16 @@ class PinLaneIdPlacementTests(unittest.TestCase):
         self.assertEqual(choice.lane_id, "44444444-4444-4444-4444-444444444444")
 
     def test_pin_lane_id_operator_suspended_overlay_is_409(self) -> None:
-        row = {
-            "lane_id": "33333333-3333-3333-3333-333333333333",
-            "host_name": "pupix1",
-            "base_url": "http://10.0.0.95:11436",
-            "lane_type": "other",
-            "backend_type": "llama",
-            "status": "suspended",
-            "proxy_auth_metadata": {"control_plane": "mw"},
-            "current_model_name": "gemma-4-26B-A4B-it-Q4_K_M",
-            "current_model_max_ctx": None,
-        }
-
-        class _Cur:
-            def __enter__(self):  # noqa: ANN001
-                return self
-
-            def __exit__(self, exc_type, exc, tb):  # noqa: ANN001
-                return False
-
-        class _Conn:
-            def cursor(self):  # noqa: ANN001
-                return _Cur()
-
-            def __enter__(self):  # noqa: ANN001
-                return self
-
-            def __exit__(self, exc_type, exc, tb):  # noqa: ANN001
-                return False
-
-        class _Db:
-            def connect(self):  # noqa: ANN001
-                return _Conn()
+        row = _pin_lane_row(
+            lane_id="33333333-3333-3333-3333-333333333333",
+            host_name="pupix1",
+            base_url="http://10.0.0.95:11436",
+            lane_type="other",
+            status="suspended",
+            proxy_auth_metadata={"control_plane": "mw"},
+            current_model_name="gemma-4-26B-A4B-it-Q4_K_M",
+            current_model_max_ctx=None,
+        )
 
         def _overlay(rows, **_kwargs):  # noqa: ANN001
             rows[0]["effective_status"] = "suspended"

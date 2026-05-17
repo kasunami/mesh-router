@@ -5068,6 +5068,7 @@ def api_router_request_submit(req: RouterRequestSubmitRequest, response: Respons
         pin_worker=normalized.get("pin_worker"),
         pin_base_url=normalized.get("pin_base_url"),
         pin_lane_type=normalized.get("pin_lane_type"),
+        pin_lane_id=normalized.get("pin_lane_id"),
     )
     response.headers["X-Mesh-Request-Id"] = request_id
     if req.wait:
@@ -5179,6 +5180,7 @@ def v1_chat_completions(
         pin_worker=normalized.get("pin_worker"),
         pin_base_url=normalized.get("pin_base_url"),
         pin_lane_type=normalized.get("pin_lane_type"),
+        pin_lane_id=normalized.get("pin_lane_id"),
     )
     response.headers["X-Mesh-Request-Id"] = request_id
 
@@ -5276,6 +5278,7 @@ def v1_embeddings(
         pin_worker=normalized.get("pin_worker"),
         pin_base_url=normalized.get("pin_base_url"),
         pin_lane_type=normalized.get("pin_lane_type"),
+        pin_lane_id=normalized.get("pin_lane_id"),
     )
     response.headers["X-Mesh-Request-Id"] = request_id
     try:
@@ -5341,6 +5344,7 @@ def v1_images_generations(
         pin_worker=normalized.get("pin_worker"),
         pin_base_url=normalized.get("pin_base_url"),
         pin_lane_type=normalized.get("pin_lane_type"),
+        pin_lane_id=normalized.get("pin_lane_id"),
     )
     response.headers["X-Mesh-Request-Id"] = request_id
     try:
@@ -5408,6 +5412,7 @@ def legacy_embeddings(
         pin_worker=normalized.get("pin_worker"),
         pin_base_url=normalized.get("pin_base_url"),
         pin_lane_type=normalized.get("pin_lane_type"),
+        pin_lane_id=normalized.get("pin_lane_id"),
     )
     response.headers["X-Mesh-Request-Id"] = request_id
     try:

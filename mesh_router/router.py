@@ -522,37 +522,23 @@ def _pick_lane_for_model_single(
                            l.status,
                            l.proxy_auth_metadata,
                            l.current_model_name,
-                           cmp.max_ctx AS current_model_max_ctx
+                           cmp.max_ctx AS current_model_max_ctx,
+                           EXISTS (
+                             SELECT 1 FROM router_leases rl
+                             WHERE rl.lane_id = l.lane_id
+                               AND rl.state = 'active'
+                               AND COALESCE(rl.last_heartbeat_at, rl.acquired_at) > now() - (%s * interval '1 second')
+                           ) AS has_active_lease
                     FROM lanes l
                     JOIN hosts h ON h.host_id = l.host_id
                     LEFT JOIN models cm ON cm.model_name = l.current_model_name
                     LEFT JOIN lane_model_policy cmp ON cmp.lane_id = l.lane_id AND cmp.model_id = cm.model_id
                     WHERE l.lane_id=%s
-                      AND (
-                        %s::text IS NULL
-                        OR l.backend_type = %s::text
-                        OR (l.proxy_auth_metadata->>'control_plane')='mw'
-                      )
-                      AND (%s::text IS NULL OR l.lane_type::text = %s::text)
-                      AND (%s::text[] IS NULL OR l.lane_id::text <> ALL(%s::text[]))
-                      AND (l.status='ready' OR (l.proxy_auth_metadata->>'control_plane')='mw')
-                      AND NOT EXISTS (
-                        SELECT 1 FROM router_leases rl
-                        WHERE rl.lane_id = l.lane_id
-                          AND rl.state = 'active'
-                          AND COALESCE(rl.last_heartbeat_at, rl.acquired_at) > now() - (%s * interval '1 second')
-                      )
                     LIMIT 1
                     """,
                     (
-                        pin_lane_id,
-                        backend_type,
-                        backend_type,
-                        pin_lane_type,
-                        pin_lane_type,
-                        list(excluded) or None,
-                        list(excluded) or None,
                         int(settings.default_lease_stale_seconds),
+                        pin_lane_id,
                     ),
                 )
         if not rows:
@@ -561,12 +547,16 @@ def _pick_lane_for_model_single(
         if not _route_host_policy_allows(rows[0].get("host_name")):
             raise LanePlacementError("pinned lane host is blocked by route host policy", status_code=403)
         r0 = rows[0]
-        if pin_lane_type and str(r0.get("lane_type") or "") != str(pin_lane_type):
-            raise LanePlacementError("pinned lane does not match requested lane_type", status_code=409)
         if pin_worker and str(r0.get("host_name") or "") != str(pin_worker):
             raise LanePlacementError("pinned lane does not match requested worker", status_code=409)
         if pin_base_url and str(r0.get("base_url") or "").rstrip("/") != str(pin_base_url).rstrip("/"):
             raise LanePlacementError("pinned lane does not match requested base_url", status_code=409)
+        if list(excluded) and str(r0.get("lane_id")) in {str(item) for item in excluded}:
+            raise LanePlacementError("pinned lane is temporarily excluded", status_code=409)
+        if r0.get("has_active_lease"):
+            raise LanePlacementError("pinned lane is busy", status_code=409)
+        if pin_lane_type and str(r0.get("lane_type") or "") != str(pin_lane_type):
+            raise LanePlacementError("pinned lane does not match requested lane_type", status_code=409)
         if not _backend_matches_request(r0, backend_type):
             raise LanePlacementError("pinned lane does not match requested backend", status_code=409)
         eff = str(r0.get("effective_status") or r0.get("status") or "")

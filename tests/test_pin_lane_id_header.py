@@ -29,7 +29,7 @@ class PinLaneIdHeaderTests(unittest.TestCase):
         with (
             patch.object(app_module, "_normalize_route_request", side_effect=_fake_normalize_route_request),
             patch.object(app_module, "resolve_route", return_value=({"lane_id": "lane-123"}, None, None, 1)) as resolve_route,
-            patch.object(app_module, "_create_router_request", return_value="req-1"),
+            patch.object(app_module, "_create_router_request", return_value="req-1") as create_router_request,
             patch.object(app_module, "_execute_router_request", return_value={"ok": True}),
             patch.object(app_module, "_fetch_router_request", return_value=None),
         ):
@@ -44,6 +44,7 @@ class PinLaneIdHeaderTests(unittest.TestCase):
             self.assertIn("raw_payload", captured)
             resolve_route.assert_called_once()
             self.assertFalse(resolve_route.call_args.kwargs["allow_opportunistic"])
+            self.assertEqual(create_router_request.call_args.kwargs["pin_lane_id"], "lane-123")
 
     def test_chat_preflight_passes_pin_worker_with_pin_lane_id(self) -> None:
         with (
