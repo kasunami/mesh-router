@@ -4115,6 +4115,29 @@ async def _collect_mw_chat_completion(
     return response
 
 
+def _heartbeat_router_request_until_stopped(
+    *,
+    stop_heartbeat: threading.Event,
+    lease_id: str,
+    request_id: str,
+    heartbeat_error: dict[str, str],
+) -> None:
+    interval = max(5, int(settings.default_lease_heartbeat_interval_seconds))
+    while not stop_heartbeat.wait(interval):
+        try:
+            if _request_cancel_requested(request_id):
+                break
+            _heartbeat_router_lease(lease_id=lease_id)
+            _touch_router_request(
+                request_id=request_id,
+                last_heartbeat_at=datetime.now(UTC),
+                expires_at=datetime.now(UTC) + timedelta(seconds=max(30, int(settings.default_lease_stale_seconds))),
+            )
+        except Exception as exc:
+            heartbeat_error["error"] = str(exc)
+            break
+
+
 def _execute_router_request(
     *,
     request_id: str,
@@ -4318,18 +4341,12 @@ def _execute_router_request(
         heartbeat_error: dict[str, str] = {}
 
         def _heartbeat_loop() -> None:
-            interval = max(5, int(settings.default_lease_heartbeat_interval_seconds))
-            while not stop_heartbeat.wait(interval):
-                try:
-                    _heartbeat_router_lease(lease_id=lease_id)
-                    _touch_router_request(
-                        request_id=request_id,
-                        last_heartbeat_at=datetime.now(UTC),
-                        expires_at=datetime.now(UTC) + timedelta(seconds=max(30, int(settings.default_lease_stale_seconds))),
-                    )
-                except Exception as exc:
-                    heartbeat_error["error"] = str(exc)
-                    break
+            _heartbeat_router_request_until_stopped(
+                stop_heartbeat=stop_heartbeat,
+                lease_id=lease_id,
+                request_id=request_id,
+                heartbeat_error=heartbeat_error,
+            )
 
         heartbeat_thread = threading.Thread(target=_heartbeat_loop, name=f"request-heartbeat-{request_id}", daemon=True)
         heartbeat_thread.start()

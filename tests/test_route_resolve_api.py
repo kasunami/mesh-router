@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from unittest import mock
 
 from fastapi.testclient import TestClient
 
@@ -101,6 +102,66 @@ class RouteResolveApiTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertTrue(resp.json()["ok"])
         self.assertEqual(seen[0]["pin_lane_id"], "8a37c3e3-eefc-43b0-90b7-737c57198287")
+
+    def test_explicit_lane_resolve_rejects_not_ready_overlay(self) -> None:
+        class _Cursor:
+            def execute(self, sql, params):  # noqa: ANN001, ARG002
+                return None
+
+            def fetchone(self):  # noqa: ANN001
+                return {
+                    "lane_id": "85557f61-07bd-43af-ae00-1f5c566c8b48",
+                    "lane_name": "mlx",
+                    "base_url": "http://10.0.0.97:11434",
+                    "lane_type": "mlx",
+                    "backend_type": "mlx",
+                    "current_model_name": "/Users/kasunami/models/Qwen3.5-9B-MLX-4bit",
+                    "proxy_auth_metadata": {"control_plane": "mw"},
+                    "host_name": "tiffs-macbook",
+                    "status": "ready",
+                }
+
+            def __enter__(self):  # noqa: ANN001
+                return self
+
+            def __exit__(self, exc_type, exc, tb):  # noqa: ANN001
+                return False
+
+        class _Conn:
+            def cursor(self):  # noqa: ANN001
+                return _Cursor()
+
+            def __enter__(self):  # noqa: ANN001
+                return self
+
+            def __exit__(self, exc_type, exc, tb):  # noqa: ANN001
+                return False
+
+        class _Db:
+            def connect(self):  # noqa: ANN001
+                return _Conn()
+
+        def _overlay(rows, **_kwargs):  # noqa: ANN001
+            rows[0]["effective_status"] = "suspended"
+            rows[0]["readiness_reason"] = "operator_suspended"
+
+        with (
+            mock.patch.object(resolver_module, "db", _Db()),
+            mock.patch.object(resolver_module, "apply_mw_effective_status", _overlay),
+        ):
+            choice, perf, reason, count = resolver_module.resolve_route(
+                model="/Users/kasunami/models/Qwen3.5-9B-MLX-4bit",
+                modality="chat",
+                tags=[],
+                host_name="tiffs-macbook",
+                lane_id="85557f61-07bd-43af-ae00-1f5c566c8b48",
+                allow_opportunistic=False,
+            )
+
+        self.assertIsNone(choice)
+        self.assertIsNone(perf)
+        self.assertEqual(reason, "explicit lane is not ready")
+        self.assertEqual(count, 1)
 
 
 if __name__ == "__main__":

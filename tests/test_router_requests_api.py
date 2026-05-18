@@ -45,6 +45,31 @@ class RouterRequestsApiTests(unittest.TestCase):
             resp = client.get("/api/router-requests/not-a-uuid")
             self.assertEqual(resp.status_code, 404)
 
+    def test_heartbeat_loop_stops_without_renewing_after_cancel(self) -> None:
+        class _Stop:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def wait(self, _interval):  # noqa: ANN001
+                self.calls += 1
+                return self.calls > 1
+
+        with (
+            patch.object(app_module, "_request_cancel_requested", return_value=True) as cancel_requested,
+            patch.object(app_module, "_heartbeat_router_lease") as heartbeat,
+            patch.object(app_module, "_touch_router_request") as touch,
+        ):
+            app_module._heartbeat_router_request_until_stopped(
+                stop_heartbeat=_Stop(),
+                lease_id="lease-1",
+                request_id="11111111-1111-1111-1111-111111111111",
+                heartbeat_error={},
+            )
+
+        cancel_requested.assert_called_once_with("11111111-1111-1111-1111-111111111111")
+        heartbeat.assert_not_called()
+        touch.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

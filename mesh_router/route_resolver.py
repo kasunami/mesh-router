@@ -115,6 +115,9 @@ def resolve_route(
 
         # If lane is MW-managed, overlay the MW-derived actual model/readiness for truthfulness.
         apply_mw_effective_status([row], mw_state_db=mw_state_db, stale_seconds=settings.default_lease_stale_seconds)
+        effective_status = str(row.get("effective_status") or row.get("status") or "")
+        if effective_status != "ready":
+            return None, None, "explicit lane is not ready", 1
 
         choice = {
             "lane_id": str(row["lane_id"]),
