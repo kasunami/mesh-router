@@ -100,7 +100,8 @@ def resolve_route(
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT l.lane_id, l.lane_name, l.base_url, l.lane_type, l.backend_type, l.current_model_name,
+                    SELECT l.lane_id, l.lane_name, l.base_url, l.lane_type, l.backend_type, l.status,
+                           l.suspension_reason, l.current_model_name,
                            l.proxy_auth_metadata,
                            h.host_name
                     FROM lanes l JOIN hosts h ON h.host_id=l.host_id
