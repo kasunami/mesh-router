@@ -364,11 +364,19 @@ def _startup_seed_vlm() -> None:
                 except (TypeError, ValueError):
                     declared_max_ctx = 0
 
+                declared_model_tags: dict[str, list[str]] = {}
+                for model_name in declared:
+                    lowered = model_name.lower()
+                    if "vlm" in lowered or "vision" in lowered:
+                        declared_model_tags[model_name] = ["multimodal", "vlm", "vision"]
+                    else:
+                        declared_model_tags[model_name] = ["text", "chat", "worker"]
+
                 lane_meta: dict[str, Any] = {
                     "supports_multimodal": True,
                     "mw_ignore": True,
                     "declared_models": declared,
-                    "declared_model_tags": {m: ["multimodal", "vlm", "vision"] for m in declared},
+                    "declared_model_tags": declared_model_tags,
                     "declared_max_ctx": {m: declared_max_ctx for m in declared} if declared_max_ctx > 0 else {},
                 }
                 if llama_router:

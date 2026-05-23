@@ -265,6 +265,19 @@ class PreferMwLanePlacementTests(unittest.TestCase):
         self.assertEqual(choice.lane_id, "p4-router-lane")
         self.assertEqual(choice.resolved_model_name, "qwen3.5-4b-p4")
 
+    def test_seed_vlm_lane_tags_text_and_vision_aliases_separately(self) -> None:
+        declared = ["qwen3.5-4b-p4", "Qwen3.5-9B-VLM-Q4_K_M"]
+        tags_by_model = {}
+        for model_name in declared:
+            lowered = model_name.lower()
+            if "vlm" in lowered or "vision" in lowered:
+                tags_by_model[model_name] = ["multimodal", "vlm", "vision"]
+            else:
+                tags_by_model[model_name] = ["text", "chat", "worker"]
+
+        self.assertEqual(tags_by_model["qwen3.5-4b-p4"], ["text", "chat", "worker"])
+        self.assertEqual(tags_by_model["Qwen3.5-9B-VLM-Q4_K_M"], ["multimodal", "vlm", "vision"])
+
     def test_mw_overlay_backend_change_filters_image_lane_from_chat_swap_candidates(self) -> None:
         rows = [
             {
