@@ -474,6 +474,12 @@ def _should_include_candidate_for_capabilities(*, mw_authoritative: bool, source
     return source_locality == "local"
 
 
+def _capability_vram_budget(lane_row: dict[str, Any], lane_type: str) -> int | None:
+    if lane_type != "gpu":
+        return lane_row.get("vram_budget_bytes")
+    return lane_row.get("vram_budget_bytes") or lane_row.get("usable_memory_bytes")
+
+
 def _mw_runtime_candidate_tags(*, lane_row: dict[str, Any]) -> list[str]:
     tags: list[str] = []
     backend = _normalize_router_backend_type(lane_row.get("backend_type"))
@@ -1640,7 +1646,7 @@ def _build_lane_capability_payload(cur, lane_ref: str) -> tuple[dict[str, Any], 
         lane_id=resolved_lane_id,
         lane_type=lane_type,
         ram_budget_bytes=lane_row.get("usable_memory_bytes") or lane_row.get("ram_budget_bytes"),
-        vram_budget_bytes=lane_row.get("usable_memory_bytes") if lane_type == "gpu" else lane_row.get("vram_budget_bytes"),
+        vram_budget_bytes=_capability_vram_budget(lane_row, lane_type),
         current_model_name=str(lane_row.get("current_model_name") or "") or None,
         host_ram_budget_bytes=((host_row.get("ram_ai_budget_bytes") or host_row.get("ram_total_bytes")) if host_row else None),
         host_vram_budget_bytes=((host_row.get("vram_ai_budget_bytes") or host_row.get("vram_total_bytes")) if host_row else None),

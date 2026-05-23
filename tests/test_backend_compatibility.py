@@ -63,6 +63,20 @@ class BackendCompatibilityTests(unittest.TestCase):
             )
         )
 
+    def test_gpu_capability_budget_prefers_vram_budget(self) -> None:
+        budget = app_module._capability_vram_budget(  # type: ignore[attr-defined]
+            {"vram_budget_bytes": 4 * 1024**3, "usable_memory_bytes": None},
+            "gpu",
+        )
+        self.assertEqual(budget, 4 * 1024**3)
+
+    def test_gpu_capability_budget_keeps_legacy_usable_memory_fallback(self) -> None:
+        budget = app_module._capability_vram_budget(  # type: ignore[attr-defined]
+            {"vram_budget_bytes": None, "usable_memory_bytes": 2 * 1024**3},
+            "gpu",
+        )
+        self.assertEqual(budget, 2 * 1024**3)
+
     def test_mw_runtime_candidate_tags_include_backend_and_lane_hints(self) -> None:
         self.assertEqual(
             app_module._mw_runtime_candidate_tags(  # type: ignore[attr-defined]
