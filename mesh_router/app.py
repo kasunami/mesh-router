@@ -375,6 +375,7 @@ def _startup_seed_vlm() -> None:
                     lane_meta["llama_router"] = True
 
                 host_id, _ = _resolve_host_id(cur, host_ref, create=True)
+                default_model = str(settings.vlm_default_model or declared[0]).strip() or declared[0]
                 cur.execute(
                     """
                     INSERT INTO lanes (
@@ -384,6 +385,8 @@ def _startup_seed_vlm() -> None:
                       backend_type,
                       base_url,
                       status,
+                      current_model_name,
+                      default_model_name,
                       proxy_auth_metadata,
                       updated_at
                     )
@@ -394,6 +397,8 @@ def _startup_seed_vlm() -> None:
                       'llama',
                       %s,
                       'ready'::lane_status,
+                      %s,
+                      %s,
                       %s::jsonb,
                       now()
                     )
@@ -404,6 +409,8 @@ def _startup_seed_vlm() -> None:
                       lane_type = EXCLUDED.lane_type,
                       backend_type = EXCLUDED.backend_type,
                       status = EXCLUDED.status,
+                      current_model_name = EXCLUDED.current_model_name,
+                      default_model_name = EXCLUDED.default_model_name,
                       proxy_auth_metadata = EXCLUDED.proxy_auth_metadata,
                       updated_at = now()
                     """,
@@ -411,6 +418,8 @@ def _startup_seed_vlm() -> None:
                         host_id,
                         lane_name,
                         base_url,
+                        default_model,
+                        default_model,
                         Jsonb(lane_meta),
                     ),
                 )
