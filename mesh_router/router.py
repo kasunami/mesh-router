@@ -889,7 +889,17 @@ def _pick_lane_for_model_single(
         # should not steal traffic when MW-managed lanes are available.
         def _is_mw_ignored(row: dict[str, Any]) -> bool:
             pam = row.get("proxy_auth_metadata") or {}
-            return isinstance(pam, dict) and pam.get("mw_ignore") is True
+            if not isinstance(pam, dict) or pam.get("mw_ignore") is not True:
+                return False
+            # llama.cpp router-style lanes are seeded rather than MW-managed, so
+            # keep them eligible when they explicitly declare text worker models.
+            if pam.get("llama_router") is True:
+                tags_by_model = pam.get("declared_model_tags")
+                if isinstance(tags_by_model, dict):
+                    for tags in tags_by_model.values():
+                        if any(str(tag).lower() in {"text", "chat", "worker"} for tag in (tags or [])):
+                            return False
+            return True
 
         if not requires_multimodal:
             rows = [row for row in rows if not _is_mw_ignored(row)]

@@ -228,6 +228,43 @@ class PreferMwLanePlacementTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "no READY lanes available"):
                 router_module.pick_lane_for_model(model="qwen3.5-9b")
 
+    def test_seeded_llama_router_text_model_can_be_regular_worker(self) -> None:
+        rows = [
+            {
+                "lane_id": "p4-router-lane",
+                "host_name": "packhub",
+                "base_url": "http://llama-vision-router.example:4012",
+                "lane_type": "other",
+                "backend_type": "llama",
+                "status": "ready",
+                "proxy_auth_metadata": {
+                    "mw_ignore": True,
+                    "llama_router": True,
+                    "supports_multimodal": True,
+                    "declared_models": ["qwen3.5-4b-p4"],
+                    "declared_model_tags": {
+                        "qwen3.5-4b-p4": ["text", "chat", "worker", "qwen3.5-4b"],
+                    },
+                    "declared_max_ctx": {"qwen3.5-4b-p4": 32768},
+                },
+                "current_model_name": "qwen3.5-4b-p4",
+                "current_model_tags": ["text", "chat", "worker"],
+                "current_model_max_ctx": 8192,
+                "local_viable_models": [],
+                "remote_viable_models": [],
+            }
+        ]
+
+        with (
+            mock.patch.object(router_module, "db", _Db()),
+            mock.patch.object(router_module, "q", return_value=rows),
+            mock.patch.object(router_module, "apply_mw_effective_status", lambda *args, **kwargs: None),
+        ):
+            choice = router_module.pick_lane_for_model(model="qwen3.5-4b-p4")
+
+        self.assertEqual(choice.lane_id, "p4-router-lane")
+        self.assertEqual(choice.resolved_model_name, "qwen3.5-4b-p4")
+
     def test_mw_overlay_backend_change_filters_image_lane_from_chat_swap_candidates(self) -> None:
         rows = [
             {
