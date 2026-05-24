@@ -34,6 +34,7 @@ class ChatCompletionRequest(BaseModel):
     mesh_pin_base_url: str | None = None
     mesh_pin_lane_type: str | None = None
     mesh_pin_lane_id: str | None = None
+    mesh_client_request_id: str | None = None
     mesh_allow_swap: bool | None = None
 
     extra_body: dict[str, Any] | None = None
@@ -53,6 +54,7 @@ class ImageGenerationRequest(BaseModel):
     mesh_pin_base_url: str | None = None
     mesh_pin_lane_type: str | None = None
     mesh_pin_lane_id: str | None = None
+    mesh_client_request_id: str | None = None
     mesh_allow_swap: bool | None = None
 
     model_config = {"extra": "allow"}

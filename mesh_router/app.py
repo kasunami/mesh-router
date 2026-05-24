@@ -2126,6 +2126,7 @@ def _normalize_image_request(raw_payload: dict[str, Any]) -> dict[str, Any]:
         "pin_base_url": req.mesh_pin_base_url,
         "pin_lane_type": req.mesh_pin_lane_type,
         "pin_lane_id": req.mesh_pin_lane_id,
+        "client_request_id": req.mesh_client_request_id,
         "response_format": req.response_format or "b64_json",
         "request_payload": {
             "prompt": req.prompt,
@@ -4124,6 +4125,7 @@ def _normalize_route_request(*, route: str, raw_payload: dict[str, Any]) -> dict
             "pin_base_url": req.mesh_pin_base_url,
             "pin_lane_type": req.mesh_pin_lane_type,
             "pin_lane_id": req.mesh_pin_lane_id,
+            "client_request_id": req.mesh_client_request_id,
             "request_payload": _downstream_payload(req),
         }
     if route_name == "embeddings":
@@ -4140,6 +4142,7 @@ def _normalize_route_request(*, route: str, raw_payload: dict[str, Any]) -> dict
         pin_base_url = payload.get("mesh_pin_base_url")
         pin_lane_type = payload.get("mesh_pin_lane_type")
         pin_lane_id = payload.get("mesh_pin_lane_id")
+        client_request_id = payload.get("mesh_client_request_id")
         for key in list(payload.keys()):
             if key.startswith("mesh_"):
                 payload.pop(key, None)
@@ -4150,6 +4153,7 @@ def _normalize_route_request(*, route: str, raw_payload: dict[str, Any]) -> dict
             "pin_base_url": pin_base_url,
             "pin_lane_type": pin_lane_type,
             "pin_lane_id": pin_lane_id,
+            "client_request_id": client_request_id,
             "request_payload": _strip_nones(payload),
         }
     if route_name == "images":
@@ -5353,7 +5357,7 @@ def v1_chat_completions(
         owner=settings.default_owner,
         job_type=settings.default_job_type,
         requested_model_name=str(normalized["requested_model_name"]),
-        client_request_id=x_mesh_client_request_id,
+        client_request_id=x_mesh_client_request_id or normalized.get("client_request_id"),
         pin_worker=normalized.get("pin_worker"),
         pin_base_url=normalized.get("pin_base_url"),
         pin_lane_type=normalized.get("pin_lane_type"),
@@ -5453,7 +5457,7 @@ def v1_embeddings(
         owner=settings.default_owner,
         job_type=settings.default_job_type,
         requested_model_name=str(normalized["requested_model_name"]),
-        client_request_id=x_mesh_client_request_id,
+        client_request_id=x_mesh_client_request_id or normalized.get("client_request_id"),
         pin_worker=normalized.get("pin_worker"),
         pin_base_url=normalized.get("pin_base_url"),
         pin_lane_type=normalized.get("pin_lane_type"),
@@ -5521,7 +5525,7 @@ def v1_images_generations(
         owner=settings.default_owner,
         job_type=settings.default_job_type,
         requested_model_name=str(normalized["requested_model_name"]),
-        client_request_id=x_mesh_client_request_id,
+        client_request_id=x_mesh_client_request_id or normalized.get("client_request_id"),
         pin_worker=normalized.get("pin_worker"),
         pin_base_url=normalized.get("pin_base_url"),
         pin_lane_type=normalized.get("pin_lane_type"),
