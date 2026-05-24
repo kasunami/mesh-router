@@ -152,7 +152,7 @@ class ModelTagsResponse(BaseModel):
 class ModelTuningProfileUpsertRequest(BaseModel):
     host_ref: str
     model_name: str
-    storage_scheme: Literal["ram", "vram", "both", "archive"]
+    storage_scheme: Literal["ram", "vram", "both", "archive", "local"]
     settings: dict[str, Any]
     cost_tier: Literal["standard", "high", "exclusive"] = "standard"
     disables_sibling_lanes: bool = False
@@ -176,7 +176,7 @@ class ModelTuningProfileResponse(BaseModel):
     lane_id: str | None = None
     lane_name: str | None = None
     lane_type: str | None = None
-    storage_scheme: Literal["ram", "vram", "both", "archive"]
+    storage_scheme: Literal["ram", "vram", "both", "archive", "local"]
     settings: dict[str, Any]
     cost_tier: Literal["standard", "high", "exclusive"]
     disables_sibling_lanes: bool

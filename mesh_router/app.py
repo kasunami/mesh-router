@@ -83,7 +83,7 @@ from .schemas import (
     RouteResolveResponse,
 )
 from .tokens import sign_token, verify_token
-from .viability import ViabilityLaneInfo, ViabilityModelInfo, check_viability, estimate_swap_time
+from .viability import SwapEstimation, ViabilityLaneInfo, ViabilityModelInfo, check_viability, estimate_swap_time
 from .logging_config import setup_logging
 from .mw_control import MWControlError, MeshWorkerCommandClient
 from .mw_commands import send_mw_command_require_ready
@@ -489,6 +489,124 @@ def _should_include_candidate_for_capabilities(*, mw_authoritative: bool, source
     if not mw_authoritative:
         return True
     return source_locality == "local"
+
+
+def _validated_candidate_applies_to_lane(candidate: dict[str, Any], lane_row: dict[str, Any]) -> bool:
+    lane_ids = candidate.get("lane_ids") or []
+    if not isinstance(lane_ids, list) or not lane_ids:
+        return True
+    wanted = {str(item or "").strip().lower() for item in lane_ids if str(item or "").strip()}
+    if not wanted:
+        return True
+    binding = _candidate_mw_binding(lane_row)
+    actual = {
+        str(lane_row.get("lane_name") or "").strip().lower(),
+        str(lane_row.get("lane_type") or "").strip().lower(),
+    }
+    if binding is not None:
+        actual.add(str(binding[1]).strip().lower())
+    actual.discard("")
+    return bool(wanted & actual)
+
+
+def _merge_mw_validated_capability_candidates(
+    *,
+    candidates_by_model: dict[str, LaneModelCandidate],
+    lane_row: dict[str, Any],
+    host_row: dict[str, Any] | None,
+    lane_info: ViabilityLaneInfo,
+    artifact_rows: list[dict[str, Any]],
+    local_model_root: str | None,
+) -> None:
+    """Make MW's validated-candidate truth available to swap preflight.
+
+    Routing already treats MW `validated_candidates` as authoritative. Preflight must
+    see the same candidates or MR can select a lane for a model and then reject its own
+    swap. Local DB viability rows are still useful, but stale zero-TPS observations must
+    not override a fresh MW declaration that a lane can load a model.
+    """
+    validated = lane_row.get("validated_candidates")
+    if not isinstance(validated, list):
+        return
+
+    host_id = str((host_row or {}).get("host_id") or "")
+    host_name = str((host_row or {}).get("host_name") or "")
+    local_artifacts: dict[str, dict[str, Any]] = {}
+    for row in artifact_rows:
+        if str(row.get("host_id") or "") != host_id:
+            continue
+        if not _path_matches_local_model_root(
+            artifact_path=row.get("local_path"),
+            local_model_root=local_model_root,
+        ):
+            continue
+        model_name = str(row.get("model_name") or "").strip()
+        if model_name and model_name not in local_artifacts:
+            local_artifacts[model_name] = dict(row)
+
+    current_model = str(lane_row.get("current_model_name") or "").strip()
+    for item in validated:
+        if not isinstance(item, dict):
+            continue
+        model_name = str(item.get("canonical_id") or item.get("model_name") or "").strip()
+        if not model_name or not _validated_candidate_applies_to_lane(item, lane_row):
+            continue
+        raw_backend_types = item.get("backend_types") or []
+        backend_types = {
+            _normalize_router_backend_type(str(value or ""))
+            for value in raw_backend_types
+            if str(value or "").strip()
+        }
+        lane_backend = _normalize_router_backend_type(str(lane_row.get("backend_type") or ""))
+        if backend_types and lane_backend and lane_backend not in backend_types:
+            continue
+
+        tags = _model_tags_with_inferred(model_name, list(item.get("tags") or []) + ["mw-validated"])
+        max_ctx = None
+        try:
+            if item.get("max_ctx") is not None:
+                max_ctx = int(item["max_ctx"])
+        except (TypeError, ValueError):
+            max_ctx = None
+
+        existing = candidates_by_model.get(model_name)
+        if existing is not None:
+            existing.tags = _model_tags_with_inferred(model_name, list(existing.tags or []) + tags)
+            if existing.max_context_tokens is None and max_ctx is not None:
+                existing.max_context_tokens = max_ctx
+            if existing.reason:
+                existing.reason = None
+            continue
+
+        already_loaded = bool(current_model and _model_request_matches_candidate(model_name, current_model))
+        artifact = local_artifacts.get(model_name)
+        if not artifact and not already_loaded:
+            continue
+
+        size_bytes = int(artifact["size_bytes"]) if artifact and artifact.get("size_bytes") is not None else None
+        model_info = ViabilityModelInfo(
+            model_id=str(artifact.get("model_id") if artifact else model_name),
+            model_name=model_name,
+            size_bytes=size_bytes,
+            estimated_tps=None,
+        )
+        swap_estimate = SwapEstimation(estimated_ms=0, strategy="already_loaded") if already_loaded else estimate_swap_time(lane_info, model_info)
+        candidates_by_model[model_name] = LaneModelCandidate(
+            model_name=model_name,
+            tags=tags,
+            locality="local",
+            artifact_path=str(artifact["local_path"]) if artifact and artifact.get("local_path") else None,
+            artifact_host=host_name or None,
+            artifact_provider=str(artifact.get("storage_provider") or "mw_validated") if artifact else "mw_runtime",
+            estimated_tps=None,
+            estimated_swap_ms=swap_estimate.estimated_ms,
+            swap_strategy=swap_estimate.strategy,
+            reason=None,
+            size_bytes=size_bytes,
+            required_memory_bytes=None,
+            projected_free_bytes=None,
+            max_context_tokens=max_ctx,
+        )
 
 
 def _capability_vram_budget(lane_row: dict[str, Any], lane_type: str) -> int | None:
@@ -1849,6 +1967,16 @@ def _build_lane_capability_payload(cur, lane_ref: str) -> tuple[dict[str, Any], 
             if previous_score <= current_score:
                 continue
         candidates_by_model[model_name] = candidate
+
+    if mw_authoritative:
+        _merge_mw_validated_capability_candidates(
+            candidates_by_model=candidates_by_model,
+            lane_row=lane_row,
+            host_row=host_row,
+            lane_info=lane_info,
+            artifact_rows=[dict(row) for row in artifact_rows],
+            local_model_root=local_model_root,
+        )
 
     supported_models = sorted(candidates_by_model.keys())
 
