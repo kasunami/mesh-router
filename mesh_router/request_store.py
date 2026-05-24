@@ -25,6 +25,8 @@ def cleanup_expired_router_requests(cur: Any) -> None:
             updated_at=now()
         WHERE state IN ('queued', 'acquired', 'running')
           AND (
+            released_at IS NOT NULL
+            OR
             (expires_at IS NOT NULL AND expires_at <= now())
             OR COALESCE(last_heartbeat_at, started_at, acquired_at, queued_at) < now() - (%s * interval '1 second')
           )
@@ -146,13 +148,23 @@ def touch_router_request(*, request_id: str, state: str | None = None, **fields:
         conn.commit()
 
 
+def router_request_should_stop(row: dict[str, Any] | None) -> bool:
+    if not row:
+        return False
+    state = str(row.get("state") or "").lower()
+    return bool(row.get("cancel_requested")) or state in REQUEST_TERMINAL_STATES or bool(row.get("released_at"))
+
+
 def request_cancel_requested(request_id: str) -> bool:
     with db.connect() as conn:
         with conn.cursor() as cur:
             cleanup_expired_router_requests(cur)
-            cur.execute("SELECT cancel_requested FROM router_requests WHERE request_id=%s", (request_id,))
+            cur.execute(
+                "SELECT state, cancel_requested, released_at FROM router_requests WHERE request_id=%s",
+                (request_id,),
+            )
             row = cur.fetchone()
-    return bool((row or {}).get("cancel_requested"))
+    return router_request_should_stop(row)
 
 
 def fetch_router_request(request_id: str) -> dict[str, Any] | None:

@@ -6,6 +6,7 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from mesh_router import app as app_module
+from mesh_router.request_store import router_request_should_stop
 
 
 class RouterRequestsApiTests(unittest.TestCase):
@@ -69,6 +70,28 @@ class RouterRequestsApiTests(unittest.TestCase):
         cancel_requested.assert_called_once_with("11111111-1111-1111-1111-111111111111")
         heartbeat.assert_not_called()
         touch.assert_not_called()
+
+    def test_request_should_stop_when_released_but_state_is_running(self) -> None:
+        self.assertTrue(
+            router_request_should_stop(
+                {
+                    "state": "running",
+                    "cancel_requested": False,
+                    "released_at": object(),
+                }
+            )
+        )
+
+    def test_request_should_stop_for_terminal_state(self) -> None:
+        self.assertTrue(
+            router_request_should_stop(
+                {
+                    "state": "expired",
+                    "cancel_requested": False,
+                    "released_at": None,
+                }
+            )
+        )
 
 
 if __name__ == "__main__":
