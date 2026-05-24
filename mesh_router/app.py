@@ -5324,6 +5324,7 @@ def v1_chat_completions(
     x_mesh_pin_base_url: str | None = Header(default=None),
     x_mesh_pin_lane_type: str | None = Header(default=None),
     x_mesh_pin_lane_id: str | None = Header(default=None),
+    x_mesh_client_request_id: str | None = Header(default=None),
 ) -> Any:
     raw_payload = req.model_dump(by_alias=True)
     if x_mesh_pin_worker is not None:
@@ -5352,6 +5353,7 @@ def v1_chat_completions(
         owner=settings.default_owner,
         job_type=settings.default_job_type,
         requested_model_name=str(normalized["requested_model_name"]),
+        client_request_id=x_mesh_client_request_id,
         pin_worker=normalized.get("pin_worker"),
         pin_base_url=normalized.get("pin_base_url"),
         pin_lane_type=normalized.get("pin_lane_type"),
@@ -5433,6 +5435,7 @@ def v1_embeddings(
     x_mesh_pin_base_url: str | None = Header(default=None),
     x_mesh_pin_lane_type: str | None = Header(default=None),
     x_mesh_pin_lane_id: str | None = Header(default=None),
+    x_mesh_client_request_id: str | None = Header(default=None),
 ) -> dict[str, Any]:
     raw_payload = dict(body or {})
     if x_mesh_pin_worker is not None:
@@ -5450,6 +5453,7 @@ def v1_embeddings(
         owner=settings.default_owner,
         job_type=settings.default_job_type,
         requested_model_name=str(normalized["requested_model_name"]),
+        client_request_id=x_mesh_client_request_id,
         pin_worker=normalized.get("pin_worker"),
         pin_base_url=normalized.get("pin_base_url"),
         pin_lane_type=normalized.get("pin_lane_type"),
@@ -5499,6 +5503,7 @@ def v1_images_generations(
     x_mesh_pin_base_url: str | None = Header(default=None),
     x_mesh_pin_lane_type: str | None = Header(default=None),
     x_mesh_pin_lane_id: str | None = Header(default=None),
+    x_mesh_client_request_id: str | None = Header(default=None),
 ) -> dict[str, Any]:
     raw_payload = req.model_dump()
     if x_mesh_pin_worker is not None:
@@ -5516,6 +5521,7 @@ def v1_images_generations(
         owner=settings.default_owner,
         job_type=settings.default_job_type,
         requested_model_name=str(normalized["requested_model_name"]),
+        client_request_id=x_mesh_client_request_id,
         pin_worker=normalized.get("pin_worker"),
         pin_base_url=normalized.get("pin_base_url"),
         pin_lane_type=normalized.get("pin_lane_type"),
