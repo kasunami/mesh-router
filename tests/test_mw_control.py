@@ -157,6 +157,37 @@ class MWControlApiTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 400)
 
+    def test_run_allowlisted_command_requires_command_id(self) -> None:
+        response = self.client.post(
+            "/api/mw/commands",
+            json={
+                "host_id": "tiffs-macbook",
+                "message_type": "run_allowlisted_command",
+                "payload": {},
+                "wait": True,
+            },
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_run_allowlisted_command_forwards_payload(self) -> None:
+        response = self.client.post(
+            "/api/mw/commands",
+            json={
+                "host_id": "tiffs-macbook",
+                "message_type": "run_allowlisted_command",
+                "payload": {
+                    "command_id": "uba-alpha-smoke",
+                    "env": {"UBA_SERVER_WS_URL": "ws://10.0.1.60:8080/accord"},
+                },
+                "wait": True,
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["message_type"], "run_allowlisted_command")
+        self.assertEqual(self.fake.calls[-1]["payload"]["command_id"], "uba-alpha-smoke")
+
     def test_mw_command_timeout_returns_pending_202(self) -> None:
         self.fake.next_result = {
             "ok": True,

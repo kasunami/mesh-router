@@ -2493,6 +2493,8 @@ def api_mw_command(req: MWCommandRequest) -> MWCommandResponse:
             payload["model_name"] = payload.get("model_id")
         if not str(payload.get("model_name") or "").strip():
             raise HTTPException(status_code=400, detail="load_model requires payload.model_name (or model_id alias)")
+    if req.message_type == "run_allowlisted_command" and not str(payload.get("command_id") or "").strip():
+        raise HTTPException(status_code=400, detail="run_allowlisted_command requires payload.command_id")
     try:
         result = _mw_client().send_command(
             host_id=mw_host_id,
