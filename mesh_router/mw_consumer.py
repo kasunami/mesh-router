@@ -6,8 +6,9 @@ import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Callable, Iterable
+from uuid import UUID
 
-from confluent_kafka import Consumer, KafkaError
+from confluent_kafka import Consumer, KafkaError, TopicPartition
 import psycopg
 from psycopg.types.json import Jsonb
 from psycopg.rows import dict_row
@@ -16,6 +17,14 @@ from .config import settings
 from .runtime_state import RuntimeStateStore, get_default_runtime_state_store
 
 logger = logging.getLogger(__name__)
+
+
+def _looks_like_uuid(value: str) -> bool:
+    try:
+        UUID(value)
+    except (TypeError, ValueError):
+        return False
+    return True
 
 
 @dataclass(frozen=True)
@@ -372,6 +381,9 @@ def process_message(
                 request_id = str(payload.get("request_id") or "")
                 body = dict(payload.get("payload") or {})
                 if request_id:
+                    if not _looks_like_uuid(request_id):
+                        logger.warning("MW response skipped invalid UUID request_id: %s", request_id)
+                        return
                     _upsert_transition(cur, request_id=request_id, host_id=host_id, payload=body, observed_at=observed_at)
                     _insert_transition_event(cur, request_id=request_id, host_id=host_id, payload=body, observed_at=observed_at)
                 snapshot = _response_host_state_snapshot(body)
@@ -433,6 +445,7 @@ def run_forever() -> None:
                 consumer.commit(message=msg, asynchronous=False)
                 continue
 
+            should_commit = True
             try:
                 process_message(
                     payload=payload,
@@ -440,12 +453,23 @@ def run_forever() -> None:
                     db_connect=_mw_state_db_connect,
                     runtime_store=runtime_store,
                 )
-            except Exception as exc:
-                # Tables may not exist yet; keep the consumer alive and retry later.
-                logger.warning("MW consumer DB write failed: %s", exc)
+            except psycopg.Error as exc:
+                # Do not acknowledge DB-write failures. MW command polling depends on
+                # mw_transitions rows; committing here can make completed responses vanish.
+                should_commit = False
+                logger.warning("MW consumer DB write failed; will retry message: %s", exc)
+                try:
+                    consumer.seek(TopicPartition(msg.topic(), msg.partition(), msg.offset()))
+                except Exception as seek_exc:
+                    logger.warning("MW consumer failed to seek for retry: %s", seek_exc)
                 time.sleep(1.0)
+            except Exception as exc:
+                # Non-DB errors are treated as malformed/unprocessable payloads so a single
+                # poison message does not stall the consumer group forever.
+                logger.warning("MW consumer message processing failed; committing poison message: %s", exc)
 
-            consumer.commit(message=msg, asynchronous=False)
+            if should_commit:
+                consumer.commit(message=msg, asynchronous=False)
     finally:
         consumer.close()
 

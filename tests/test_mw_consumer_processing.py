@@ -192,6 +192,24 @@ class MwConsumerProcessingTests(unittest.TestCase):
         self.assertIn("INSERT INTO mw_transitions", sql)
         self.assertIn("INSERT INTO mw_transition_events", sql)
 
+    def test_process_response_with_invalid_request_id_is_skipped(self) -> None:
+        cursor = CapturingCursor()
+        db_connect = make_db(cursor)
+        now = datetime.now(UTC)
+        process_message(
+            payload={
+                "message_type": "response",
+                "host_id": "static-deskix",
+                "request_id": "not-a-uuid",
+                "payload": {"response_type": "completed", "command_type": "load_model", "ok": True, "result": {}},
+            },
+            observed_at=now,
+            db_connect=db_connect,
+        )
+        sql = "\n".join(s for (s, _p) in cursor.executed)
+        self.assertNotIn("INSERT INTO mw_transitions", sql)
+        self.assertNotIn("INSERT INTO mw_transition_events", sql)
+
     def test_completed_response_with_false_ok_is_stored_as_failed(self) -> None:
         cursor = CapturingCursor()
         db_connect = make_db(cursor)
