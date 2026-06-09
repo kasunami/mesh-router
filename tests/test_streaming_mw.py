@@ -242,6 +242,7 @@ class StreamingMwTests(unittest.TestCase):
     def test_chat_non_streaming_uses_mw_grpc_when_enabled(self) -> None:
         app_module._mw_client.cache_clear()
         sent_commands = []
+        grpc_stream_flags = []
         fake_mw_client = SimpleNamespace(send_command=lambda **kwargs: sent_commands.append(kwargs) or {"ok": True})
         choice = LaneChoice(
             lane_id="lane-1",
@@ -253,6 +254,11 @@ class StreamingMwTests(unittest.TestCase):
         )
         target = MwGrpcTarget(endpoint="127.0.0.1:50061", host_id="static-mobile-2", lane_id="qwen")
         fake_db = SimpleNamespace(connect=fake_db_connect)
+
+        async def fake_non_stream_grpc_chat(self, *, target, request_id, model, messages, temperature, max_tokens, deadline_unix_ms, stream=True):  # noqa: ANN001, ARG001
+            grpc_stream_flags.append(stream)
+            yield SimpleNamespace(event_type="delta", raw_backend_payload=b'{"choices":[{"delta":{"content":"hi"}}]}')
+            yield SimpleNamespace(event_type="completed", raw_backend_payload=b"")
 
         with (
             patch.object(app_module, "_create_router_request", return_value="req-2"),
@@ -268,7 +274,7 @@ class StreamingMwTests(unittest.TestCase):
             patch.object(app_module, "_mw_client", lambda: fake_mw_client),
             patch.object(app_module, "db", fake_db),
             patch.object(request_store_module, "db", fake_db),
-            patch.object(app_module.MwGrpcClient, "stream_chat", fake_grpc_stream_chat),
+            patch.object(app_module.MwGrpcClient, "stream_chat", fake_non_stream_grpc_chat),
         ):
             client = TestClient(app_module.app)
             resp = client.post(
@@ -284,6 +290,7 @@ class StreamingMwTests(unittest.TestCase):
             self.assertEqual(body["choices"][0]["message"]["content"], "hi")
             self.assertEqual(body["model"], "Qwen3.5-0.8B-Q4_K_M.gguf")
             self.assertEqual(sent_commands, [])
+            self.assertEqual(grpc_stream_flags, [True])
 
 
 if __name__ == "__main__":
