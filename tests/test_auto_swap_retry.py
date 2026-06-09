@@ -74,6 +74,22 @@ class _FakeHttpxClient:
         return False
 
 
+class _EmptyChatHttpxResp:
+    status_code = 200
+
+    def json(self):  # noqa: ANN001
+        return {
+            "choices": [{"message": {"role": "assistant", "content": ""}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        }
+
+
+class _EmptyChatHttpxClient(_FakeHttpxClient):
+    def post(self, url: str, json=None, headers=None):  # noqa: ANN001
+        self.posts.append(url)
+        return _EmptyChatHttpxResp()
+
+
 class AutoSwapRetryTests(unittest.TestCase):
     def test_auto_swap_failure_retries_other_lane(self) -> None:
         # Lane 1: doesn't currently serve the requested model; swap will fail.
@@ -143,6 +159,57 @@ class AutoSwapRetryTests(unittest.TestCase):
         # We attempted a swap only for the first lane, then retried and used lane2.
         self.assertEqual(swap_calls, ["lane-1"])
         self.assertEqual(len(picks), 0)
+
+    def test_empty_non_stream_chat_response_fails_request(self) -> None:
+        lane = SimpleNamespace(
+            lane_id="lane-1",
+            worker_id="tiffs-macbook",
+            base_url="http://10.0.0.97:11434",
+            current_model_name="/Users/kasunami/models/Qwen3.5-9B-MLX-4bit",
+            backend_type="mlx",
+            lane_type="mlx",
+            lane_max_ctx=8192,
+            context_default=8192,
+        )
+        touches: list[dict] = []
+
+        def _fake_acquire_router_lease(*, lane_id: str, model_id: str, owner: str, job_type: str, ttl_seconds: int, details: dict):  # noqa: ANN001
+            return "lease-1", datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds)
+
+        with (
+            mock.patch.object(app_module, "db", _Db()),
+            mock.patch.object(app_module, "pick_lane_for_model", return_value=lane),
+            mock.patch.object(app_module, "_acquire_router_lease", side_effect=_fake_acquire_router_lease),
+            mock.patch.object(app_module, "_heartbeat_router_lease", return_value=None),
+            mock.patch.object(app_module, "_release_router_lease", return_value=None),
+            mock.patch.object(app_module, "_request_cancel_requested", return_value=False),
+            mock.patch.object(app_module, "_touch_router_request", side_effect=lambda **kwargs: touches.append(kwargs)),
+            mock.patch.object(app_module, "_resolve_downstream_model_for_lane", side_effect=lambda *a, **k: k.get("requested_model_name") or "/Users/kasunami/models/Qwen3.5-9B-MLX-4bit"),
+            mock.patch.object(app_module, "_mw_target_for_lane", return_value=None),
+            mock.patch.object(app_module.httpx, "Client", _EmptyChatHttpxClient),
+            mock.patch.object(app_module, "_maybe_record_perf_observation", return_value=None),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "empty chat completion content"):
+                app_module._execute_router_request(
+                    request_id="req-empty",
+                    route="chat",
+                    raw_payload={
+                        "model": "/Users/kasunami/models/Qwen3.5-9B-MLX-4bit",
+                        "messages": [{"role": "user", "content": "Return exactly READY"}],
+                        "stream": False,
+                    },
+                    owner="test",
+                    job_type="test",
+                )
+
+        self.assertTrue(
+            any(
+                touch.get("state") == "failed"
+                and touch.get("error_kind") == "proxy_error"
+                and touch.get("result_payload") is None
+                for touch in touches
+            )
+        )
 
 
 if __name__ == "__main__":

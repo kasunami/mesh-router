@@ -301,6 +301,53 @@ def _sanitize_stream_chat_chunk(raw: bytes) -> bytes | None:
     return json.dumps(item, separators=(",", ":")).encode("utf-8")
 
 
+def _chat_response_has_assistant_content(resp_data: dict[str, Any] | None) -> bool:
+    if not isinstance(resp_data, dict):
+        return False
+    choices = resp_data.get("choices")
+    if not isinstance(choices, list):
+        return False
+    for choice in choices:
+        if not isinstance(choice, dict):
+            continue
+        message = choice.get("message")
+        if isinstance(message, dict) and str(message.get("content") or "").strip():
+            return True
+        delta = choice.get("delta")
+        if isinstance(delta, dict) and str(delta.get("content") or "").strip():
+            return True
+        text = choice.get("text")
+        if isinstance(text, str) and text.strip():
+            return True
+    return False
+
+
+def _chat_response_usage_total(resp_data: dict[str, Any] | None) -> int | None:
+    if not isinstance(resp_data, dict):
+        return None
+    usage = resp_data.get("usage")
+    if not isinstance(usage, dict):
+        return None
+    for key in ("total_tokens", "completion_tokens", "prompt_tokens"):
+        value = usage.get(key)
+        if value is None:
+            continue
+        try:
+            return int(value)
+        except Exception:
+            continue
+    return None
+
+
+def _validate_non_stream_chat_response(resp_data: dict[str, Any] | None) -> None:
+    if _chat_response_has_assistant_content(resp_data):
+        return
+    usage_total = _chat_response_usage_total(resp_data)
+    if usage_total is not None and usage_total > 0:
+        return
+    raise RuntimeError("worker proxy returned empty chat completion content")
+
+
 def _lane_uses_llama_router(*, lane_id: str) -> bool:
     if not lane_id:
         return False
@@ -4656,6 +4703,13 @@ def _execute_router_request(
                 response_payload=resp_data if isinstance(resp_data, dict) else {},
                 response_format=response_format,
             )
+        if route == "chat":
+            try:
+                _validate_non_stream_chat_response(resp_data if isinstance(resp_data, dict) else None)
+            except RuntimeError as exc:
+                err_kind = "proxy_error"
+                err_msg = str(exc)
+                raise
 
         try:
             usage = (resp_data or {}).get("usage") or {}
