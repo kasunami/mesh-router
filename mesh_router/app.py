@@ -2430,7 +2430,7 @@ def healthz() -> dict[str, Any]:
 
 @app.get("/health/liveliness")
 def health_liveliness() -> dict[str, Any]:
-    # Compatibility endpoint (LiteLLM-style health paths are used by some clients).
+    # Compatibility endpoint for common health probes used by clients.
     return {"ok": True}
 
 

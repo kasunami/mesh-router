@@ -842,7 +842,6 @@ def _pick_lane_for_model_single(
                           AND COALESCE(rr.error_message, '') NOT ILIKE '%%Failed to load image or audio file%%'
                           AND rr.released_at > now() - (%s * interval '1 second')
                       )
-                      AND h.host_name NOT IN ('litellm-router')
                       AND (%s::text IS NULL OR l.lane_type::text = %s::text)
                       AND (
                         CASE
