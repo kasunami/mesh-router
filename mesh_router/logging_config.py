@@ -3,7 +3,10 @@ import os
 import sys
 
 try:
-    from pythonjsonlogger import jsonlogger
+    try:
+        from pythonjsonlogger.json import JsonFormatter
+    except ImportError:  # python-json-logger 2.x compatibility
+        from pythonjsonlogger.jsonlogger import JsonFormatter
 
     JSON_LOGGER_AVAILABLE = True
 except ImportError:
@@ -31,7 +34,7 @@ def setup_logging(level: int = logging.INFO, force_json: bool = False, service_n
     handler = logging.StreamHandler(sys.stdout)
     if enable_json:
         fmt = "%(asctime)s %(levelname)s %(name)s %(message)s %(pathname)s %(funcName)s %(lineno)d"
-        formatter = jsonlogger.JsonFormatter(fmt, rename_fields={"name": "logger"}) if service_name else jsonlogger.JsonFormatter(fmt)
+        formatter = JsonFormatter(fmt, rename_fields={"name": "logger"}) if service_name else JsonFormatter(fmt)
     else:
         formatter = logging.Formatter("%(asctime)s %(levelname)s [%(name)s] %(message)s")
     handler.setFormatter(formatter)
