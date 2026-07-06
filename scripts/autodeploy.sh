@@ -54,8 +54,22 @@ print(m.group(1) if m else "")
 PY
 )"
 
-if [[ "${CURRENT_IMAGE}" == "${IMAGE_TAG}" ]]; then
-  echo "mesh-router already deployed at ${IMAGE_TAG}"
+CURRENT_REVISION="$(python3 - <<PY
+from pathlib import Path
+p = Path("${K3S_MANIFESTS_DIR}/${MANIFEST_PATH}")
+lines = p.read_text().splitlines()
+revision = ""
+for index, line in enumerate(lines[:-1]):
+    if "name: MESH_ROUTER_DEPLOYMENT_REVISION" in line:
+        revision = lines[index + 1].split(":", 1)[-1].strip().strip("\"'")
+        break
+print(revision)
+PY
+)"
+
+if [[ "${CURRENT_REVISION}" == "${COMMIT_SHA}" && "${CURRENT_IMAGE}" == "${IMAGE_REPO}@sha256:"* ]]; then
+  echo "mesh-router already deployed at revision ${COMMIT_SHA}"
+  echo "  digest: ${CURRENT_IMAGE}"
   exit 0
 fi
 

@@ -2,7 +2,7 @@
 
 MR should be safe to publish without exposing private topology, local paths, or plaintext secrets.
 
-Tracked files should use placeholders such as:
+Tracked and non-ignored untracked files should use placeholders such as:
 
 - `worker-a.example`
 - `mesh-router.example`

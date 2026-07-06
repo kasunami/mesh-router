@@ -1,6 +1,6 @@
 # MR Phase 3 Plan
 
-Status: in progress
+Status: historical implementation plan; not an active status tracker
 Parent plan: `MR-REFACTOR-MASTER-PLAN.md`
 
 ## Purpose

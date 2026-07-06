@@ -15,6 +15,7 @@ spec:
       port: 4010
       targetPort: 4010
       protocol: TCP
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:

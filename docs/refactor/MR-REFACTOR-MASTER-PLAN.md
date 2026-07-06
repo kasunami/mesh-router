@@ -1,6 +1,6 @@
 # Mesh Router Refactor Master Plan
 
-Status: draft for implementation
+Status: archived implementation plan; current behavior is defined by code and tests
 Scope: `mesh-router` only; `mesh-worker` is treated as the hardened runtime/control-plane dependency.
 
 ## Goals
@@ -12,7 +12,7 @@ Scope: `mesh-router` only; `mesh-worker` is treated as the hardened runtime/cont
 - Add repeatable MR-side certification so request routing, model loading, swaps, and streaming can be verified without ad hoc manual checks.
 - Reduce `mesh_router/app.py` from a monolith into focused modules with clear boundaries.
 
-## Current Risk Summary
+## Risk Summary At Planning Time
 
 - `mesh_router/app.py` is too broad: API handlers, request lifecycle, leases, swaps, MW orchestration, inventory, metrics, and compatibility paths are interleaved in one file.
 - Streaming and non-streaming request execution duplicate lease, heartbeat, MW load, error, and metrics handling.
@@ -24,7 +24,7 @@ Scope: `mesh-router` only; `mesh-worker` is treated as the hardened runtime/cont
 - Tracked defaults/docs/scripts contain homelab-specific values that should not ship in public code.
 - Runtime secrets have placeholder defaults without fail-fast startup validation.
 
-## Verified High-Priority Findings
+## High-Priority Findings Verified At Planning Time
 
 - `mesh_router/app.py:_reroute_displaced_lease` references `downstream_model` before assignment when looking up `model_id`; this can break swap-displaced lease rerouting.
 - `mesh_router/mw_control.py:send_command` returns `ok=True, pending=True` on MW response timeout. Several call sites only check `ok`, so a slow swap can be treated as ready before MW reaches a terminal state.

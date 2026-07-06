@@ -206,6 +206,10 @@ Git:
 cp .env.example .env
 ```
 
+MeshRouter loads `.env` from the current working directory. Process environment
+variables take precedence, so deployment platforms can inject settings without
+using a local file.
+
 The example configuration and Kubernetes manifests contain placeholders only.
 Database migrations and shared-cluster changes should be applied through the
 operator's normal review and coordination process.

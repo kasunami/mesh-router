@@ -5,6 +5,16 @@ import unittest
 from mesh_router.config import Settings, validate_runtime_settings
 
 
+def test_settings_loads_local_dotenv(monkeypatch, tmp_path) -> None:  # noqa: ANN001
+    monkeypatch.delenv("MESH_ROUTER_DEFAULT_OWNER", raising=False)
+    (tmp_path / ".env").write_text("MESH_ROUTER_DEFAULT_OWNER=dotenv-owner\n")
+    monkeypatch.chdir(tmp_path)
+
+    cfg = Settings()
+
+    assert cfg.default_owner == "dotenv-owner"
+
+
 class ConfigValidationTests(unittest.TestCase):
     def test_placeholder_secrets_fail_closed(self) -> None:
         cfg = Settings(

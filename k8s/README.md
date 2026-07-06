@@ -1,6 +1,13 @@
 # mesh-router k8s manifest notes
 
-This directory contains a *template* manifest (`mesh-router.yaml`) for deploying Mesh-Router into the `ai-tools` namespace.
+This directory contains a *template* Service and Deployment manifest
+(`mesh-router.yaml`) for deploying MeshRouter into the `ai-tools` namespace.
+
+Validate the public templates without contacting a cluster:
+
+```bash
+python -m pytest tests/test_public_templates.py
+```
 
 ## Deploy hygiene (important)
 
@@ -19,6 +26,12 @@ For private deployments, the recommended path is a GitOps update of the manifest
 - `scripts/autodeploy.sh`
 
 That script builds a unique tag, pushes it, resolves the pushed digest, and updates the manifests repo to use the digest.
+
+`scripts/autodeploy.sh` is an operator action, not a local evaluator command. It
+hard-resets its managed clones to their configured remote branches, pushes an
+image, commits the resolved digest to a separate manifests repository, and
+pushes that repository. Run it only on a dedicated deployment host with the
+repository URLs, registry, credentials, and paths explicitly configured.
 
 The systemd example expects the deploy script to be installed at:
 
