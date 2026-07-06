@@ -44,7 +44,7 @@ class PerfExpectationHeadersTests(unittest.TestCase):
 
     def test_chat_includes_perf_headers_when_enabled_and_available(self) -> None:
         exp = PerfExpectation(
-            host_id="static-deskix",
+            host_id="worker-a",
             lane_id="11111111-1111-1111-1111-111111111111",
             model_name="qwen3.5-2b",
             modality="chat",
@@ -66,7 +66,7 @@ class PerfExpectationHeadersTests(unittest.TestCase):
                 "_fetch_router_request",
                 return_value={
                     "lane_id": "11111111-1111-1111-1111-111111111111",
-                    "worker_id": "Static-Deskix",
+                    "worker_id": "Worker-A",
                     "downstream_model_name": "qwen3.5-2b",
                 },
             ),
@@ -91,7 +91,7 @@ class PerfExpectationHeadersTests(unittest.TestCase):
             patch.object(app_module, "_normalize_route_request", return_value={"request_payload": {"stream": False}, "requested_model_name": "qwen3.5-2b"}),
             patch.object(app_module, "_create_router_request", return_value="req-1"),
             patch.object(app_module, "_execute_router_request", return_value={"ok": True}),
-            patch.object(app_module, "_fetch_router_request", return_value={"lane_id": "lane-1", "worker_id": "Static-Deskix", "downstream_model_name": "qwen3.5-2b"}),
+            patch.object(app_module, "_fetch_router_request", return_value={"lane_id": "lane-1", "worker_id": "Worker-A", "downstream_model_name": "qwen3.5-2b"}),
         ):
             client = TestClient(app_module.app)
             resp = client.post(

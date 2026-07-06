@@ -24,7 +24,7 @@ def test_runtime_state_store_writes_lane_facts_with_service_port_and_eta_metadat
     now = datetime(2026, 4, 15, 12, 0, tzinfo=UTC)
 
     store.write_host_snapshot(
-        host_id="static-deskix",
+        host_id="worker-a",
         snapshot={
             "actual_profile": "split_default",
             "service_states": [
@@ -57,9 +57,9 @@ def test_runtime_state_store_writes_lane_facts_with_service_port_and_eta_metadat
         ttl_seconds=90,
     )
 
-    facts = store.get_lane_facts([("static-deskix", "gpu")])
+    facts = store.get_lane_facts([("worker-a", "gpu")])
 
-    fact = facts[("static-deskix", "gpu")]
+    fact = facts[("worker-a", "gpu")]
     assert fact["last_heartbeat_at"] == now
     assert fact["actual_model"] == "qwen3.5-9b"
     assert fact["backend_type"] == "llama.cpp"
@@ -67,7 +67,7 @@ def test_runtime_state_store_writes_lane_facts_with_service_port_and_eta_metadat
     assert fact["metadata"]["current_backend_type"] == "llama"
     assert fact["metadata"]["backend_swap_eta_ms"] == 0
     assert fact["metadata"]["eta_complete"] is True
-    assert redis.ttls[store.lane_key("static-deskix", "gpu")] == 90
+    assert redis.ttls[store.lane_key("worker-a", "gpu")] == 90
 
 
 def test_runtime_state_store_can_label_response_snapshots() -> None:
@@ -76,7 +76,7 @@ def test_runtime_state_store_can_label_response_snapshots() -> None:
     now = datetime(2026, 4, 15, 12, 1, tzinfo=UTC)
 
     store.write_host_snapshot(
-        host_id="static-deskix",
+        host_id="worker-a",
         snapshot={
             "service_states": [],
             "lane_states": [
@@ -94,7 +94,7 @@ def test_runtime_state_store_can_label_response_snapshots() -> None:
         source="mw_response_snapshot",
     )
 
-    fact = store.get_lane_facts([("static-deskix", "gpu")])[("static-deskix", "gpu")]
+    fact = store.get_lane_facts([("worker-a", "gpu")])[("worker-a", "gpu")]
     assert fact["metadata"]["source"] == "mw_response_snapshot"
 
 
@@ -104,7 +104,7 @@ def test_runtime_state_store_maps_top_level_validated_candidates_to_lanes() -> N
     now = datetime(2026, 4, 15, 12, 2, tzinfo=UTC)
 
     store.write_host_snapshot(
-        host_id="static-deskix",
+        host_id="worker-a",
         snapshot={
             "service_states": [],
             "validated_candidates": [
@@ -119,5 +119,5 @@ def test_runtime_state_store_maps_top_level_validated_candidates_to_lanes() -> N
         ttl_seconds=90,
     )
 
-    fact = store.get_lane_facts([("static-deskix", "gpu")])[("static-deskix", "gpu")]
+    fact = store.get_lane_facts([("worker-a", "gpu")])[("worker-a", "gpu")]
     assert fact["validated_candidates"] == [{"canonical_id": "Qwen3.5-9B-Q4_K_M.gguf", "lane_ids": ["gpu"]}]

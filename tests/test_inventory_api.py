@@ -82,12 +82,12 @@ class InventoryApiTests(unittest.TestCase):
                 "lane_name": "gpu",
                 "lane_type": "gpu",
                 "backend_type": "llama",
-                "base_url": "http://10.0.0.99:11434",
+                "base_url": "http://worker-a.example:11434",
                 "status": "offline",
-                "proxy_auth_metadata": {"control_plane": "mw", "mw_host_id": "static-deskix", "mw_lane_id": "gpu"},
+                "proxy_auth_metadata": {"control_plane": "mw", "mw_host_id": "worker-a", "mw_lane_id": "gpu"},
                 "current_model_name": None,
                 "host_id": "host-1",
-                "host_name": "Static-Deskix",
+                "host_name": "Worker-A",
                 "viable_models": [
                     {"model_name": "qwen3.5-9b", "tags": [], "max_ctx": 8192, "locality": "local"},
                     {"model_name": "qwen3.5-27b", "tags": [], "max_ctx": 8192, "locality": "remote"},
@@ -97,7 +97,7 @@ class InventoryApiTests(unittest.TestCase):
         now = datetime.now(tz=timezone.utc)
         state_rows = [
             {
-                "host_id": "static-deskix",
+                "host_id": "worker-a",
                 "lane_id": "gpu",
                 "last_heartbeat_at": now,
                 "actual_state": "running",
@@ -125,7 +125,7 @@ class InventoryApiTests(unittest.TestCase):
         body = resp.json()
         self.assertEqual(len(body["items"]), 1)
         host = body["items"][0]
-        self.assertEqual(host["host_name"], "Static-Deskix")
+        self.assertEqual(host["host_name"], "Worker-A")
         self.assertIn("stable", host.get("tags") or [])
         self.assertEqual(len(host["lanes"]), 1)
         lane = host["lanes"][0]
@@ -145,12 +145,12 @@ class InventoryApiTests(unittest.TestCase):
                 "lane_name": "cpu",
                 "lane_type": "cpu",
                 "backend_type": "bitnet",
-                "base_url": "http://10.0.0.99:11435",
+                "base_url": "http://worker-a.example:11435",
                 "status": "ready",
                 "proxy_auth_metadata": {},
                 "current_model_name": "falcon3-10b",
                 "host_id": "host-1",
-                "host_name": "Static-Deskix",
+                "host_name": "Worker-A",
                 "viable_models": [
                     {"model_name": "Falcon3-10B-Instruct-1.58bit", "tags": ["bitnet", "cpu"], "locality": "local"},
                     {"model_name": "Qwen3.5-4B-Q4_K_M.gguf", "tags": [], "locality": "local"},
@@ -192,12 +192,12 @@ class InventoryApiTests(unittest.TestCase):
                 "lane_name": "mlx",
                 "lane_type": "mlx",
                 "backend_type": "llama",
-                "base_url": "http://10.0.0.99:11435",
+                "base_url": "http://worker-a.example:11435",
                 "status": "ready",
                 "proxy_auth_metadata": {},
                 "current_model_name": "Qwen3.5-9B-6bit",
                 "host_id": "host-1",
-                "host_name": "tiffs-macbook",
+                "host_name": "worker-d",
                 "viable_models": [
                     {"model_name": "tokenizer.json", "tags": [], "locality": "local"},
                     {"model_name": "Qwen3.5-9B-6bit", "tags": [], "locality": "local"},
@@ -219,7 +219,7 @@ class InventoryApiTests(unittest.TestCase):
                     model_name="Qwen3.5-9B-6bit",
                     tags=[],
                     locality="local",
-                    artifact_path="/Users/kasunami/models/Qwen3.5-9B-6bit",
+                    artifact_path="/models/Qwen3.5-9B-6bit",
                 ),
             ],
             remote_viable_models=[],
@@ -237,17 +237,17 @@ class InventoryApiTests(unittest.TestCase):
         now = datetime.now(tz=timezone.utc)
         lanes = [
             {
-                "host_name": "Static-Deskix",
+                "host_name": "Worker-A",
                 "host_status": "ready",
                 "lane_id": "lane-cpu",
                 "lane_name": "cpu",
                 "lane_type": "cpu",
                 "backend_type": "bitnet",
-                "base_url": "http://10.0.0.99:11435",
+                "base_url": "http://worker-a.example:11435",
                 "lane_status": "offline",
                 "suspension_reason": None,
                 "current_model_name": "LFM2.5-350M-Q4_K_M.gguf",
-                "proxy_auth_metadata": {"control_plane": "mw", "mw_host_id": "static-deskix", "mw_lane_id": "cpu"},
+                "proxy_auth_metadata": {"control_plane": "mw", "mw_host_id": "worker-a", "mw_lane_id": "cpu"},
                 "last_ok_at": None,
                 "last_probe_at": None,
                 "updated_at": now - timedelta(minutes=5),
@@ -258,7 +258,7 @@ class InventoryApiTests(unittest.TestCase):
         ]
         state_rows = [
             {
-                "host_id": "static-deskix",
+                "host_id": "worker-a",
                 "lane_id": "cpu",
                 "last_heartbeat_at": now,
                 "actual_state": "running",
@@ -290,17 +290,17 @@ class InventoryApiTests(unittest.TestCase):
         old = now - timedelta(minutes=5)
         lanes = [
             {
-                "host_name": "pupix1",
+                "host_name": "worker-c",
                 "host_status": "ready",
                 "lane_id": "lane-combined",
                 "lane_name": "combined",
                 "lane_type": "other",
                 "backend_type": "llama",
-                "base_url": "http://10.0.0.95:11436",
+                "base_url": "http://worker-c.example:11436",
                 "lane_status": "suspended",
                 "suspension_reason": "swap:old:queued",
                 "current_model_name": "gemma-4-26B-A4B-it-Q4_K_M",
-                "proxy_auth_metadata": {"control_plane": "mw", "mw_host_id": "pupix1", "mw_lane_id": "combined"},
+                "proxy_auth_metadata": {"control_plane": "mw", "mw_host_id": "worker-c", "mw_lane_id": "combined"},
                 "last_ok_at": None,
                 "last_probe_at": None,
                 "updated_at": old,
@@ -327,7 +327,7 @@ class InventoryApiTests(unittest.TestCase):
         ]
         state_rows = [
             {
-                "host_id": "pupix1",
+                "host_id": "worker-c",
                 "lane_id": "combined",
                 "last_heartbeat_at": now,
                 "actual_state": "running",
@@ -364,11 +364,11 @@ class InventoryApiTests(unittest.TestCase):
                     "lane_id": "lane-combined",
                     "lane_name": "combined",
                     "lane_type": "other",
-                    "base_url": "http://10.0.0.95:11436",
+                    "base_url": "http://worker-c.example:11436",
                     "status": "suspended",
                     "suspension_reason": "swap:abc:queued",
                     "current_model_name": "gemma-4-26B-A4B-it-Q4_K_M",
-                    "proxy_auth_metadata": {"control_plane": "mw", "mw_host_id": "pupix1", "mw_lane_id": "combined"},
+                    "proxy_auth_metadata": {"control_plane": "mw", "mw_host_id": "worker-c", "mw_lane_id": "combined"},
                     "backend_type": "llama",
                     "updated_at": now - timedelta(minutes=5),
                 }
@@ -376,7 +376,7 @@ class InventoryApiTests(unittest.TestCase):
         )
         state_rows = [
             {
-                "host_id": "pupix1",
+                "host_id": "worker-c",
                 "lane_id": "combined",
                 "last_heartbeat_at": now,
                 "actual_state": "running",
@@ -397,7 +397,7 @@ class InventoryApiTests(unittest.TestCase):
         body = resp.json()
         self.assertEqual(body["lane_status"], "ready")
         self.assertEqual(body["current_model"], "Qwen3.5-27B-Q4_K_M")
-        self.assertEqual(body["base_url"], "http://10.0.0.95:21436")
+        self.assertEqual(body["base_url"], "http://worker-c.example:21436")
         self.assertIsNone(body["suspension_reason"])
         self.assertEqual(body["raw_suspension_reason"], "swap:abc:queued")
         self.assertTrue(body["stale_suspension_suppressed"])
@@ -413,11 +413,11 @@ class InventoryApiTests(unittest.TestCase):
                     "lane_id": "lane-combined",
                     "lane_name": "combined",
                     "lane_type": "other",
-                    "base_url": "http://10.0.0.95:11436",
+                    "base_url": "http://worker-c.example:11436",
                     "status": "suspended",
                     "suspension_reason": "swap:abc:queued",
                     "current_model_name": "gemma-4-26B-A4B-it-Q4_K_M",
-                    "host_name": "pupix1",
+                    "host_name": "worker-c",
                     "proxy_auth_metadata": {},
                     "backend_type": "llama",
                     "updated_at": now - timedelta(minutes=5),
@@ -426,7 +426,7 @@ class InventoryApiTests(unittest.TestCase):
         )
         state_rows = [
             {
-                "host_id": "pupix1",
+                "host_id": "worker-c",
                 "lane_id": "combined",
                 "last_heartbeat_at": now,
                 "actual_state": "running",
@@ -447,7 +447,7 @@ class InventoryApiTests(unittest.TestCase):
         body = resp.json()
         self.assertEqual(body["lane_status"], "ready")
         self.assertEqual(body["current_model"], "Qwen3.5-27B-Q4_K_M")
-        self.assertEqual(body["base_url"], "http://10.0.0.95:21436")
+        self.assertEqual(body["base_url"], "http://worker-c.example:21436")
         self.assertIsNone(body["suspension_reason"])
         self.assertEqual(body["raw_suspension_reason"], "swap:abc:queued")
         self.assertTrue(body["stale_suspension_suppressed"])

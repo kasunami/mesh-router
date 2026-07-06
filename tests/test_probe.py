@@ -16,7 +16,7 @@ class ProbeRecoveryTests(unittest.TestCase):
         self.assertFalse(probe_module._is_recoverable_terminal_swap_suspension("swap:abc:stopping_siblings"))
 
     def test_non_swap_suspension_is_not_detected(self) -> None:
-        self.assertFalse(probe_module._is_recoverable_terminal_swap_suspension("dualboot_other_side_active: packpup1"))
+        self.assertFalse(probe_module._is_recoverable_terminal_swap_suspension("dualboot_other_side_active: worker-c"))
 
     def test_mw_managed_lane_is_detected(self) -> None:
         self.assertTrue(

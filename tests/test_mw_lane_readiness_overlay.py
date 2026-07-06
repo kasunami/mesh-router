@@ -68,17 +68,17 @@ class MWLaneReadinessOverlayTests(unittest.TestCase):
             {
                 "lane_id": "lane-1",
                 "host_id": "host-1",
-                "host_name": "Static-Deskix",
+                "host_name": "Worker-A",
                 "lane_name": "gpu",
                 "lane_type": "gpu",
                 "backend_type": "llama",
-                "base_url": "http://10.0.0.99:11434",
+                "base_url": "http://worker-a.example:11434",
                 "status": "offline",
                 "current_model_name": None,
                 "ram_budget_bytes": None,
                 "vram_budget_bytes": None,
                 "proxy_auth_mode": None,
-                "proxy_auth_metadata": {"control_plane": "mw", "mw_host_id": "static-deskix", "mw_lane_id": "gpu"},
+                "proxy_auth_metadata": {"control_plane": "mw", "mw_host_id": "worker-a", "mw_lane_id": "gpu"},
                 "suspension_reason": None,
                 "last_probe_at": None,
                 "last_ok_at": None,
@@ -90,7 +90,7 @@ class MWLaneReadinessOverlayTests(unittest.TestCase):
         mw_execute_rows = [
             [
                 {
-                    "host_id": "static-deskix",
+                    "host_id": "worker-a",
                     "lane_id": "gpu",
                     "last_heartbeat_at": now,
                     "actual_model": "Qwen3.5-9B-Q4_K_M.gguf",
@@ -109,7 +109,7 @@ class MWLaneReadinessOverlayTests(unittest.TestCase):
         body = resp.json()
         self.assertEqual(len(body["items"]), 1)
         item = body["items"][0]
-        self.assertEqual(item["host_name"], "Static-Deskix")
+        self.assertEqual(item["host_name"], "Worker-A")
         self.assertEqual(item["lane_name"], "gpu")
         self.assertEqual(item["status"], "ready")
         self.assertIsNone(item["readiness_reason"])
@@ -120,17 +120,17 @@ class MWLaneReadinessOverlayTests(unittest.TestCase):
             {
                 "lane_id": "lane-1",
                 "host_id": "host-1",
-                "host_name": "Static-Deskix",
+                "host_name": "Worker-A",
                 "lane_name": "gpu",
                 "lane_type": "gpu",
                 "backend_type": "llama",
-                "base_url": "http://10.0.0.99:11434",
+                "base_url": "http://worker-a.example:11434",
                 "status": "ready",
                 "current_model_name": "Qwen3.5-9B-Q4_K_M.gguf",
                 "ram_budget_bytes": None,
                 "vram_budget_bytes": None,
                 "proxy_auth_mode": None,
-                "proxy_auth_metadata": {"control_plane": "mw", "mw_host_id": "static-deskix", "mw_lane_id": "gpu"},
+                "proxy_auth_metadata": {"control_plane": "mw", "mw_host_id": "worker-a", "mw_lane_id": "gpu"},
                 "suspension_reason": None,
                 "last_probe_at": None,
                 "last_ok_at": None,
@@ -142,7 +142,7 @@ class MWLaneReadinessOverlayTests(unittest.TestCase):
         mw_execute_rows = [
             [
                 {
-                    "host_id": "static-deskix",
+                    "host_id": "worker-a",
                     "lane_id": "gpu",
                     "last_heartbeat_at": now,
                     "actual_model": "Qwen3.5-9B-Q4_K_M.gguf",
@@ -167,17 +167,17 @@ class MWLaneReadinessOverlayTests(unittest.TestCase):
             {
                 "lane_id": "lane-1",
                 "host_id": "host-1",
-                "host_name": "tiffs-macbook",
+                "host_name": "worker-d",
                 "lane_name": "mlx",
                 "lane_type": "mlx",
                 "backend_type": "mlx",
-                "base_url": "http://10.0.0.97:11435",
+                "base_url": "http://worker-d.example:11435",
                 "status": "offline",
                 "current_model_name": None,
                 "ram_budget_bytes": None,
                 "vram_budget_bytes": None,
                 "proxy_auth_mode": None,
-                "proxy_auth_metadata": {"control_plane": "mw", "mw_host_id": "tiffs-macbook", "mw_lane_id": "mlx"},
+                "proxy_auth_metadata": {"control_plane": "mw", "mw_host_id": "worker-d", "mw_lane_id": "mlx"},
                 "suspension_reason": "ui_disabled",
                 "last_probe_at": None,
                 "last_ok_at": None,
@@ -189,10 +189,10 @@ class MWLaneReadinessOverlayTests(unittest.TestCase):
         mw_execute_rows = [
             [
                 {
-                    "host_id": "tiffs-macbook",
+                    "host_id": "worker-d",
                     "lane_id": "mlx",
                     "last_heartbeat_at": now,
-                    "actual_model": "/Users/kasunami/models/Qwen3.5-9B-MLX-4bit",
+                    "actual_model": "/models/Qwen3.5-9B-MLX-4bit",
                     "actual_state": "running",
                     "health_status": "healthy",
                     "backend_type": "mlx",
@@ -211,18 +211,18 @@ class MWLaneReadinessOverlayTests(unittest.TestCase):
         self.assertEqual(item["status"], "suspended")
         self.assertEqual(item["readiness_reason"], "operator_suspended")
         self.assertEqual(item["suspension_reason"], "ui_disabled")
-        self.assertEqual(item["current_model_name"], "/Users/kasunami/models/Qwen3.5-9B-MLX-4bit")
+        self.assertEqual(item["current_model_name"], "/models/Qwen3.5-9B-MLX-4bit")
 
     def test_api_lanes_infers_mw_for_legacy_cpu_lane_without_metadata(self) -> None:
         base_rows = [
             {
                 "lane_id": "lane-cpu",
                 "host_id": "host-1",
-                "host_name": "pupix1",
+                "host_name": "worker-c",
                 "lane_name": "cpu",
                 "lane_type": "cpu",
                 "backend_type": "llama",
-                "base_url": "http://10.0.0.95:11435",
+                "base_url": "http://worker-c.example:11435",
                 "status": "ready",
                 "current_model_name": "Falcon3-10B-Instruct-1.58bit",
                 "ram_budget_bytes": None,
@@ -240,7 +240,7 @@ class MWLaneReadinessOverlayTests(unittest.TestCase):
         mw_execute_rows = [
             [
                 {
-                    "host_id": "pupix1",
+                    "host_id": "worker-c",
                     "lane_id": "cpu",
                     "last_heartbeat_at": now,
                     "actual_model": "qwen3.5-4b",
@@ -267,11 +267,11 @@ class MWLaneReadinessOverlayTests(unittest.TestCase):
             {
                 "lane_id": "lane-mlx",
                 "host_id": "host-1",
-                "host_name": "tiffs-macbook",
+                "host_name": "worker-d",
                 "lane_name": "mlx",
                 "lane_type": "mlx",
                 "backend_type": "llama",
-                "base_url": "http://10.0.0.97:11435",
+                "base_url": "http://worker-d.example:11435",
                 "status": "offline",
                 "current_model_name": "mlx-community/Llama-3.1-8B-Instruct-4bit",
                 "ram_budget_bytes": None,
@@ -289,10 +289,10 @@ class MWLaneReadinessOverlayTests(unittest.TestCase):
         mw_execute_rows = [
             [
                 {
-                    "host_id": "tiffs-macbook",
+                    "host_id": "worker-d",
                     "lane_id": "gpu",
                     "last_heartbeat_at": now,
-                    "actual_model": "/Users/kasunami/models/Falcon3-10B-Instruct-1.58bit",
+                    "actual_model": "/models/Falcon3-10B-Instruct-1.58bit",
                     "actual_state": "running",
                     "health_status": "healthy",
                     "backend_type": "mlx",
@@ -309,7 +309,7 @@ class MWLaneReadinessOverlayTests(unittest.TestCase):
         item = resp.json()["items"][0]
         self.assertEqual(item["status"], "ready")
         self.assertIsNone(item["readiness_reason"])
-        self.assertEqual(item["current_model_name"], "/Users/kasunami/models/Falcon3-10B-Instruct-1.58bit")
+        self.assertEqual(item["current_model_name"], "/models/Falcon3-10B-Instruct-1.58bit")
         self.assertEqual(item["backend_type"], "mlx")
 
 

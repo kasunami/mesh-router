@@ -31,9 +31,9 @@ class MwGrpcTargetTests(unittest.TestCase):
             {
                 "lane_id": "lane-1",
                 "lane_name": "gpu",
-                "base_url": "http://10.0.1.99:21434",
+                "base_url": "http://worker-a.example:21434",
                 "proxy_auth_metadata": {},
-                "host_name": "Static-Deskix",
+                "host_name": "Worker-A",
             }
         ])
         class EmptyMwCursor:
@@ -72,16 +72,16 @@ class MwGrpcTargetTests(unittest.TestCase):
             {
                 "lane_id": "lane-1",
                 "lane_name": "gpu",
-                "base_url": "http://10.0.1.99:21434",
-                "proxy_auth_metadata": {"control_plane": "mw", "mw_host_id": "static-deskix"},
-                "host_name": "Static-Deskix",
+                "base_url": "http://worker-a.example:21434",
+                "proxy_auth_metadata": {"control_plane": "mw", "mw_host_id": "worker-a"},
+                "host_name": "Worker-A",
             }
         ])
         target = app_module._mw_target_for_lane(cur=cur, lane_id="lane-1")  # type: ignore[attr-defined]
         self.assertIsNotNone(target)
         assert target is not None
-        self.assertEqual(target.endpoint, f"10.0.1.99:{app_module.settings.mw_grpc_default_port}")  # type: ignore[attr-defined]
-        self.assertEqual(target.host_id, "static-deskix")
+        self.assertEqual(target.endpoint, f"worker-a.example:{app_module.settings.mw_grpc_default_port}")  # type: ignore[attr-defined]
+        self.assertEqual(target.host_id, "worker-a")
         self.assertEqual(target.lane_id, "gpu")
 
     def test_target_infers_mw_for_legacy_cpu_lane_when_state_exists(self) -> None:
@@ -117,9 +117,9 @@ class MwGrpcTargetTests(unittest.TestCase):
                 "lane_id": "lane-cpu",
                 "lane_name": "cpu",
                 "lane_type": "cpu",
-                "base_url": "http://10.0.1.95:21435",
+                "base_url": "http://worker-c.example:21435",
                 "proxy_auth_metadata": {},
-                "host_name": "pupix1",
+                "host_name": "worker-c",
             }
         ])
         original_mw_state_db = app_module.mw_state_db
@@ -130,7 +130,7 @@ class MwGrpcTargetTests(unittest.TestCase):
             app_module.mw_state_db = original_mw_state_db  # type: ignore[assignment]
         self.assertIsNotNone(target)
         assert target is not None
-        self.assertEqual(target.host_id, "pupix1")
+        self.assertEqual(target.host_id, "worker-c")
         self.assertEqual(target.lane_id, "cpu")
 
     def test_target_infers_mw_for_legacy_cpu_lane_when_host_exists(self) -> None:
@@ -166,9 +166,9 @@ class MwGrpcTargetTests(unittest.TestCase):
                 "lane_id": "lane-cpu",
                 "lane_name": "cpu",
                 "lane_type": "cpu",
-                "base_url": "http://10.0.1.95:21435",
+                "base_url": "http://worker-c.example:21435",
                 "proxy_auth_metadata": {},
-                "host_name": "pupix1",
+                "host_name": "worker-c",
             }
         ])
         original_mw_state_db = app_module.mw_state_db
@@ -179,7 +179,7 @@ class MwGrpcTargetTests(unittest.TestCase):
             app_module.mw_state_db = original_mw_state_db  # type: ignore[assignment]
         self.assertIsNotNone(target)
         assert target is not None
-        self.assertEqual(target.host_id, "pupix1")
+        self.assertEqual(target.host_id, "worker-c")
         self.assertEqual(target.lane_id, "cpu")
 
     def test_target_falls_back_to_unique_mw_lane_when_inferred_lane_is_missing(self) -> None:
@@ -232,9 +232,9 @@ class MwGrpcTargetTests(unittest.TestCase):
                 "lane_name": "mlx",
                 "lane_type": "mlx",
                 "backend_type": "llama",
-                "base_url": "http://10.0.0.97:11435",
+                "base_url": "http://worker-d.example:11435",
                 "proxy_auth_metadata": {},
-                "host_name": "tiffs-macbook",
+                "host_name": "worker-d",
             }
         ])
         original_mw_state_db = app_module.mw_state_db
@@ -245,7 +245,7 @@ class MwGrpcTargetTests(unittest.TestCase):
             app_module.mw_state_db = original_mw_state_db  # type: ignore[assignment]
         self.assertIsNotNone(target)
         assert target is not None
-        self.assertEqual(target.host_id, "tiffs-macbook")
+        self.assertEqual(target.host_id, "worker-d")
         self.assertEqual(target.lane_id, "gpu")
 
 

@@ -93,7 +93,7 @@ class MWControlClientTimeoutTests(unittest.TestCase):
             client._wait_for_response = _raise_timeout  # type: ignore[method-assign]
 
             result = client.send_command(
-                host_id="static-deskix",
+                host_id="worker-a",
                 message_type="activate_profile",
                 payload={"profile_id": "split_default"},
                 request_id="req-1",
@@ -117,7 +117,7 @@ class MWControlClientTimeoutTests(unittest.TestCase):
             client._wait_for_response = lambda *_args, **_kwargs: {"payload": {"result": {"accepted": True}}}  # type: ignore[method-assign]
 
             result = client.send_command(
-                host_id="static-deskix",
+                host_id="worker-a",
                 message_type="load_model",
                 payload={"lane_id": "gpu", "model_name": "qwen3.5-4b"},
                 request_id="req-2",

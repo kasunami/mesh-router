@@ -66,7 +66,7 @@ class MwConsumerProcessingTests(unittest.TestCase):
         process_message(
             payload={
                 "message_type": "state",
-                "host_id": "static-deskix",
+                "host_id": "worker-a",
                 "payload": {
                     "actual_profile": "split_default",
                     "service_states": [
@@ -111,7 +111,7 @@ class MwConsumerProcessingTests(unittest.TestCase):
         self.assertIn("INSERT INTO mw_services", sql)
         self.assertIn("INSERT INTO mw_lanes", sql)
         self.assertEqual(len(runtime_store.snapshots), 1)
-        self.assertEqual(runtime_store.snapshots[0]["host_id"], "static-deskix")
+        self.assertEqual(runtime_store.snapshots[0]["host_id"], "worker-a")
         self.assertEqual(runtime_store.snapshots[0]["snapshot"]["lane_states"][0]["actual_model"], "qwen3.5-4b")
         self.assertEqual(
             runtime_store.snapshots[0]["snapshot"]["lane_states"][0]["validated_candidates"],
@@ -128,7 +128,7 @@ class MwConsumerProcessingTests(unittest.TestCase):
         process_message(
             payload={
                 "message_type": "response",
-                "host_id": "static-deskix",
+                "host_id": "worker-a",
                 "request_id": "00000000-0000-0000-0000-000000000002",
                 "payload": {
                     "response_type": "failed",
@@ -170,7 +170,7 @@ class MwConsumerProcessingTests(unittest.TestCase):
         sql = "\n".join(s for (s, _p) in cursor.executed)
         self.assertIn("INSERT INTO mw_transitions", sql)
         self.assertEqual(len(runtime_store.snapshots), 1)
-        self.assertEqual(runtime_store.snapshots[0]["host_id"], "static-deskix")
+        self.assertEqual(runtime_store.snapshots[0]["host_id"], "worker-a")
         self.assertEqual(runtime_store.snapshots[0]["source"], "mw_response_snapshot")
         self.assertEqual(runtime_store.snapshots[0]["snapshot"]["lane_states"][0]["actual_model"], "qwen3.5-9b")
 
@@ -181,7 +181,7 @@ class MwConsumerProcessingTests(unittest.TestCase):
         process_message(
             payload={
                 "message_type": "response",
-                "host_id": "static-deskix",
+                "host_id": "worker-a",
                 "request_id": "00000000-0000-0000-0000-000000000001",
                 "payload": {"response_type": "completed", "command_type": "load_model", "ok": True, "result": {}},
             },
@@ -199,7 +199,7 @@ class MwConsumerProcessingTests(unittest.TestCase):
         process_message(
             payload={
                 "message_type": "response",
-                "host_id": "static-deskix",
+                "host_id": "worker-a",
                 "request_id": "not-a-uuid",
                 "payload": {"response_type": "completed", "command_type": "load_model", "ok": True, "result": {}},
             },
@@ -217,7 +217,7 @@ class MwConsumerProcessingTests(unittest.TestCase):
         process_message(
             payload={
                 "message_type": "response",
-                "host_id": "static-deskix",
+                "host_id": "worker-a",
                 "request_id": "00000000-0000-0000-0000-000000000003",
                 "payload": {
                     "response_type": "completed",
@@ -241,7 +241,7 @@ class MwConsumerProcessingTests(unittest.TestCase):
         process_message(
             payload={
                 "message_type": "response",
-                "host_id": "static-deskix",
+                "host_id": "worker-a",
                 "request_id": "00000000-0000-0000-0000-000000000004",
                 "payload": {"response_type": "ready", "command_type": "load_model", "ok": True, "result": {}},
             },

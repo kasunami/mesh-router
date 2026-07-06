@@ -25,9 +25,9 @@ class FakeCursor:
                 "lane_name": "gpu",
                 "lane_type": "gpu",
                 "backend_type": "llama",
-                "base_url": "http://10.0.0.99:21434",
-                "proxy_auth_metadata": {"control_plane": "mw", "mw_host_id": "static-deskix", "mw_lane_id": "gpu"},
-                "host_name": "Static-Deskix",
+                "base_url": "http://worker-a.example:21434",
+                "proxy_auth_metadata": {"control_plane": "mw", "mw_host_id": "worker-a", "mw_lane_id": "gpu"},
+                "host_name": "Worker-A",
             }
         if "SELECT proxy_auth_metadata FROM lanes" in q:
             return {"proxy_auth_metadata": {"control_plane": "mw"}}
@@ -95,8 +95,8 @@ class StrictMwFallbackTests(unittest.TestCase):
     def test_explicit_mw_lane_without_target_refuses_base_url_fallback(self) -> None:
         lane = SimpleNamespace(
             lane_id="lane-1",
-            worker_id="Static-Deskix",
-            base_url="http://10.0.0.99:21434",
+            worker_id="Worker-A",
+            base_url="http://worker-a.example:21434",
             current_model_name="some-other",
             backend_type="llama",
             lane_type="gpu",
@@ -143,8 +143,8 @@ class StrictMwFallbackTests(unittest.TestCase):
     def test_embeddings_use_http_backend_even_when_lane_is_mw_managed(self) -> None:
         lane = SimpleNamespace(
             lane_id="lane-1",
-            worker_id="Static-Deskix",
-            base_url="http://10.0.0.99:21434",
+            worker_id="Worker-A",
+            base_url="http://worker-a.example:21434",
             current_model_name="some-other",
             backend_type="llama",
             lane_type="gpu",
@@ -185,13 +185,13 @@ class StrictMwFallbackTests(unittest.TestCase):
                 job_type="test",
             )
 
-        self.assertEqual(fake_client.posts[0]["url"], "http://10.0.0.99:21434/v1/embeddings")
+        self.assertEqual(fake_client.posts[0]["url"], "http://worker-a.example:21434/v1/embeddings")
 
     def test_images_use_http_backend_even_when_lane_is_mw_managed(self) -> None:
         lane = SimpleNamespace(
             lane_id="lane-1",
-            worker_id="Static-Deskix",
-            base_url="http://10.0.0.99:21434",
+            worker_id="Worker-A",
+            base_url="http://worker-a.example:21434",
             current_model_name="some-other",
             backend_type="sd",
             lane_type="gpu",
@@ -232,7 +232,7 @@ class StrictMwFallbackTests(unittest.TestCase):
                 job_type="test",
             )
 
-        self.assertEqual(fake_client.posts[0]["url"], "http://10.0.0.99:21434/sdapi/v1/txt2img")
+        self.assertEqual(fake_client.posts[0]["url"], "http://worker-a.example:21434/sdapi/v1/txt2img")
 
 
 if __name__ == "__main__":

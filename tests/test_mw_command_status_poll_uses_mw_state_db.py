@@ -25,7 +25,7 @@ class FakeCursor:
         # Return a deterministic fake row.
         self._row = {
             "request_id": "11111111-1111-1111-1111-111111111111",
-            "host_id": "static-deskix",
+            "host_id": "worker-a",
             "transition_type": "activate_profile",
             "status": "completed",
             "current_phase": "done",

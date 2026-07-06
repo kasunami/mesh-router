@@ -54,7 +54,7 @@ class PinLaneIdHeaderTests(unittest.TestCase):
                 return_value={
                     "request_payload": {"stream": False},
                     "requested_model_name": "gemma-4-26B-A4B-it-Q4_K_M",
-                    "pin_worker": "pupix1",
+                    "pin_worker": "worker-c",
                     "pin_base_url": None,
                     "pin_lane_type": None,
                     "pin_lane_id": "79c17e79-052b-48b5-9781-acbb199f81f7",
@@ -71,7 +71,7 @@ class PinLaneIdHeaderTests(unittest.TestCase):
                 json={"model": "gemma-4-26B-A4B-it-Q4_K_M", "messages": [{"role": "user", "content": "hi"}]},
             )
             self.assertEqual(resp.status_code, 200)
-            self.assertEqual(resolve_route.call_args.kwargs["host_name"], "pupix1")
+            self.assertEqual(resolve_route.call_args.kwargs["host_name"], "worker-c")
             self.assertEqual(resolve_route.call_args.kwargs["lane_id"], "79c17e79-052b-48b5-9781-acbb199f81f7")
 
     def test_chat_propagates_http_exception_for_explicit_route_failures(self) -> None:

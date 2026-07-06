@@ -1,134 +1,240 @@
-# mesh-router
+# MeshRouter
 
-OpenAI-compatible router for LAN worker lanes.
+MeshRouter is an OpenAI-compatible routing and control-plane service built for a
+personal AI-operations lab. It connects orchestrated jobs to available model
+workers while keeping route selection, worker state, and recovery logic outside
+the model response itself.
 
-## Safety
+The service is the connective tissue between a job orchestrator such as
+MeshComputer, shared operational context such as MeshBrain, and heterogeneous
+model-serving lanes. It accepts familiar OpenAI-style requests, resolves an
+eligible lane, forwards the request, and returns route metadata that other
+services can observe and verify.
 
-This repo is intended to be safe to push to a private GitHub repository.
+This repository is a public code sample from a working lab environment. It
+demonstrates production-minded operating patterns, but it is not presented as a
+polished commercial product or a turnkey platform.
 
-- Do not commit plaintext secrets.
-- Use environment variables for runtime secrets.
-- For Kubernetes, commit only placeholder manifests and sealed artifacts.
+## What this demonstrates
 
-## Local configuration
+- **Model-agnostic orchestration:** route work across local, cloud, CPU, GPU,
+  MLX, image, and other worker lanes without coupling callers to one backend.
+- **Scoped routing controls:** accept explicit worker, lane-type, and exact-lane
+  hints for jobs that need deterministic placement.
+- **Operational readiness:** combine configured inventory with worker-reported
+  health, loaded-model state, and validated capabilities before selecting work.
+- **Separation of concerns:** make routing decisions deterministically in the
+  control plane rather than asking a model to choose where its own request runs.
+- **Verification and observability:** expose request IDs and resolved route
+  metadata, record performance observations, and provide inventory and
+  certification paths for operators.
+- **Failure recovery:** support bounded model-load requests, lane readiness
+  checks, strict pinning, retry controls, and explicit failures instead of
+  silently routing incompatible work.
 
-Copy `.env.example` to `.env` and fill in real values outside Git.
+## How MeshRouter fits into the larger mesh
 
-## MeshWorker (MW) integration
+```text
+Client or scoped job
+        |
+        v
+MeshComputer (orchestration and job state)
+        |
+        v
+MeshRouter (route resolution and request lifecycle)
+        |
+        +----> MeshWorker control plane (desired/actual lane state)
+        |
+        +----> local or cloud model-serving lane
+        |
+        v
+Response + route metadata + operational evidence
 
-`mesh-router` can optionally use `mesh-worker` as a Kafka control plane + gRPC data plane for selected lanes.
-
-Key behavior:
-- MW-managed lanes are gated per-lane via `lanes.proxy_auth_metadata.control_plane = "mw"`.
-- For MW-managed lanes, `/v1/chat/completions` streaming uses MW gRPC `StreamChat` and relays raw OpenAI-style SSE chunks.
-- Before opening the gRPC stream, MR best-effort issues an MW `load_model` command over Kafka for the requested model.
-- When running `mesh-router serve` (or `mesh-router` with serve flags), a background MW Kafka consumer thread ingests MW `state`/`heartbeats`/`responses` unless `--no-mw-consume` is set.
-
-MW state persistence:
-- By default, MW consumer writes `mw_*` rows into the same database as `database_url`.
-- To keep MW state in a separate DB (recommended `ai_mesh`), set `MESH_ROUTER_MW_STATE_DATABASE_URL`.
-
-Schema:
-- MW desired/actual state tables are mirrored in `sql/012_mw_state_model.sql` (apply requires coordinated ops).
-
-## Kubernetes secrets
-
-The homelab cluster uses Bitnami Sealed Secrets. A safe workflow is:
-
-1. Create a local plaintext Secret manifest from `k8s/mesh-router-secret.example.yaml`.
-2. Seal it with `kubeseal` against the cluster controller.
-3. Commit only the resulting sealed manifest.
-
-Example:
-
-```bash
-cp k8s/mesh-router-secret.example.yaml /tmp/mesh-router-secret.yaml
-$EDITOR /tmp/mesh-router-secret.yaml
-kubeseal \
-  --controller-name sealed-secrets-controller \
-  --controller-namespace kube-system \
-  --format yaml \
-  < /tmp/mesh-router-secret.yaml \
-  > k8s/mesh-router-secret.sealed.yaml
-rm -f /tmp/mesh-router-secret.yaml
+MeshBrain preserves shared context, handoffs, and operational history around
+the workflow; it is not in the model-output decision loop.
 ```
 
-## Build
+MeshRouter focuses on routing and lane control. MeshComputer owns higher-level
+job orchestration. MeshWorker owns host-level model lifecycle and reports actual
+state. MeshBrain provides durable context and coordination for operators and
+agents. Keeping these responsibilities separate makes failures easier to
+classify and recovery actions easier to bound.
+
+## Quick evaluator path
+
+From a fresh clone with Python 3.11 or newer:
 
 ```bash
-scripts/build_image.sh <tag>
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -e . pytest
+python -m pytest
+scripts/check_public_hygiene.sh
+python scripts/certify_mr.py --mode dry-run
 ```
 
-## Local Model Inventory
+The dry-run certification command prints the live checks it would perform
+without contacting a router or model worker. Live certification requires an
+operator-provided deployment URL, models, and lane identifiers; run
+`python scripts/certify_mr.py --help` for those options.
 
-To scan a local model root and output a structured inventory for ingestion:
+## Run tests
+
+Install the package in editable mode with its test runner:
 
 ```bash
-pip install . psutil  # If not already installed
+python -m pip install -e . pytest
+```
+
+Run the full unit and API test suite:
+
+```bash
+python -m pytest
+```
+
+Run the public-repository hygiene gate:
+
+```bash
+scripts/check_public_hygiene.sh
+```
+
+The tests exercise deterministic route resolution, strict lane pinning,
+MeshWorker state overlays, streaming behavior, backend compatibility,
+performance observations, and failure handling without requiring access to the
+private lab network.
+
+## OpenAI-compatible and operator APIs
+
+OpenAI-compatible subset:
+
+- `POST /v1/chat/completions` (including SSE streaming)
+- `POST /v1/embeddings`
+- `POST /v1/images/generations`
+
+Operator-facing APIs:
+
+- `GET /api/inventory` returns hosts, lanes, viable models, and effective
+  MeshWorker state.
+- `POST /api/routes/resolve` performs deterministic route resolution by
+  explicit target or capability tags.
+- `POST /api/mw/commands` submits a host/lane control-plane command.
+- `GET /api/mw/commands/{request_id}` reports command progress and outcome.
+- `POST /api/perf/observations` records measured lane performance.
+- `GET /api/perf/expectations` returns recent performance expectations used in
+  candidate ranking.
+
+## Request routing controls
+
+OpenAI-compatible requests may include routing hints in the JSON body or the
+corresponding HTTP header:
+
+- `mesh_pin_worker` / `x-mesh-pin-worker` prefers a specific worker.
+- `mesh_pin_lane_type` / `x-mesh-pin-lane-type` prefers a lane type such as
+  `cpu`, `gpu`, or `mlx`.
+- `mesh_pin_lane_id` / `x-mesh-pin-lane-id` requires an exact lane and fails if
+  that lane cannot serve the request; it does not silently fall back.
+
+Successful responses include the resolved route in headers:
+
+- `X-Mesh-Request-Id`
+- `X-Mesh-Worker-Id`
+- `X-Mesh-Lane-Id`
+- `X-Mesh-Model-Name`
+
+## MeshWorker integration
+
+MeshRouter can use MeshWorker as a Kafka control plane and gRPC data plane for
+selected lanes:
+
+- A lane opts in through
+  `lanes.proxy_auth_metadata.control_plane = "mw"`.
+- Streaming chat uses MeshWorker gRPC `StreamChat` and relays OpenAI-style SSE
+  chunks.
+- Before streaming, MeshRouter best-effort requests the target model through
+  MeshWorker's control plane.
+- A background consumer ingests worker state, heartbeats, and command responses
+  unless the server starts with `--no-mw-consume`.
+
+By default, consumer state is stored in the main configured database. Set
+`MESH_ROUTER_MW_STATE_DATABASE_URL` to isolate desired/actual worker state in a
+separate database. Reference schemas live in `sql/012_mw_state_model.sql` and
+`sql/013_mw_perf_observations.sql`.
+
+## Performance observations
+
+MeshRouter can record best-effort observations from real traffic. Observations
+never block a response, canceled requests are dropped, and failed requests are
+excluded from performance expectations.
+
+Relevant settings:
+
+- `MESH_ROUTER_PERF_AUTO_OBSERVE_ENABLED`
+- `MESH_ROUTER_PERF_AUTO_OBSERVE_SAMPLE_RATE`
+- `MESH_ROUTER_PERF_AUTO_OBSERVE_MIN_ELAPSED_MS`
+- `MESH_ROUTER_PERF_AUTO_OBSERVE_MAX_TOTAL_MS`
+- `MESH_ROUTER_ROUTE_DEBUG_HEADERS_ENABLED`
+
+When debug headers are enabled and an expectation exists, responses may include
+sample count, observation time, first-token latency, decode throughput, and
+total latency metadata.
+
+## Local model inventory
+
+Install the package and scan a model root:
+
+```bash
+python -m pip install -e .
 mesh-router inventory /path/to/models
 ```
 
-This will output a JSON payload containing identified models (`.gguf`, `.safetensors`, MLX directories) and basic host facts.
-
-To scan an archive model root:
+Scan an archive model root:
 
 ```bash
 mesh-router archive-inventory /path/to/archive archive-id --provider model-archive
 ```
 
-## APIs
+The commands produce structured inventory for GGUF, SafeTensors, and MLX model
+layouts along with basic host facts.
 
-OpenAI-compatible subset:
-- `POST /v1/chat/completions` (SSE streaming supported)
-- `POST /v1/embeddings` (minimal)
-- `POST /v1/images/generations` (minimal)
+## Local configuration
 
-Control-plane / operator APIs:
-- Inventory/capability plane:
-  - `GET /api/inventory` — host → lanes → viable models (MW-managed lanes include MW-derived `effective_status` + `actual_model` overlay).
-- Routing:
-  - `POST /api/routes/resolve` — deterministic route resolution by explicit target or by tags (no LLM in the decision loop).
-- MW command control:
-  - `POST /api/mw/commands` — submit a control-plane command (returns `202 pending` when MW is still working).
-  - `GET /api/mw/commands/{request_id}` — poll command status (reads `mw_transitions` via the MW state DB handle when configured).
-- Performance expectations (MB-aligned, durable):
-  - `POST /api/perf/observations` — ingest an observation into `mw_perf_observations` (table lives in MW state DB; apply `sql/013_mw_perf_observations.sql`).
-  - `GET /api/perf/expectations` — fetch p50 expectations from recent observations.
+Copy `.env.example` to `.env` and provide deployment-specific values outside
+Git:
 
-Notes:
-- `perf.host_id` is canonicalized to MW-style ids (`Worker A` → `worker-a`) at ingest to avoid silent lookup mismatches during routing.
-- Tag-based route resolution ranks candidates using perf expectations when available (decode TPS / first-token latency for chat, total_ms for images); otherwise it falls back to deterministic defaults.
+```bash
+cp .env.example .env
+```
 
-## Requestor Routing Controls (OpenAI-compatible)
+The example configuration and Kubernetes manifests contain placeholders only.
+Database migrations and shared-cluster changes should be applied through the
+operator's normal review and coordination process.
 
-OpenAI-compatible requests accept optional routing hints via request body *or* headers:
+## Build
 
-- `mesh_pin_worker` / header `x-mesh-pin-worker`: prefer a specific host.
-- `mesh_pin_lane_type` / header `x-mesh-pin-lane-type`: prefer a lane type (`cpu|gpu|mlx|...`).
-- `mesh_pin_lane_id` / header `x-mesh-pin-lane-id`: **exact lane selection**. If set, MR will either route to that lane exactly or fail (no silent fallback).
+Build a container image with an explicit tag:
 
-MR returns the resolved route as response headers:
-- `X-Mesh-Request-Id`, `X-Mesh-Worker-Id`, `X-Mesh-Lane-Id`, `X-Mesh-Model-Name`
+```bash
+scripts/build_image.sh <tag>
+```
 
-## Automatic Perf Observations
+## Safety and public hygiene
 
-MR records best-effort performance observations from real traffic into `mw_perf_observations` (MW state DB) when enabled:
-- `MESH_ROUTER_PERF_AUTO_OBSERVE_ENABLED` (default `true`)
-- `MESH_ROUTER_PERF_AUTO_OBSERVE_SAMPLE_RATE` (default `1.0`)
-- `MESH_ROUTER_PERF_AUTO_OBSERVE_MIN_ELAPSED_MS` (default `50`)
-- `MESH_ROUTER_PERF_AUTO_OBSERVE_MAX_TOTAL_MS` (default `600000`)
+- No plaintext credentials, private network addresses, personal filesystem
+  paths, or lab-specific hostnames belong in committed source, tests, or docs.
+- Runtime secrets are supplied through environment variables or the deployment
+  platform's secret manager.
+- Example manifests remain placeholders. Do not commit an unsealed Kubernetes
+  `Secret`.
+- Exact lane pinning fails closed when the requested lane is unavailable.
+- Live certification is explicit; the documented evaluator command defaults to
+  dry-run and does not contact model workers.
+- `scripts/check_public_hygiene.sh` scans tracked and untracked public files,
+  including tests, for known private identifiers and RFC1918 addresses.
 
-Observations are best-effort and never block responses. Canceled requests are dropped; failed requests are recorded but excluded from expectations (`ok=false`).
+Before publishing a change, run:
 
-### Optional perf expectation headers
-
-For debugging/validation, MR can include perf expectation metadata as response/SSE headers:
-
-- `MESH_ROUTER_ROUTE_DEBUG_HEADERS_ENABLED=true`
-
-When enabled and when an expectation exists for the resolved `(host,lane,model,modality)`, MR adds:
-- `X-Mesh-Perf-Sample-Count`
-- `X-Mesh-Perf-Updated-At`
-- `X-Mesh-Perf-FirstTokenMs-P50` (when available)
-- `X-Mesh-Perf-DecodeTps-P50` (when available)
-- `X-Mesh-Perf-TotalMs-P50` (when available)
+```bash
+python -m pytest
+scripts/check_public_hygiene.sh
+```

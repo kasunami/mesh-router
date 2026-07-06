@@ -111,16 +111,16 @@ class StreamingMwTests(unittest.TestCase):
                         "backend_type": "mlx",
                     }
                 elif "FROM hosts" in sql:
-                    self._result = {"host_id": "host-1", "model_store_paths": ["/Users/kasunami/models"]}
+                    self._result = {"host_id": "host-1", "model_store_paths": ["/models"]}
                 elif "FROM host_model_artifacts" in sql:
                     self._result = [
                         {
                             "model_name": "Qwen3.5-4B-MLX-4bit",
-                            "local_path": "/Users/kasunami/models/Qwen3.5-4B-MLX-4bit",
+                            "local_path": "/models/Qwen3.5-4B-MLX-4bit",
                         },
                         {
                             "model_name": "model.safetensors",
-                            "local_path": "/Users/kasunami/models/Qwen3.5-4B-MLX-4bit/model.safetensors",
+                            "local_path": "/models/Qwen3.5-4B-MLX-4bit/model.safetensors",
                         },
                     ]
                 else:
@@ -139,7 +139,7 @@ class StreamingMwTests(unittest.TestCase):
             model_id="alias-model-id",
         )
 
-        self.assertEqual(resolved, "/Users/kasunami/models/Qwen3.5-4B-MLX-4bit")
+        self.assertEqual(resolved, "/models/Qwen3.5-4B-MLX-4bit")
 
     def test_reasoning_chunk_filter_hides_hidden_reasoning(self) -> None:
         raw = b'{"choices":[{"finish_reason":null,"delta":{"reasoning_content":"thinking"}}]}'
@@ -154,13 +154,13 @@ class StreamingMwTests(unittest.TestCase):
         fake_mw_client = SimpleNamespace(send_command=lambda **kwargs: {"ok": True})
         choice = LaneChoice(
             lane_id="lane-1",
-            worker_id="Static-Deskix",
-            base_url="http://10.0.1.99:21434",
+            worker_id="Worker-A",
+            base_url="http://worker-a.example:21434",
             lane_type="gpu",
             backend_type="llama",
             current_model_name="qwen3.5-4b",
         )
-        target = MwGrpcTarget(endpoint="127.0.0.1:50061", host_id="static-deskix", lane_id="gpu")
+        target = MwGrpcTarget(endpoint="127.0.0.1:50061", host_id="worker-a", lane_id="gpu")
         fake_db = SimpleNamespace(connect=fake_db_connect)
 
         with (
@@ -246,13 +246,13 @@ class StreamingMwTests(unittest.TestCase):
         fake_mw_client = SimpleNamespace(send_command=lambda **kwargs: sent_commands.append(kwargs) or {"ok": True})
         choice = LaneChoice(
             lane_id="lane-1",
-            worker_id="Static-Mobile-2",
-            base_url="http://10.0.0.132:21434",
+            worker_id="Worker-B",
+            base_url="http://worker-b.example:21434",
             lane_type="cpu",
             backend_type="llama",
             current_model_name="Qwen3.5-0.8B-Q4_K_M.gguf",
         )
-        target = MwGrpcTarget(endpoint="127.0.0.1:50061", host_id="static-mobile-2", lane_id="qwen")
+        target = MwGrpcTarget(endpoint="127.0.0.1:50061", host_id="worker-b", lane_id="qwen")
         fake_db = SimpleNamespace(connect=fake_db_connect)
 
         async def fake_non_stream_grpc_chat(self, *, target, request_id, model, messages, temperature, max_tokens, deadline_unix_ms, stream=True):  # noqa: ANN001, ARG001

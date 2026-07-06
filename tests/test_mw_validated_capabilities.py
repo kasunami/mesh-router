@@ -19,7 +19,7 @@ class MwValidatedCapabilitiesTests(unittest.TestCase):
             "current_model_name": "google_gemma-4-26B-A4B-it-Q4_K_M.gguf",
             "proxy_auth_metadata": {
                 "control_plane": "mw",
-                "mw_host_id": "static-mobile-2",
+                "mw_host_id": "worker-b",
                 "mw_lane_id": "cpu",
             },
             "validated_candidates": [
@@ -32,14 +32,14 @@ class MwValidatedCapabilitiesTests(unittest.TestCase):
                 }
             ],
         }
-        host_row = {"host_id": "host-1", "host_name": "Static-Mobile-2"}
+        host_row = {"host_id": "host-1", "host_name": "Worker-B"}
         artifact_rows = [
             {
                 "artifact_id": "artifact-1",
                 "host_id": "host-1",
-                "host_name": "Static-Mobile-2",
+                "host_name": "Worker-B",
                 "storage_provider": "local",
-                "local_path": "/home/kasunami/Projects/llama.cpp/models/Qwen3.5-9B-Q4_K_M.gguf",
+                "local_path": "/models/Qwen3.5-9B-Q4_K_M.gguf",
                 "size_bytes": 5680522464,
                 "model_id": "model-1",
                 "model_name": "Qwen3.5-9B-Q4_K_M.gguf",
@@ -52,12 +52,12 @@ class MwValidatedCapabilitiesTests(unittest.TestCase):
             host_row=host_row,
             lane_info=ViabilityLaneInfo(lane_id="lane-1", lane_type="cpu", ram_budget_bytes=24 * 1024**3),
             artifact_rows=artifact_rows,
-            local_model_root="/home/kasunami/Projects/llama.cpp/models",
+            local_model_root="/models",
         )
 
         candidate = candidates["Qwen3.5-9B-Q4_K_M.gguf"]
         self.assertEqual(candidate.locality, "local")
-        self.assertEqual(candidate.artifact_path, "/home/kasunami/Projects/llama.cpp/models/Qwen3.5-9B-Q4_K_M.gguf")
+        self.assertEqual(candidate.artifact_path, "/models/Qwen3.5-9B-Q4_K_M.gguf")
         self.assertEqual(candidate.max_context_tokens, 131072)
         self.assertIn("mw-validated", candidate.tags)
         self.assertIn("qwen3.5:9b", candidate.tags)
@@ -66,7 +66,7 @@ class MwValidatedCapabilitiesTests(unittest.TestCase):
         row = {
             "tuning_profile_id": "profile-1",
             "host_id": "host-1",
-            "host_name": "static-mobilix",
+            "host_name": "worker-f",
             "model_id": "model-1",
             "model_name": "google_gemma-4-E2B-it-Q4_K_M.gguf",
             "lane_id": "lane-1",

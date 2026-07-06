@@ -36,7 +36,7 @@ class HostScanIngestTests(unittest.TestCase):
 
         app_module._ingest_artifacts(  # type: ignore[attr-defined]
             cur,
-            host_id="pupix1",
+            host_id="worker-c",
             artifacts=[artifact],
             storage_scope="local",
             storage_provider="local",
@@ -45,7 +45,7 @@ class HostScanIngestTests(unittest.TestCase):
 
         absent_sql, absent_params = cur.calls[-1]
         assert "local_path=%s OR local_path LIKE %s" in absent_sql
-        assert absent_params[0] == "pupix1"
+        assert absent_params[0] == "worker-c"
         assert absent_params[1] == "local"
         assert absent_params[2] == "/srv/ai_models/image-models"
         assert absent_params[3] == "/srv/ai_models/image-models/%"

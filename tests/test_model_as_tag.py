@@ -17,8 +17,8 @@ class ModelAsTagTests(unittest.TestCase):
                 raise RuntimeError("no READY lanes available serving requested model: home-assistant-voice")
             return LaneChoice(
                 lane_id="lane-1",
-                worker_id="Static-Deskix",
-                base_url="http://10.0.0.99:11434",
+                worker_id="Worker-A",
+                base_url="http://worker-a.example:11434",
                 lane_type="gpu",
                 backend_type="llama",
                 current_model_name="Qwen3.5-9B-Q4_K_M.gguf",
@@ -31,7 +31,7 @@ class ModelAsTagTests(unittest.TestCase):
         ):
             choice = router_module.pick_lane_for_model(model="home-assistant-voice")
 
-        self.assertEqual(choice.worker_id, "Static-Deskix")
+        self.assertEqual(choice.worker_id, "Worker-A")
         self.assertEqual(calls, ["home-assistant-voice", "qwen3.5-9b"])
 
     def test_tag_fallback_does_not_mask_lane_placement_errors(self) -> None:

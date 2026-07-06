@@ -37,7 +37,7 @@ class PreferMwLanePlacementTests(unittest.TestCase):
             {
                 "lane_id": "lane-non-mw",
                 "host_name": "Other-Host",
-                "base_url": "http://10.0.0.88:11434",
+                "base_url": "http://worker-e.example:11434",
                 "lane_type": "gpu",
                 "backend_type": "llama",
                 "status": "ready",
@@ -48,12 +48,12 @@ class PreferMwLanePlacementTests(unittest.TestCase):
             },
             {
                 "lane_id": "lane-mw",
-                "host_name": "Static-Deskix",
-                "base_url": "http://10.0.0.99:11434",
+                "host_name": "Worker-A",
+                "base_url": "http://worker-a.example:11434",
                 "lane_type": "gpu",
                 "backend_type": "llama",
                 "status": "ready",
-                "proxy_auth_metadata": {"control_plane": "mw", "mw_host_id": "static-deskix", "mw_lane_id": "gpu"},
+                "proxy_auth_metadata": {"control_plane": "mw", "mw_host_id": "worker-a", "mw_lane_id": "gpu"},
                 "current_model_name": "qwen3.5-9b",
                 "current_model_tags": [],
                 "current_model_max_ctx": 8192,
@@ -69,18 +69,18 @@ class PreferMwLanePlacementTests(unittest.TestCase):
             choice = router_module.pick_lane_for_model(model="qwen3.5-9b")
 
         self.assertEqual(choice.lane_id, "lane-mw")
-        self.assertEqual(choice.worker_id, "Static-Deskix")
+        self.assertEqual(choice.worker_id, "Worker-A")
 
     def test_mw_lane_survives_stale_db_backend_prefilter(self) -> None:
         rows = [
             {
                 "lane_id": "lane-cpu",
-                "host_name": "Static-Deskix",
-                "base_url": "http://10.0.0.99:21435",
+                "host_name": "Worker-A",
+                "base_url": "http://worker-a.example:21435",
                 "lane_type": "cpu",
                 "backend_type": "bitnet",
                 "status": "suspended",
-                "proxy_auth_metadata": {"control_plane": "mw", "mw_host_id": "static-deskix", "mw_lane_id": "cpu"},
+                "proxy_auth_metadata": {"control_plane": "mw", "mw_host_id": "worker-a", "mw_lane_id": "cpu"},
                 "current_model_name": "falcon3-10b",
                 "current_model_tags": [],
                 "current_model_max_ctx": 8192,
@@ -232,7 +232,7 @@ class PreferMwLanePlacementTests(unittest.TestCase):
         rows = [
             {
                 "lane_id": "p4-router-lane",
-                "host_name": "packhub",
+                "host_name": "Worker-E",
                 "base_url": "http://llama-vision-router.example:4012",
                 "lane_type": "other",
                 "backend_type": "llama",
@@ -283,12 +283,12 @@ class PreferMwLanePlacementTests(unittest.TestCase):
             {
                 "lane_id": "image-lane",
                 "lane_name": "gpu",
-                "host_name": "Static-Deskix",
-                "base_url": "http://10.0.0.99:21440",
+                "host_name": "Worker-A",
+                "base_url": "http://worker-a.example:21440",
                 "lane_type": "gpu",
                 "backend_type": "llama",
                 "status": "ready",
-                "proxy_auth_metadata": {"control_plane": "mw", "mw_host_id": "static-deskix", "mw_lane_id": "gpu"},
+                "proxy_auth_metadata": {"control_plane": "mw", "mw_host_id": "worker-a", "mw_lane_id": "gpu"},
                 "current_model_name": "flux1-schnell-Q4_K_S",
                 "current_model_tags": [],
                 "current_model_max_ctx": None,
@@ -298,8 +298,8 @@ class PreferMwLanePlacementTests(unittest.TestCase):
             {
                 "lane_id": "chat-lane",
                 "lane_name": "cpu",
-                "host_name": "packhub02",
-                "base_url": "http://10.0.0.4:11434",
+                "host_name": "Worker-D",
+                "base_url": "http://worker-d.example:11434",
                 "lane_type": "cpu",
                 "backend_type": "llama",
                 "status": "ready",
@@ -313,7 +313,7 @@ class PreferMwLanePlacementTests(unittest.TestCase):
         ]
         state_rows = [
             {
-                "host_id": "static-deskix",
+                "host_id": "worker-a",
                 "lane_id": "gpu",
                 "last_heartbeat_at": datetime.now(tz=timezone.utc),
                 "actual_state": "running",
@@ -358,20 +358,20 @@ class PreferMwLanePlacementTests(unittest.TestCase):
             choice = router_module.pick_lane_for_model(model="qwen3.5-0.8b")
 
         self.assertEqual(choice.lane_id, "chat-lane")
-        self.assertEqual(choice.worker_id, "packhub02")
+        self.assertEqual(choice.worker_id, "Worker-D")
 
     def test_explicit_image_request_can_demand_start_backend_mismatch_lane_with_stale_swap_marker(self) -> None:
         rows = [
             {
                 "lane_id": "image-lane",
                 "lane_name": "image-gpu",
-                "host_name": "Static-Deskix",
-                "base_url": "http://10.0.0.99:21440",
+                "host_name": "Worker-A",
+                "base_url": "http://worker-a.example:21440",
                 "lane_type": "gpu",
                 "backend_type": "sd",
                 "status": "suspended",
                 "suspension_reason": "swap:old:stopping_siblings",
-                "proxy_auth_metadata": {"control_plane": "mw", "mw_host_id": "static-deskix", "mw_lane_id": "gpu"},
+                "proxy_auth_metadata": {"control_plane": "mw", "mw_host_id": "worker-a", "mw_lane_id": "gpu"},
                 "current_model_name": "qwen3.5-9b",
                 "current_model_tags": [],
                 "current_model_max_ctx": None,
@@ -381,7 +381,7 @@ class PreferMwLanePlacementTests(unittest.TestCase):
         ]
         state_rows = [
             {
-                "host_id": "static-deskix",
+                "host_id": "worker-a",
                 "lane_id": "gpu",
                 "last_heartbeat_at": datetime.now(tz=timezone.utc),
                 "actual_state": "running",
@@ -429,18 +429,18 @@ class PreferMwLanePlacementTests(unittest.TestCase):
             )
 
         self.assertEqual(choice.lane_id, "image-lane")
-        self.assertEqual(choice.worker_id, "Static-Deskix")
+        self.assertEqual(choice.worker_id, "Worker-A")
 
     def test_policy_disallowed_viability_is_not_swappable(self) -> None:
         rows = [
             {
                 "lane_id": "disallowed-gpu",
-                "host_name": "Static-Mobile-2",
-                "base_url": "http://10.0.0.132:21436",
+                "host_name": "Worker-B",
+                "base_url": "http://worker-b.example:21436",
                 "lane_type": "gpu",
                 "backend_type": "llama",
                 "status": "ready",
-                "proxy_auth_metadata": {"control_plane": "mw", "mw_host_id": "static-mobile-2", "mw_lane_id": "lfm"},
+                "proxy_auth_metadata": {"control_plane": "mw", "mw_host_id": "worker-b", "mw_lane_id": "lfm"},
                 "current_model_name": "LFM2.5-350M-Q4_K_M.gguf",
                 "current_model_tags": [],
                 "current_model_max_ctx": 8192,
@@ -456,8 +456,8 @@ class PreferMwLanePlacementTests(unittest.TestCase):
             },
             {
                 "lane_id": "allowed-cpu",
-                "host_name": "packhub02",
-                "base_url": "http://10.0.0.4:11434",
+                "host_name": "Worker-D",
+                "base_url": "http://worker-d.example:11434",
                 "lane_type": "cpu",
                 "backend_type": "llama",
                 "status": "ready",
@@ -486,7 +486,7 @@ class PreferMwLanePlacementTests(unittest.TestCase):
             choice = router_module.pick_lane_for_model(model="qwen3.5-0.8b")
 
         self.assertEqual(choice.lane_id, "allowed-cpu")
-        self.assertEqual(choice.worker_id, "packhub02")
+        self.assertEqual(choice.worker_id, "Worker-D")
         query_text = q_mock.call_args.args[1]
         self.assertIn("p.allowed IS DISTINCT FROM false", query_text)
         self.assertIn("jsonb_array_length(COALESCE(h.model_store_paths", query_text)
@@ -526,12 +526,12 @@ class PreferMwLanePlacementTests(unittest.TestCase):
         rows = [
             {
                 "lane_id": "frontdesk-cpu",
-                "host_name": "Static-Mobile-2",
-                "base_url": "http://10.0.0.132:21434",
+                "host_name": "Worker-B",
+                "base_url": "http://worker-b.example:21434",
                 "lane_type": "cpu",
                 "backend_type": "llama",
                 "status": "ready",
-                "proxy_auth_metadata": {"control_plane": "mw", "mw_host_id": "static-mobile-2", "mw_lane_id": "qwen"},
+                "proxy_auth_metadata": {"control_plane": "mw", "mw_host_id": "worker-b", "mw_lane_id": "qwen"},
                 "current_model_name": "Qwen3.5-0.8B-Q4_K_M.gguf",
                 "current_model_tags": [],
                 "current_model_max_ctx": 8192,
@@ -548,7 +548,7 @@ class PreferMwLanePlacementTests(unittest.TestCase):
             choice = router_module.pick_lane_for_model(model="qwen3.5:0.8B")
 
         self.assertEqual(choice.lane_id, "frontdesk-cpu")
-        self.assertEqual(choice.worker_id, "Static-Mobile-2")
+        self.assertEqual(choice.worker_id, "Worker-B")
 
     def test_inferred_generic_tags_ignore_quantization(self) -> None:
         tags = router_module._inferred_model_tags("/models/Qwen3.5-0.8B-Q4_K_M.gguf")
@@ -560,8 +560,8 @@ class PreferMwLanePlacementTests(unittest.TestCase):
         rows = [
             {
                 "lane_id": "frontdesk-08b",
-                "host_name": "Static-Mobile-2",
-                "base_url": "http://10.0.0.132:21434",
+                "host_name": "Worker-B",
+                "base_url": "http://worker-b.example:21434",
                 "lane_type": "gpu",
                 "backend_type": "llama",
                 "status": "ready",

@@ -52,16 +52,16 @@ def test_explicit_image_lane_is_suspended_when_underlying_mw_lane_is_in_text_bac
             "lane_name": "image-gpu",
             "lane_type": "gpu",
             "backend_type": "sd",
-            "host_name": "Static-Deskix",
-            "proxy_auth_metadata": {"control_plane": "mw", "mw_host_id": "static-deskix", "mw_lane_id": "gpu"},
+            "host_name": "Worker-A",
+            "proxy_auth_metadata": {"control_plane": "mw", "mw_host_id": "worker-a", "mw_lane_id": "gpu"},
             "status": "offline",
-            "base_url": "http://10.0.0.99:21440",
+            "base_url": "http://worker-a.example:21440",
             "current_model_name": "flux1-schnell-Q4_K_S",
         }
     ]
     mw_rows = [
         {
-            "host_id": "static-deskix",
+            "host_id": "worker-a",
             "lane_id": "gpu",
             "last_heartbeat_at": now,
             "actual_state": "running",
@@ -77,7 +77,7 @@ def test_explicit_image_lane_is_suspended_when_underlying_mw_lane_is_in_text_bac
     assert rows[0]["effective_status"] == "suspended"
     assert rows[0]["readiness_reason"] == "backend_mismatch"
     assert rows[0]["backend_type"] == "sd"
-    assert rows[0]["base_url"] == "http://10.0.0.99:21440"
+    assert rows[0]["base_url"] == "http://worker-a.example:21440"
     assert rows[0]["current_model_name"] == "qwen3.5-9b"
 
 
@@ -89,15 +89,15 @@ def test_mw_metadata_backend_does_not_make_image_row_ready_for_chat_gpu():
             "lane_name": "image-gpu",
             "lane_type": "gpu",
             "backend_type": "sd",
-            "host_name": "Static-Deskix",
-            "proxy_auth_metadata": {"control_plane": "mw", "mw_host_id": "static-deskix", "mw_lane_id": "gpu"},
+            "host_name": "Worker-A",
+            "proxy_auth_metadata": {"control_plane": "mw", "mw_host_id": "worker-a", "mw_lane_id": "gpu"},
             "status": "offline",
             "current_model_name": "flux1-schnell-Q4_K_S",
         }
     ]
     mw_rows = [
         {
-            "host_id": "static-deskix",
+            "host_id": "worker-a",
             "lane_id": "gpu",
             "last_heartbeat_at": now,
             "actual_state": "running",
@@ -124,7 +124,7 @@ def test_inferred_gpu_lane_stays_offline_when_explicit_image_lane_owns_same_mw_b
             "lane_name": "gpu",
             "lane_type": "gpu",
             "backend_type": "llama",
-            "host_name": "pupix1",
+            "host_name": "worker-c",
             "proxy_auth_metadata": {},
             "status": "suspended",
             "current_model_name": "LFM2.5-350M-Q4_K_M.gguf",
@@ -134,15 +134,15 @@ def test_inferred_gpu_lane_stays_offline_when_explicit_image_lane_owns_same_mw_b
             "lane_name": "image-gpu",
             "lane_type": "gpu",
             "backend_type": "sd",
-            "host_name": "pupix1",
-            "proxy_auth_metadata": {"control_plane": "mw", "mw_host_id": "pupix1", "mw_lane_id": "gpu"},
+            "host_name": "worker-c",
+            "proxy_auth_metadata": {"control_plane": "mw", "mw_host_id": "worker-c", "mw_lane_id": "gpu"},
             "status": "offline",
             "current_model_name": "flux1-schnell-Q4_K_S",
         },
     ]
     mw_rows = [
         {
-            "host_id": "pupix1",
+            "host_id": "worker-c",
             "lane_id": "gpu",
             "last_heartbeat_at": now,
             "actual_state": "running",
@@ -172,8 +172,8 @@ def test_mw_overlay_sets_current_model_max_ctx_from_mw_metadata():
             "lane_name": "cpu",
             "lane_type": "cpu",
             "backend_type": "bitnet",
-            "host_name": "Static-Deskix",
-            "proxy_auth_metadata": {"control_plane": "mw", "mw_host_id": "static-deskix", "mw_lane_id": "cpu"},
+            "host_name": "Worker-A",
+            "proxy_auth_metadata": {"control_plane": "mw", "mw_host_id": "worker-a", "mw_lane_id": "cpu"},
             "status": "ready",
             "current_model_name": "falcon3-10b",
             "current_model_max_ctx": 2048,
@@ -181,7 +181,7 @@ def test_mw_overlay_sets_current_model_max_ctx_from_mw_metadata():
     ]
     mw_rows = [
         {
-            "host_id": "static-deskix",
+            "host_id": "worker-a",
             "lane_id": "cpu",
             "last_heartbeat_at": now,
             "actual_state": "running",
@@ -207,15 +207,15 @@ def test_mw_overlay_overrides_active_backend_and_eta_fields_from_mw_metadata():
             "lane_name": "cpu",
             "lane_type": "cpu",
             "backend_type": "llama",
-            "host_name": "Static-Deskix",
-            "proxy_auth_metadata": {"control_plane": "mw", "mw_host_id": "static-deskix", "mw_lane_id": "cpu"},
+            "host_name": "Worker-A",
+            "proxy_auth_metadata": {"control_plane": "mw", "mw_host_id": "worker-a", "mw_lane_id": "cpu"},
             "status": "ready",
             "current_model_name": "LFM2.5-350M-Q4_K_M.gguf",
         }
     ]
     mw_rows = [
         {
-            "host_id": "static-deskix",
+            "host_id": "worker-a",
             "lane_id": "cpu",
             "last_heartbeat_at": now,
             "actual_state": "running",
@@ -255,16 +255,16 @@ def test_mw_overlay_rewrites_base_url_port_from_live_mw_service_port():
             "lane_name": "combined",
             "lane_type": "other",
             "backend_type": "llama",
-            "host_name": "pupix1",
-            "proxy_auth_metadata": {"control_plane": "mw", "mw_host_id": "pupix1", "mw_lane_id": "combined"},
+            "host_name": "worker-c",
+            "proxy_auth_metadata": {"control_plane": "mw", "mw_host_id": "worker-c", "mw_lane_id": "combined"},
             "status": "suspended",
-            "base_url": "http://10.0.0.95:11436",
+            "base_url": "http://worker-c.example:11436",
             "current_model_name": "gemma-4-26B-A4B-it-Q4_K_M",
         }
     ]
     mw_rows = [
         {
-            "host_id": "pupix1",
+            "host_id": "worker-c",
             "lane_id": "combined",
             "last_heartbeat_at": now,
             "actual_state": "running",
@@ -279,7 +279,7 @@ def test_mw_overlay_rewrites_base_url_port_from_live_mw_service_port():
 
     assert rows[0]["effective_status"] == "ready"
     assert rows[0]["current_model_name"] == "Qwen3.5-27B-Q4_K_M"
-    assert rows[0]["base_url"] == "http://10.0.0.95:21436"
+    assert rows[0]["base_url"] == "http://worker-c.example:21436"
 
 
 class _FakeRuntimeStore:
@@ -298,16 +298,16 @@ def test_mw_overlay_prefers_runtime_cache_over_stale_db_rows():
             "lane_name": "gpu",
             "lane_type": "gpu",
             "backend_type": "llama",
-            "host_name": "Static-Deskix",
-            "proxy_auth_metadata": {"control_plane": "mw", "mw_host_id": "static-deskix", "mw_lane_id": "gpu"},
+            "host_name": "Worker-A",
+            "proxy_auth_metadata": {"control_plane": "mw", "mw_host_id": "worker-a", "mw_lane_id": "gpu"},
             "status": "ready",
-            "base_url": "http://10.0.0.99:11434",
+            "base_url": "http://worker-a.example:11434",
             "current_model_name": "stale-db-model",
         }
     ]
     stale_db_rows = [
         {
-            "host_id": "static-deskix",
+            "host_id": "worker-a",
             "lane_id": "gpu",
             "last_heartbeat_at": now,
             "actual_state": "running",
@@ -319,8 +319,8 @@ def test_mw_overlay_prefers_runtime_cache_over_stale_db_rows():
     ]
     runtime_store = _FakeRuntimeStore(
         {
-            ("static-deskix", "gpu"): {
-                "host_id": "static-deskix",
+            ("worker-a", "gpu"): {
+                "host_id": "worker-a",
                 "lane_id": "gpu",
                 "last_heartbeat_at": now,
                 "actual_state": "running",
@@ -337,4 +337,4 @@ def test_mw_overlay_prefers_runtime_cache_over_stale_db_rows():
 
     assert rows[0]["effective_status"] == "ready"
     assert rows[0]["current_model_name"] == "qwen3.5-9b"
-    assert rows[0]["base_url"] == "http://10.0.0.99:21434"
+    assert rows[0]["base_url"] == "http://worker-a.example:21434"

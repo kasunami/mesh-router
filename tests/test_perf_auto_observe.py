@@ -75,7 +75,7 @@ class PerfAutoObserveTests(unittest.TestCase):
         app_module.insert_observation = _insert  # type: ignore[assignment]
 
         app_module._maybe_record_perf_observation(
-            host_name="Static-Deskix",
+            host_name="Worker-A",
             lane_id="lane-1",
             model_name="qwen3.5-2b",
             modality="chat",
@@ -92,7 +92,7 @@ class PerfAutoObserveTests(unittest.TestCase):
 
         self.assertIn("obs", captured)
         obs = captured["obs"]
-        self.assertEqual(obs["host_id"], "Static-Deskix")
+        self.assertEqual(obs["host_id"], "Worker-A")
         self.assertEqual(obs["lane_id"], "lane-1")
         self.assertEqual(obs["model_name"], "qwen3.5-2b")
         self.assertEqual(obs["ok"], True)
@@ -112,7 +112,7 @@ class PerfAutoObserveTests(unittest.TestCase):
         app_module.insert_observation = _insert  # type: ignore[assignment]
 
         app_module._maybe_record_perf_observation(
-            host_name="Static-Deskix",
+            host_name="Worker-A",
             lane_id="lane-1",
             model_name="qwen3.5-2b",
             modality="chat",

@@ -65,12 +65,12 @@ class MwEffectiveReadinessTests(unittest.TestCase):
         base_rows = [
             {
                 "lane_id": "lane-1",
-                "host_name": "Static-Deskix",
-                "base_url": "http://10.0.0.99:11434",
+                "host_name": "Worker-A",
+                "base_url": "http://worker-a.example:11434",
                 "lane_type": "gpu",
                 "backend_type": "llama",
                 "status": "offline",
-                "proxy_auth_metadata": {"control_plane": "mw", "mw_host_id": "static-deskix", "mw_lane_id": "gpu"},
+                "proxy_auth_metadata": {"control_plane": "mw", "mw_host_id": "worker-a", "mw_lane_id": "gpu"},
                 "current_model_name": "Qwen3.5-9B-Q4_K_M.gguf",
                 "current_model_tags": [],
                 "current_model_max_ctx": None,
@@ -79,7 +79,7 @@ class MwEffectiveReadinessTests(unittest.TestCase):
         now = datetime.now(tz=timezone.utc)
         mw_rows = [
             {
-                "host_id": "static-deskix",
+                "host_id": "worker-a",
                 "lane_id": "gpu",
                 "last_heartbeat_at": now,
                 "actual_state": "running",
@@ -92,21 +92,21 @@ class MwEffectiveReadinessTests(unittest.TestCase):
 
         choice = router_module.pick_lane_for_model(
             model="Qwen3.5-9B-Q4_K_M.gguf",
-            pin_worker="Static-Deskix",
+            pin_worker="Worker-A",
         )
-        self.assertEqual(choice.worker_id, "Static-Deskix")
+        self.assertEqual(choice.worker_id, "Worker-A")
         self.assertEqual(choice.lane_id, "lane-1")
 
     def test_pick_lane_for_model_rejects_mw_stale_heartbeat(self) -> None:
         base_rows = [
             {
                 "lane_id": "lane-1",
-                "host_name": "Static-Deskix",
-                "base_url": "http://10.0.0.99:11434",
+                "host_name": "Worker-A",
+                "base_url": "http://worker-a.example:11434",
                 "lane_type": "gpu",
                 "backend_type": "llama",
                 "status": "offline",
-                "proxy_auth_metadata": {"control_plane": "mw", "mw_host_id": "static-deskix", "mw_lane_id": "gpu"},
+                "proxy_auth_metadata": {"control_plane": "mw", "mw_host_id": "worker-a", "mw_lane_id": "gpu"},
                 "current_model_name": "Qwen3.5-9B-Q4_K_M.gguf",
                 "current_model_tags": [],
                 "current_model_max_ctx": None,
@@ -115,7 +115,7 @@ class MwEffectiveReadinessTests(unittest.TestCase):
         stale = datetime.now(tz=timezone.utc) - timedelta(days=1)
         mw_rows = [
             {
-                "host_id": "static-deskix",
+                "host_id": "worker-a",
                 "lane_id": "gpu",
                 "last_heartbeat_at": stale,
                 "actual_state": "running",
@@ -129,7 +129,7 @@ class MwEffectiveReadinessTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "no READY lanes for pinned worker"):
             router_module.pick_lane_for_model(
                 model="Qwen3.5-9B-Q4_K_M.gguf",
-                pin_worker="Static-Deskix",
+                pin_worker="Worker-A",
             )
 
 

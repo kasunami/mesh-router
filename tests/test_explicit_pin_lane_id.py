@@ -34,8 +34,8 @@ class _Db:
 def _pin_lane_row(**overrides):
     row = {
         "lane_id": "44444444-4444-4444-4444-444444444444",
-        "host_name": "Static-Mobile-2",
-        "base_url": "http://100.109.112.68:21435",
+        "host_name": "Worker-B",
+        "base_url": "http://worker-b.example:21435",
         "lane_type": "cpu",
         "backend_type": "llama",
         "status": "ready",
@@ -106,8 +106,8 @@ class PinLaneIdPlacementTests(unittest.TestCase):
     def test_pin_lane_id_offline_is_409(self) -> None:
         row = _pin_lane_row(
             lane_id="22222222-2222-2222-2222-222222222222",
-            host_name="Static-Deskix",
-            base_url="http://10.0.0.99:11434",
+            host_name="Worker-A",
+            base_url="http://worker-a.example:11434",
             lane_type="gpu",
             status="offline",
             current_model_name=None,
@@ -135,8 +135,8 @@ class PinLaneIdPlacementTests(unittest.TestCase):
                 router_module.pick_lane_for_model(
                     model="Qwen3.5-9B-Q4_K_M.gguf",
                     pin_lane_id="44444444-4444-4444-4444-444444444444",
-                    pin_worker="Static-Mobile-2",
-                    pin_base_url="http://100.109.112.68:21435",
+                    pin_worker="Worker-B",
+                    pin_base_url="http://worker-b.example:21435",
                     pin_lane_type="cpu",
                 )
         self.assertEqual(getattr(ctx.exception, "status_code", None), 409)
@@ -154,7 +154,7 @@ class PinLaneIdPlacementTests(unittest.TestCase):
                 router_module.pick_lane_for_model(
                     model="Qwen3.5-9B-Q4_K_M.gguf",
                     pin_lane_id="44444444-4444-4444-4444-444444444444",
-                    pin_worker="Static-Deskix",
+                    pin_worker="Worker-A",
                 )
         self.assertEqual(getattr(ctx.exception, "status_code", None), 409)
         self.assertIn("worker", str(ctx.exception))
@@ -171,7 +171,7 @@ class PinLaneIdPlacementTests(unittest.TestCase):
                 router_module.pick_lane_for_model(
                     model="Qwen3.5-9B-Q4_K_M.gguf",
                     pin_lane_id="44444444-4444-4444-4444-444444444444",
-                    pin_base_url="http://10.0.0.99:21435",
+                    pin_base_url="http://worker-a.example:21435",
                 )
         self.assertEqual(getattr(ctx.exception, "status_code", None), 409)
         self.assertIn("base_url", str(ctx.exception))
@@ -204,17 +204,17 @@ class PinLaneIdPlacementTests(unittest.TestCase):
             choice = router_module.pick_lane_for_model(
                 model="Qwen3.5-9B-Q4_K_M.gguf",
                 pin_lane_id="44444444-4444-4444-4444-444444444444",
-                pin_worker="Static-Mobile-2",
-                pin_base_url="http://100.109.112.68:21435",
+                pin_worker="Worker-B",
+                pin_base_url="http://worker-b.example:21435",
                 pin_lane_type="cpu",
             )
         self.assertEqual(choice.lane_id, "44444444-4444-4444-4444-444444444444")
-        self.assertEqual(choice.worker_id, "Static-Mobile-2")
+        self.assertEqual(choice.worker_id, "Worker-B")
 
     def test_pin_lane_id_with_matching_worker_and_base_url_is_accepted(self) -> None:
         row = _pin_lane_row(
-            host_name="Static-Deskix",
-            base_url="http://10.0.0.99:21434",
+            host_name="Worker-A",
+            base_url="http://worker-a.example:21434",
             lane_type="gpu",
             current_model_name="qwen3.5-9b",
         )
@@ -227,8 +227,8 @@ class PinLaneIdPlacementTests(unittest.TestCase):
             choice = router_module.pick_lane_for_model(
                 model="openai/qwen3.5-9b",
                 pin_lane_id="44444444-4444-4444-4444-444444444444",
-                pin_worker="Static-Deskix",
-                pin_base_url="http://10.0.0.99:21434/",
+                pin_worker="Worker-A",
+                pin_base_url="http://worker-a.example:21434/",
                 pin_lane_type="gpu",
             )
         self.assertEqual(choice.lane_id, "44444444-4444-4444-4444-444444444444")
@@ -236,8 +236,8 @@ class PinLaneIdPlacementTests(unittest.TestCase):
     def test_pin_lane_id_operator_suspended_overlay_is_409(self) -> None:
         row = _pin_lane_row(
             lane_id="33333333-3333-3333-3333-333333333333",
-            host_name="pupix1",
-            base_url="http://10.0.0.95:11436",
+            host_name="worker-c",
+            base_url="http://worker-c.example:11436",
             lane_type="other",
             status="suspended",
             proxy_auth_metadata={"control_plane": "mw"},

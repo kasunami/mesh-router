@@ -12,8 +12,8 @@ from mesh_router import route_resolver as resolver_module
 class _Choice:
     def __init__(self) -> None:
         self.lane_id = "lane-1"
-        self.worker_id = "Static-Deskix"
-        self.base_url = "http://10.0.0.99:11434"
+        self.worker_id = "Worker-A"
+        self.base_url = "http://worker-a.example:11434"
         self.lane_type = "gpu"
         self.backend_type = "llama"
         self.current_model_name = "Qwen3.5-9B-Q4_K_M.gguf"
@@ -38,7 +38,7 @@ class RouteResolveApiTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         body = resp.json()
         self.assertTrue(body["ok"])
-        self.assertEqual(body["choice"]["worker_id"], "Static-Deskix")
+        self.assertEqual(body["choice"]["worker_id"], "Worker-A")
 
     def test_qwen_selection_tag_resolves_as_model_candidate(self) -> None:
         self.assertEqual(
@@ -57,7 +57,7 @@ class RouteResolveApiTests(unittest.TestCase):
             # Favor the middle candidate.
             tps = {"qwen3.5:9B": 50.0, "qwen3.5:4B": 120.0, "qwen3.5:2B": 80.0}.get(str(model), 0.0)
             return {
-                "host_id": "static-deskix",
+                "host_id": "worker-a",
                 "lane_id": "lane-1",
                 "model_name": str(model),
                 "modality": str(modality),
@@ -112,12 +112,12 @@ class RouteResolveApiTests(unittest.TestCase):
                 return {
                     "lane_id": "85557f61-07bd-43af-ae00-1f5c566c8b48",
                     "lane_name": "mlx",
-                    "base_url": "http://10.0.0.97:11434",
+                    "base_url": "http://worker-d.example:11434",
                     "lane_type": "mlx",
                     "backend_type": "mlx",
-                    "current_model_name": "/Users/kasunami/models/Qwen3.5-9B-MLX-4bit",
+                    "current_model_name": "/models/Qwen3.5-9B-MLX-4bit",
                     "proxy_auth_metadata": {"control_plane": "mw"},
-                    "host_name": "tiffs-macbook",
+                    "host_name": "worker-d",
                     "status": "ready",
                 }
 
@@ -150,10 +150,10 @@ class RouteResolveApiTests(unittest.TestCase):
             mock.patch.object(resolver_module, "apply_mw_effective_status", _overlay),
         ):
             choice, perf, reason, count = resolver_module.resolve_route(
-                model="/Users/kasunami/models/Qwen3.5-9B-MLX-4bit",
+                model="/models/Qwen3.5-9B-MLX-4bit",
                 modality="chat",
                 tags=[],
-                host_name="tiffs-macbook",
+                host_name="worker-d",
                 lane_id="85557f61-07bd-43af-ae00-1f5c566c8b48",
                 allow_opportunistic=False,
             )

@@ -96,7 +96,7 @@ class AutoSwapRetryTests(unittest.TestCase):
         lane1 = SimpleNamespace(
             lane_id="lane-1",
             worker_id="host-a",
-            base_url="http://10.0.0.1:11434",
+            base_url="http://worker-a.example:11434",
             current_model_name="some-other-model",
             backend_type="llama",
             lane_type="cpu",
@@ -107,7 +107,7 @@ class AutoSwapRetryTests(unittest.TestCase):
         lane2 = SimpleNamespace(
             lane_id="lane-2",
             worker_id="host-b",
-            base_url="http://10.0.0.2:11434",
+            base_url="http://worker-b.example:11434",
             current_model_name="qwen3.5:0.8B",
             backend_type="llama",
             lane_type="cpu",
@@ -163,9 +163,9 @@ class AutoSwapRetryTests(unittest.TestCase):
     def test_empty_non_stream_chat_response_fails_request(self) -> None:
         lane = SimpleNamespace(
             lane_id="lane-1",
-            worker_id="tiffs-macbook",
-            base_url="http://10.0.0.97:11434",
-            current_model_name="/Users/kasunami/models/Qwen3.5-9B-MLX-4bit",
+            worker_id="worker-d",
+            base_url="http://worker-d.example:11434",
+            current_model_name="/models/Qwen3.5-9B-MLX-4bit",
             backend_type="mlx",
             lane_type="mlx",
             lane_max_ctx=8192,
@@ -184,7 +184,7 @@ class AutoSwapRetryTests(unittest.TestCase):
             mock.patch.object(app_module, "_release_router_lease", return_value=None),
             mock.patch.object(app_module, "_request_cancel_requested", return_value=False),
             mock.patch.object(app_module, "_touch_router_request", side_effect=lambda **kwargs: touches.append(kwargs)),
-            mock.patch.object(app_module, "_resolve_downstream_model_for_lane", side_effect=lambda *a, **k: k.get("requested_model_name") or "/Users/kasunami/models/Qwen3.5-9B-MLX-4bit"),
+            mock.patch.object(app_module, "_resolve_downstream_model_for_lane", side_effect=lambda *a, **k: k.get("requested_model_name") or "/models/Qwen3.5-9B-MLX-4bit"),
             mock.patch.object(app_module, "_mw_target_for_lane", return_value=None),
             mock.patch.object(app_module.httpx, "Client", _EmptyChatHttpxClient),
             mock.patch.object(app_module, "_maybe_record_perf_observation", return_value=None),
@@ -194,7 +194,7 @@ class AutoSwapRetryTests(unittest.TestCase):
                     request_id="req-empty",
                     route="chat",
                     raw_payload={
-                        "model": "/Users/kasunami/models/Qwen3.5-9B-MLX-4bit",
+                        "model": "/models/Qwen3.5-9B-MLX-4bit",
                         "messages": [{"role": "user", "content": "Return exactly READY"}],
                         "stream": False,
                     },

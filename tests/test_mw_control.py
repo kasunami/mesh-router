@@ -101,7 +101,7 @@ class MWControlApiTests(unittest.TestCase):
         response = self.client.post(
             "/api/mw/commands",
             json={
-                "host_id": "static-deskix",
+                "host_id": "worker-a",
                 "message_type": "load_model",
                 "payload": {"lane_id": "gpu", "model_name": "qwen3.5-4b"},
                 "wait": True,
@@ -117,7 +117,7 @@ class MWControlApiTests(unittest.TestCase):
         response = self.client.post(
             "/api/mw/commands",
             json={
-                "host_id": "Static Mobile 2",
+                "host_id": "Worker B",
                 "message_type": "health_probe",
                 "payload": {"lane_id": "gpu"},
                 "wait": True,
@@ -126,14 +126,14 @@ class MWControlApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         body = response.json()
         self.assertTrue(body["ok"])
-        self.assertEqual(body["host_id"], "static-mobile-2")
-        self.assertEqual(self.fake.calls[-1]["host_id"], "static-mobile-2")
+        self.assertEqual(body["host_id"], "worker-b")
+        self.assertEqual(self.fake.calls[-1]["host_id"], "worker-b")
 
     def test_load_model_accepts_model_id_alias(self) -> None:
         response = self.client.post(
             "/api/mw/commands",
             json={
-                "host_id": "static-deskix",
+                "host_id": "worker-a",
                 "message_type": "load_model",
                 "payload": {"lane_id": "gpu", "model_id": "qwen3.5-2b"},
                 "wait": True,
@@ -149,7 +149,7 @@ class MWControlApiTests(unittest.TestCase):
         response = self.client.post(
             "/api/mw/commands",
             json={
-                "host_id": "static-deskix",
+                "host_id": "worker-a",
                 "message_type": "load_model",
                 "payload": {"lane_id": "gpu"},
                 "wait": True,
@@ -161,7 +161,7 @@ class MWControlApiTests(unittest.TestCase):
         response = self.client.post(
             "/api/mw/commands",
             json={
-                "host_id": "tiffs-macbook",
+                "host_id": "worker-d",
                 "message_type": "run_allowlisted_command",
                 "payload": {},
                 "wait": True,
@@ -173,11 +173,11 @@ class MWControlApiTests(unittest.TestCase):
         response = self.client.post(
             "/api/mw/commands",
             json={
-                "host_id": "tiffs-macbook",
+                "host_id": "worker-d",
                 "message_type": "run_allowlisted_command",
                 "payload": {
                     "command_id": "uba-alpha-smoke",
-                    "env": {"UBA_SERVER_WS_URL": "ws://10.0.1.60:8080/accord"},
+                    "env": {"APP_SERVER_WS_URL": "ws://service.example:8080/accord"},
                 },
                 "wait": True,
             },
@@ -192,7 +192,7 @@ class MWControlApiTests(unittest.TestCase):
         self.fake.next_result = {
             "ok": True,
             "pending": True,
-            "host_id": "static-deskix",
+            "host_id": "worker-a",
             "request_id": "req-timeout-1",
             "message_type": "activate_profile",
             "warning": "timed out waiting for MeshWorker response",
@@ -201,7 +201,7 @@ class MWControlApiTests(unittest.TestCase):
         response = self.client.post(
             "/api/mw/commands",
             json={
-                "host_id": "static-deskix",
+                "host_id": "worker-a",
                 "message_type": "activate_profile",
                 "payload": {"profile_id": "split_default"},
                 "wait": True,
@@ -215,7 +215,7 @@ class MWControlApiTests(unittest.TestCase):
         self.assertEqual(body["request_id"], "req-timeout-1")
 
     def test_health_probe_shortcut_endpoint(self) -> None:
-        response = self.client.post("/api/mw/hosts/static-deskix/health-probe?service_id=llama-gpu")
+        response = self.client.post("/api/mw/hosts/worker-a/health-probe?service_id=llama-gpu")
         self.assertEqual(response.status_code, 200)
         body = response.json()
         self.assertTrue(body["ok"])
@@ -226,7 +226,7 @@ class MWControlApiTests(unittest.TestCase):
         response = self.client.post(
             "/api/mw/commands",
             json={
-                "host_id": "static-deskix",
+                "host_id": "worker-a",
                 "message_type": "unload_lane",
                 "payload": {"lane_id": "gpu"},
                 "wait": True,
@@ -242,7 +242,7 @@ class MWControlApiTests(unittest.TestCase):
         response = self.client.post(
             "/api/mw/commands",
             json={
-                "host_id": "static-deskix",
+                "host_id": "worker-a",
                 "message_type": "unload_service",
                 "payload": {"service_id": "llama-gpu"},
                 "wait": True,
@@ -257,7 +257,7 @@ class MWControlApiTests(unittest.TestCase):
     def test_lane_gateway_health_prefers_mw(self) -> None:
         ok = app_module._lane_gateway_healthy(  # type: ignore[attr-defined]
             "http://127.0.0.1:21434",
-            host_id="static-deskix",
+            host_id="worker-a",
             lane_id="gpu",
         )
         self.assertTrue(ok)
@@ -268,7 +268,7 @@ class MWControlApiTests(unittest.TestCase):
         result = app_module._call_lane_service_action(  # type: ignore[attr-defined]
             base_url="http://127.0.0.1:21434",
             action="stop",
-            host_id="static-deskix",
+            host_id="worker-a",
             lane_id="gpu",
         )
         self.assertEqual(result["echo"], {"lane_id": "gpu"})
@@ -292,7 +292,7 @@ class MWControlApiTests(unittest.TestCase):
                         "backend_type": "llama",
                         "proxy_auth_metadata": {
                             "control_plane": "mw",
-                            "mw_host_id": "static-deskix",
+                            "mw_host_id": "worker-a",
                             "mw_lane_id": "gpu",
                         },
                     },
@@ -301,7 +301,7 @@ class MWControlApiTests(unittest.TestCase):
                         "backend_type": "sd",
                         "proxy_auth_metadata": {
                             "control_plane": "mw",
-                            "mw_host_id": "static-deskix",
+                            "mw_host_id": "worker-a",
                             "mw_lane_id": "gpu",
                         },
                     },
@@ -332,7 +332,7 @@ class MWControlApiTests(unittest.TestCase):
 
         self.fake.next_result = {
             "ok": True,
-            "host_id": "static-deskix",
+            "host_id": "worker-a",
             "request_id": "req-profile-1",
             "message_type": "activate_profile",
             "result": {
@@ -355,7 +355,7 @@ class MWControlApiTests(unittest.TestCase):
             response = self.client.post(
                 "/api/mw/commands",
                 json={
-                    "host_id": "static-deskix",
+                    "host_id": "worker-a",
                     "message_type": "activate_profile",
                     "payload": {"profile_id": "split_default"},
                     "wait": True,
@@ -372,7 +372,7 @@ class MWControlApiTests(unittest.TestCase):
         self.fake.next_result = {
             "ok": True,
             "pending": True,
-            "host_id": "static-deskix",
+            "host_id": "worker-a",
             "request_id": "req-pending-1",
             "message_type": "load_model",
         }
@@ -386,7 +386,7 @@ class MWControlApiTests(unittest.TestCase):
             return_value={"request_id": "req-pending-1", "status": "completed"},
         ) as waiter:
             result = app_module._send_mw_command_require_ready(  # type: ignore[attr-defined]
-                host_id="static-deskix",
+                host_id="worker-a",
                 message_type="load_model",
                 payload={"lane_id": "gpu", "model_name": "qwen3.5-4b"},
                 timeout_seconds=60,

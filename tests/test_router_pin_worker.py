@@ -39,7 +39,7 @@ class PinWorkerPlacementTests(unittest.TestCase):
             {
                 "lane_id": "lane-other",
                 "host_name": "Other-Host",
-                "base_url": "http://10.0.0.88:11434",
+                "base_url": "http://worker-e.example:11434",
                 "lane_type": "gpu",
                 "backend_type": "llama",
                 "current_model_name": "Qwen3.5-2B-Q4_K_M.gguf",
@@ -48,8 +48,8 @@ class PinWorkerPlacementTests(unittest.TestCase):
             },
             {
                 "lane_id": "lane-1",
-                "host_name": "Static-Deskix",
-                "base_url": "http://10.0.0.99:11434",
+                "host_name": "Worker-A",
+                "base_url": "http://worker-a.example:11434",
                 "lane_type": "gpu",
                 "backend_type": "llama",
                 "current_model_name": "Qwen3.5-2B-Q4_K_M.gguf",
@@ -61,10 +61,10 @@ class PinWorkerPlacementTests(unittest.TestCase):
         with mock.patch.object(router_module, "db", _Db()), mock.patch.object(router_module, "q", return_value=rows):
             choice = router_module.pick_lane_for_model(
                 model="qwen3.5-9b",
-                pin_worker="Static-Deskix",
+                pin_worker="Worker-A",
             )
 
-        self.assertEqual(choice.worker_id, "Static-Deskix")
+        self.assertEqual(choice.worker_id, "Worker-A")
         self.assertEqual(choice.lane_id, "lane-1")
         self.assertEqual(choice.resolved_model_name, "qwen3.5-9b")
 
@@ -72,8 +72,8 @@ class PinWorkerPlacementTests(unittest.TestCase):
         rows = [
             {
                 "lane_id": "lane-cpu",
-                "host_name": "Static-Mobile-2",
-                "base_url": "http://10.0.0.132:21435",
+                "host_name": "Worker-B",
+                "base_url": "http://worker-b.example:21435",
                 "lane_type": "cpu",
                 "backend_type": "llama",
                 "status": "ready",
@@ -87,11 +87,11 @@ class PinWorkerPlacementTests(unittest.TestCase):
         with mock.patch.object(router_module, "db", _Db()), mock.patch.object(router_module, "q", return_value=rows):
             choice = router_module.pick_lane_for_model(
                 model="google_gemma-4-26B-A4B-it-Q4_K_M.gguf",
-                pin_worker="Static-Mobile-2",
+                pin_worker="Worker-B",
                 pin_lane_type="cpu",
             )
 
-        self.assertEqual(choice.worker_id, "Static-Mobile-2")
+        self.assertEqual(choice.worker_id, "Worker-B")
         self.assertEqual(choice.lane_id, "lane-cpu")
         self.assertEqual(choice.current_model_name, "Qwen3.5-9B-Q4_K_M.gguf")
         self.assertEqual(choice.resolved_model_name, "google_gemma-4-26B-A4B-it-Q4_K_M.gguf")
@@ -100,12 +100,12 @@ class PinWorkerPlacementTests(unittest.TestCase):
         rows = [
             {
                 "lane_id": "lane-mw",
-                "host_name": "Static-Deskix",
-                "base_url": "http://10.0.0.99:11434",
+                "host_name": "Worker-A",
+                "base_url": "http://worker-a.example:11434",
                 "lane_type": "gpu",
                 "backend_type": "llama",
                 "status": "offline",
-                "proxy_auth_metadata": {"control_plane": "mw", "mw_host_id": "static-deskix", "mw_lane_id": "gpu"},
+                "proxy_auth_metadata": {"control_plane": "mw", "mw_host_id": "worker-a", "mw_lane_id": "gpu"},
                 "current_model_name": "Qwen3.5-9B-Q4_K_M.gguf",
                 "current_model_tags": [],
                 "current_model_max_ctx": 8192,
@@ -114,7 +114,7 @@ class PinWorkerPlacementTests(unittest.TestCase):
 
         state_rows = [
             {
-                "host_id": "static-deskix",
+                "host_id": "worker-a",
                 "lane_id": "gpu",
                 "last_heartbeat_at": datetime.now(tz=timezone.utc),
                 "actual_state": "running",
@@ -157,17 +157,17 @@ class PinWorkerPlacementTests(unittest.TestCase):
         ):
             choice = router_module.pick_lane_for_model(
                 model="qwen3.5-9b",
-                pin_worker="Static-Deskix",
+                pin_worker="Worker-A",
             )
-        self.assertEqual(choice.worker_id, "Static-Deskix")
+        self.assertEqual(choice.worker_id, "Worker-A")
         self.assertEqual(choice.lane_id, "lane-mw")
 
     def test_pin_worker_treats_exact_artifact_request_as_loaded_when_alias_matches(self) -> None:
         rows = [
             {
                 "lane_id": "lane-cpu",
-                "host_name": "pupix1",
-                "base_url": "http://10.0.0.95:11435",
+                "host_name": "worker-c",
+                "base_url": "http://worker-c.example:11435",
                 "lane_type": "cpu",
                 "backend_type": "llama",
                 "status": "ready",
@@ -181,11 +181,11 @@ class PinWorkerPlacementTests(unittest.TestCase):
         with mock.patch.object(router_module, "db", _Db()), mock.patch.object(router_module, "q", return_value=rows):
             choice = router_module.pick_lane_for_model(
                 model="Qwen3.5-4B-Q4_K_M.gguf",
-                pin_worker="pupix1",
+                pin_worker="worker-c",
                 pin_lane_type="cpu",
             )
 
-        self.assertEqual(choice.worker_id, "pupix1")
+        self.assertEqual(choice.worker_id, "worker-c")
         self.assertEqual(choice.lane_id, "lane-cpu")
         self.assertEqual(choice.current_model_name, "qwen3.5-4b")
         self.assertEqual(choice.resolved_model_name, "qwen3.5-4b")
@@ -193,14 +193,14 @@ class PinWorkerPlacementTests(unittest.TestCase):
     def test_path_model_request_does_not_match_generic_family_alias(self) -> None:
         self.assertFalse(
             router_module._model_matches_request(  # type: ignore[attr-defined]
-                "/Users/kasunami/models/Qwen3.5-9B-MLX-4bit",
+                "/models/Qwen3.5-9B-MLX-4bit",
                 "qwen3.5-9b",
             )
         )
         self.assertTrue(
             router_module._model_matches_request(  # type: ignore[attr-defined]
-                "/Users/kasunami/models/Qwen3.5-9B-MLX-4bit",
-                "/Users/kasunami/models/Qwen3.5-9B-MLX-4bit",
+                "/models/Qwen3.5-9B-MLX-4bit",
+                "/models/Qwen3.5-9B-MLX-4bit",
             )
         )
 
@@ -216,8 +216,8 @@ class PinWorkerPlacementTests(unittest.TestCase):
         rows = [
             {
                 "lane_id": "lane-cpu",
-                "host_name": "Static-Deskix",
-                "base_url": "http://10.0.0.99:11435",
+                "host_name": "Worker-A",
+                "base_url": "http://worker-a.example:11435",
                 "lane_type": "cpu",
                 "backend_type": "bitnet",
                 "status": "ready",
@@ -231,11 +231,11 @@ class PinWorkerPlacementTests(unittest.TestCase):
         with mock.patch.object(router_module, "db", _Db()), mock.patch.object(router_module, "q", return_value=rows):
             choice = router_module.pick_lane_for_model(
                 model="Falcon3-10B-Instruct-1.58bit",
-                pin_worker="Static-Deskix",
+                pin_worker="Worker-A",
                 pin_lane_type="cpu",
             )
 
-        self.assertEqual(choice.worker_id, "Static-Deskix")
+        self.assertEqual(choice.worker_id, "Worker-A")
         self.assertEqual(choice.lane_id, "lane-cpu")
         self.assertEqual(choice.current_model_name, "falcon3-10b")
 
@@ -243,8 +243,8 @@ class PinWorkerPlacementTests(unittest.TestCase):
         rows = [
             {
                 "lane_id": "lane-cpu",
-                "host_name": "Static-Mobile-2",
-                "base_url": "http://100.109.112.68:21435",
+                "host_name": "Worker-B",
+                "base_url": "http://worker-b.example:21435",
                 "lane_type": "cpu",
                 "backend_type": "llama",
                 "status": "ready",
@@ -258,11 +258,11 @@ class PinWorkerPlacementTests(unittest.TestCase):
         with mock.patch.object(router_module, "db", _Db()), mock.patch.object(router_module, "q", return_value=rows):
             choice = router_module.pick_lane_for_model(
                 model="google_gemma-4-26B-A4B-it-Q4_K_M.gguf",
-                pin_worker="Static-Mobile-2",
+                pin_worker="Worker-B",
                 pin_lane_type="cpu",
             )
 
-        self.assertEqual(choice.worker_id, "Static-Mobile-2")
+        self.assertEqual(choice.worker_id, "Worker-B")
         self.assertEqual(choice.lane_id, "lane-cpu")
         self.assertEqual(choice.current_model_name, "gemma-4-26B-A4B-it-Q4_K_M.gguf")
         self.assertEqual(choice.resolved_model_name, "gemma-4-26B-A4B-it-Q4_K_M.gguf")
@@ -270,9 +270,9 @@ class PinWorkerPlacementTests(unittest.TestCase):
     def test_route_denied_hosts_excludes_ready_lane_from_normal_placement(self) -> None:
         rows = [
             {
-                "lane_id": "lane-mobile2",
-                "host_name": "Static-Mobile-2",
-                "base_url": "http://10.0.0.132:21435",
+                "lane_id": "lane-worker-b",
+                "host_name": "Worker-B",
+                "base_url": "http://worker-b.example:21435",
                 "lane_type": "gpu",
                 "backend_type": "llama",
                 "status": "ready",
@@ -284,9 +284,9 @@ class PinWorkerPlacementTests(unittest.TestCase):
                 "remote_viable_models": [],
             },
             {
-                "lane_id": "lane-deskix",
-                "host_name": "Static-Deskix",
-                "base_url": "http://10.0.0.99:21434",
+                "lane_id": "lane-worker-a",
+                "host_name": "Worker-A",
+                "base_url": "http://worker-a.example:21434",
                 "lane_type": "gpu",
                 "backend_type": "llama",
                 "status": "ready",
@@ -302,19 +302,19 @@ class PinWorkerPlacementTests(unittest.TestCase):
         with (
             mock.patch.object(router_module, "db", _Db()),
             mock.patch.object(router_module, "q", return_value=rows),
-            mock.patch.object(router_module.settings, "route_denied_hosts", "Static-Mobile-2"),
+            mock.patch.object(router_module.settings, "route_denied_hosts", "Worker-B"),
         ):
             choice = router_module.pick_lane_for_model(model="qwen3.5-9b")
 
-        self.assertEqual(choice.worker_id, "Static-Deskix")
-        self.assertEqual(choice.lane_id, "lane-deskix")
+        self.assertEqual(choice.worker_id, "Worker-A")
+        self.assertEqual(choice.lane_id, "lane-worker-a")
 
     def test_route_allowed_hosts_fail_closed_when_only_excluded_lane_matches(self) -> None:
         rows = [
             {
-                "lane_id": "lane-mobile2",
-                "host_name": "Static-Mobile-2",
-                "base_url": "http://10.0.0.132:21435",
+                "lane_id": "lane-worker-b",
+                "host_name": "Worker-B",
+                "base_url": "http://worker-b.example:21435",
                 "lane_type": "gpu",
                 "backend_type": "llama",
                 "status": "ready",
@@ -330,7 +330,7 @@ class PinWorkerPlacementTests(unittest.TestCase):
         with (
             mock.patch.object(router_module, "db", _Db()),
             mock.patch.object(router_module, "q", return_value=rows),
-            mock.patch.object(router_module.settings, "route_allowed_hosts", "Static-Deskix,static-mobilix,pupix1"),
+            mock.patch.object(router_module.settings, "route_allowed_hosts", "Worker-A,worker-f,worker-c"),
         ):
             with self.assertRaisesRegex(RuntimeError, "no READY lanes available"):
                 router_module.pick_lane_for_model(model="qwen3.5-9b")
@@ -340,12 +340,12 @@ class PinWorkerPlacementTests(unittest.TestCase):
             {
                 "lane_id": "lane-combined",
                 "lane_name": "combined",
-                "host_name": "pupix1",
-                "base_url": "http://10.0.0.95:11436",
+                "host_name": "worker-c",
+                "base_url": "http://worker-c.example:11436",
                 "lane_type": "other",
                 "backend_type": "llama",
                 "status": "suspended",
-                "proxy_auth_metadata": {"control_plane": "mw", "mw_host_id": "pupix1", "mw_lane_id": "combined"},
+                "proxy_auth_metadata": {"control_plane": "mw", "mw_host_id": "worker-c", "mw_lane_id": "combined"},
                 "current_model_name": "gemma-4-26B-A4B-it-Q4_K_M",
                 "current_model_tags": [],
                 "current_model_max_ctx": None,
@@ -354,7 +354,7 @@ class PinWorkerPlacementTests(unittest.TestCase):
 
         state_rows = [
             {
-                "host_id": "pupix1",
+                "host_id": "worker-c",
                 "lane_id": "combined",
                 "last_heartbeat_at": datetime.now(tz=timezone.utc),
                 "actual_state": "running",
@@ -399,26 +399,26 @@ class PinWorkerPlacementTests(unittest.TestCase):
         ):
             choice = router_module.pick_lane_for_model(
                 model="Qwen3.5-27B-Q4_K_M",
-                pin_worker="pupix1",
-                pin_base_url="http://10.0.0.95:21436",
+                pin_worker="worker-c",
+                pin_base_url="http://worker-c.example:21436",
                 pin_lane_type="other",
             )
 
-        self.assertEqual(choice.worker_id, "pupix1")
+        self.assertEqual(choice.worker_id, "worker-c")
         self.assertEqual(choice.lane_id, "lane-combined")
-        self.assertEqual(choice.base_url, "http://10.0.0.95:21436")
+        self.assertEqual(choice.base_url, "http://worker-c.example:21436")
         self.assertEqual(choice.current_model_name, "Qwen3.5-27B-Q4_K_M")
 
     def test_pin_worker_rejects_mw_lane_when_state_db_unavailable(self) -> None:
         rows = [
             {
                 "lane_id": "lane-mw",
-                "host_name": "Static-Deskix",
-                "base_url": "http://10.0.0.99:11434",
+                "host_name": "Worker-A",
+                "base_url": "http://worker-a.example:11434",
                 "lane_type": "gpu",
                 "backend_type": "llama",
                 "status": "offline",
-                "proxy_auth_metadata": {"control_plane": "mw", "mw_host_id": "static-deskix", "mw_lane_id": "gpu"},
+                "proxy_auth_metadata": {"control_plane": "mw", "mw_host_id": "worker-a", "mw_lane_id": "gpu"},
                 "current_model_name": "Qwen3.5-9B-Q4_K_M.gguf",
                 "current_model_tags": [],
                 "current_model_max_ctx": 8192,
@@ -437,7 +437,7 @@ class PinWorkerPlacementTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "no READY lanes"):
                 router_module.pick_lane_for_model(
                     model="qwen3.5-9b",
-                    pin_worker="Static-Deskix",
+                    pin_worker="Worker-A",
                 )
 
 

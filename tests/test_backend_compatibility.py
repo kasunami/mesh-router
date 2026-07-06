@@ -36,7 +36,7 @@ class BackendCompatibilityTests(unittest.TestCase):
 
     def test_standard_quantized_mlx_model_is_not_misclassified_as_bitnet(self) -> None:
         reason = app_module._backend_compatibility_reason(  # type: ignore[attr-defined]
-            model_name="/Users/kasunami/models/Qwen3.5-9B-6bit",
+            model_name="/models/Qwen3.5-9B-6bit",
             tags=["qwen3.5:9b"],
             backend_type="llama",
             lane_type="mlx",
@@ -88,22 +88,22 @@ class BackendCompatibilityTests(unittest.TestCase):
     def test_path_matches_local_model_root_accepts_model_dir_and_children(self) -> None:
         self.assertTrue(
             app_module._path_matches_local_model_root(  # type: ignore[attr-defined]
-                artifact_path="/Users/kasunami/models/Qwen3.5-9B-6bit",
-                local_model_root="/Users/kasunami/models",
+                artifact_path="/models/Qwen3.5-9B-6bit",
+                local_model_root="/models",
             )
         )
         self.assertTrue(
             app_module._path_matches_local_model_root(  # type: ignore[attr-defined]
-                artifact_path="/Users/kasunami/models/Qwen3.5-9B-6bit/config.json",
-                local_model_root="/Users/kasunami/models",
+                artifact_path="/models/Qwen3.5-9B-6bit/config.json",
+                local_model_root="/models",
             )
         )
 
     def test_path_matches_local_model_root_rejects_other_local_roots(self) -> None:
         self.assertFalse(
             app_module._path_matches_local_model_root(  # type: ignore[attr-defined]
-                artifact_path="/Users/kasunami/mlx-model-bank/blobs/abcdef",
-                local_model_root="/Users/kasunami/models",
+                artifact_path="/model-bank/blobs/abcdef",
+                local_model_root="/models",
             )
         )
 
@@ -117,11 +117,11 @@ class BackendCompatibilityTests(unittest.TestCase):
         app_module._prune_lane_model_viability_outside_local_root(  # type: ignore[attr-defined]
             _FakeCursor(),
             lane_id="lane-mlx",
-            local_model_root="/Users/kasunami/models",
+            local_model_root="/models",
         )
         self.assertEqual(len(calls), 1)
         _sql, params = calls[0]
-        self.assertEqual(params, ("lane-mlx", "/Users/kasunami/models", "/Users/kasunami/models/%"))
+        self.assertEqual(params, ("lane-mlx", "/models", "/models/%"))
 
     def test_resolve_downstream_model_for_lane_prefers_alias_for_current_model(self) -> None:
         class _FakeCursor:
@@ -141,7 +141,7 @@ class BackendCompatibilityTests(unittest.TestCase):
         with mock.patch.object(
             app_module,
             "_resolve_lane_downstream_alias",
-            side_effect=lambda cur, *, lane_id, model_id: "/Users/kasunami/models/Qwen3.5-9B-6bit",
+            side_effect=lambda cur, *, lane_id, model_id: "/models/Qwen3.5-9B-6bit",
         ):
             result = app_module._resolve_downstream_model_for_lane(  # type: ignore[attr-defined]
                 _FakeCursor(),
@@ -149,7 +149,7 @@ class BackendCompatibilityTests(unittest.TestCase):
                 requested_model_name="Qwen3.5-9B-6bit",
                 model_id="model-1",
             )
-        self.assertEqual(result, "/Users/kasunami/models/Qwen3.5-9B-6bit")
+        self.assertEqual(result, "/models/Qwen3.5-9B-6bit")
 
     def test_resolve_downstream_model_for_lane_uses_alias_for_non_current_model(self) -> None:
         class _FakeCursor:
@@ -167,7 +167,7 @@ class BackendCompatibilityTests(unittest.TestCase):
         with mock.patch.object(
             app_module,
             "_resolve_lane_downstream_alias",
-            side_effect=lambda cur, *, lane_id, model_id: "/Users/kasunami/models/Qwen3.5-4B-MLX-4bit",
+            side_effect=lambda cur, *, lane_id, model_id: "/models/Qwen3.5-4B-MLX-4bit",
         ):
             result = app_module._resolve_downstream_model_for_lane(  # type: ignore[attr-defined]
                 _FakeCursor(),
@@ -175,18 +175,18 @@ class BackendCompatibilityTests(unittest.TestCase):
                 requested_model_name="Qwen3.5-4B-MLX-4bit",
                 model_id="model-2",
             )
-        self.assertEqual(result, "/Users/kasunami/models/Qwen3.5-4B-MLX-4bit")
+        self.assertEqual(result, "/models/Qwen3.5-4B-MLX-4bit")
 
     def test_path_request_does_not_resolve_through_generic_qwen_alias(self) -> None:
         self.assertFalse(
             app_module._model_request_matches_candidate(  # type: ignore[attr-defined]
-                "/Users/kasunami/models/Qwen3.5-9B-MLX-4bit",
+                "/models/Qwen3.5-9B-MLX-4bit",
                 "qwen3.5-9b",
             )
         )
         self.assertTrue(
             app_module._model_request_matches_candidate(  # type: ignore[attr-defined]
-                "/Users/kasunami/models/Qwen3.5-9B-MLX-4bit",
+                "/models/Qwen3.5-9B-MLX-4bit",
                 "Qwen3.5-9B-MLX-4bit",
             )
         )
@@ -195,7 +195,7 @@ class BackendCompatibilityTests(unittest.TestCase):
         self.assertTrue(
             app_module._lane_already_serves_model_request(  # type: ignore[attr-defined]
                 requested_model_name="qwen3.5-4b",
-                downstream_model_name="/home/kasunami/models/Qwen3.5-4B-Q4_K_M.gguf",
+                downstream_model_name="/models/Qwen3.5-4B-Q4_K_M.gguf",
                 current_model_name="qwen3.5-4b",
             )
         )
@@ -203,8 +203,8 @@ class BackendCompatibilityTests(unittest.TestCase):
     def test_loaded_generic_model_does_not_satisfy_explicit_path_request(self) -> None:
         self.assertFalse(
             app_module._lane_already_serves_model_request(  # type: ignore[attr-defined]
-                requested_model_name="/Users/kasunami/models/Qwen3.5-9B-MLX-4bit",
-                downstream_model_name="/Users/kasunami/models/Qwen3.5-9B-MLX-4bit",
+                requested_model_name="/models/Qwen3.5-9B-MLX-4bit",
+                downstream_model_name="/models/Qwen3.5-9B-MLX-4bit",
                 current_model_name="qwen3.5-9b",
             )
         )
@@ -217,9 +217,9 @@ class BackendCompatibilityTests(unittest.TestCase):
             "backend_type": "llama",
             "current_model_name": "LFM2.5-350M-Q4_K_M.gguf",
             "desired_model_name": None,
-            "proxy_auth_metadata": {"control_plane": "mw", "mw_host_id": "static-deskix", "mw_lane_id": "cpu"},
+            "proxy_auth_metadata": {"control_plane": "mw", "mw_host_id": "worker-a", "mw_lane_id": "cpu"},
         }
-        host_row = {"host_name": "Static-Deskix"}
+        host_row = {"host_name": "Worker-A"}
         with mock.patch.object(
             app_module,
             "apply_mw_effective_status",
@@ -237,7 +237,7 @@ class BackendCompatibilityTests(unittest.TestCase):
                 lane_row=lane_row,
                 host_row=host_row,
             )
-        self.assertEqual(result["host_name"], "Static-Deskix")
+        self.assertEqual(result["host_name"], "Worker-A")
         self.assertEqual(result["backend_type"], "bitnet")
         self.assertEqual(result["current_model_name"], "falcon3-10b")
         self.assertEqual(result["desired_model_name"], "falcon3-10b")
@@ -254,7 +254,7 @@ class BackendCompatibilityTests(unittest.TestCase):
 
             def fetchone(self):  # noqa: ANN001
                 if "FROM hosts WHERE host_id" in self._last_sql:
-                    return {"host_id": "host-1", "host_name": "Static-Deskix", "local_model_root": "/home/kasunami/models"}
+                    return {"host_id": "host-1", "host_name": "Worker-A", "local_model_root": "/models"}
                 if "SELECT p.max_ctx" in self._last_sql:
                     return {"max_ctx": 32768}
                 return None
@@ -265,10 +265,10 @@ class BackendCompatibilityTests(unittest.TestCase):
                         {
                             "artifact_id": "artifact-1",
                             "host_id": "host-1",
-                            "host_name": "Static-Deskix",
+                            "host_name": "Worker-A",
                             "storage_scope": "host",
                             "storage_provider": "local",
-                            "local_path": "/home/kasunami/models/LFM2.5-350M-Q4_K_M.gguf",
+                            "local_path": "/models/LFM2.5-350M-Q4_K_M.gguf",
                             "size_bytes": 267060512,
                             "present": True,
                             "model_id": "model-1",
@@ -291,9 +291,9 @@ class BackendCompatibilityTests(unittest.TestCase):
                 "lane_name": "cpu",
                 "lane_type": "cpu",
                 "backend_type": "llama",
-                "base_url": "http://10.0.0.99:11435",
+                "base_url": "http://worker-a.example:11435",
                 "current_model_name": "LFM2.5-350M-Q4_K_M.gguf",
-                "proxy_auth_metadata": {"control_plane": "mw", "mw_host_id": "static-deskix", "mw_lane_id": "cpu"},
+                "proxy_auth_metadata": {"control_plane": "mw", "mw_host_id": "worker-a", "mw_lane_id": "cpu"},
                 "usable_memory_bytes": 12884901888,
                 "ram_budget_bytes": 12884901888,
                 "runtime_overhead_bytes": 0,
@@ -306,7 +306,7 @@ class BackendCompatibilityTests(unittest.TestCase):
         ), mock.patch.object(
             app_module,
             "_resolve_host",
-            return_value={"host_id": "host-1", "host_name": "Static-Deskix", "ram_ai_budget_bytes": 12884901888, "local_model_root": "/home/kasunami/models"},
+            return_value={"host_id": "host-1", "host_name": "Worker-A", "ram_ai_budget_bytes": 12884901888, "local_model_root": "/models"},
         ), mock.patch.object(
             app_module,
             "_mw_effective_lane_row_for_capabilities",
@@ -329,7 +329,7 @@ class BackendCompatibilityTests(unittest.TestCase):
         ), mock.patch.object(
             app_module,
             "_local_model_root",
-            return_value="/home/kasunami/models",
+            return_value="/models",
         ), mock.patch.object(
             app_module,
             "_prune_lane_model_viability_outside_local_root",
