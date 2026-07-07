@@ -24,10 +24,16 @@ if ((${#files[@]} > 0)); then
     echo "public_hygiene: found private identifiers in public file paths" >&2
     failed=1
   fi
-  if grep -niE -- "${pattern}" "${files[@]}"; then
-    echo "public_hygiene: found private identifiers in public file contents" >&2
-    failed=1
-  fi
+  # The canonical public repository URL is valid package metadata. Replace
+  # that exact prefix before scanning so other occurrences of the owner name
+  # remain prohibited.
+  for path in "${files[@]}"; do
+    if sed 's#https://github.com/kasunami/mesh-router#https://github.com/OWNER/mesh-router#g' "${path}" |
+      grep -niE -- "${pattern}" | sed "s#^#${path}:#"; then
+      echo "public_hygiene: found private identifiers in public file contents" >&2
+      failed=1
+    fi
+  done
   ((failed == 0)) || exit 1
 fi
 

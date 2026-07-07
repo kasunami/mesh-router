@@ -1,0 +1,136 @@
+syntax = "proto3";
+
+package meshworker.v1;
+
+message RequestMeta {
+  string request_id = 1;
+  string host_id = 2;
+  string lane_id = 3;
+  string profile_id = 4;
+  string route_type = 5;
+  int64 issued_at_unix_ms = 6;
+  int64 deadline_unix_ms = 7;
+  map<string, string> tags = 8;
+}
+
+message ChatMessage {
+  string role = 1;
+  string content = 2;
+}
+
+message TokenUsage {
+  int32 prompt_tokens = 1;
+  int32 completion_tokens = 2;
+  int32 total_tokens = 3;
+}
+
+message ChatRequest {
+  RequestMeta meta = 1;
+  string model = 2;
+  repeated ChatMessage messages = 3;
+  double temperature = 4;
+  int32 max_tokens = 5;
+  bool stream = 6;
+  map<string, string> options = 7;
+}
+
+message ChatStreamEvent {
+  RequestMeta meta = 1;
+  string event_type = 2;
+  int32 sequence = 3;
+  string text_delta = 4;
+  string finish_reason = 5;
+  string error_code = 6;
+  string error_message = 7;
+  TokenUsage usage = 8;
+  bytes raw_backend_payload = 9;
+}
+
+message EmbeddingsRequest {
+  RequestMeta meta = 1;
+  string model = 2;
+  repeated string input = 3;
+  map<string, string> options = 4;
+}
+
+message EmbeddingVector {
+  repeated float values = 1;
+}
+
+message EmbeddingsResponse {
+  RequestMeta meta = 1;
+  repeated EmbeddingVector vectors = 2;
+  TokenUsage usage = 3;
+  string error_code = 4;
+  string error_message = 5;
+}
+
+message ImageRequest {
+  RequestMeta meta = 1;
+  string model = 2;
+  string prompt = 3;
+  string negative_prompt = 4;
+  int32 width = 5;
+  int32 height = 6;
+  int32 steps = 7;
+  map<string, string> options = 8;
+}
+
+message ImageStreamEvent {
+  RequestMeta meta = 1;
+  string event_type = 2;
+  int32 sequence = 3;
+  int32 progress_percent = 4;
+  bytes image_bytes = 5;
+  string image_mime_type = 6;
+  string artifact_ref = 7;
+  string error_code = 8;
+  string error_message = 9;
+}
+
+message CancelRequest {
+  string request_id = 1;
+  string host_id = 2;
+  string reason = 3;
+}
+
+message CancelResponse {
+  string request_id = 1;
+  string host_id = 2;
+  bool ok = 3;
+  string message = 4;
+}
+
+message RuntimeStatusRequest {
+  string host_id = 1;
+}
+
+message ServiceState {
+  string service_id = 1;
+  string desired_state = 2;
+  string actual_state = 3;
+  string health_status = 4;
+}
+
+message LaneState {
+  string lane_id = 1;
+  string desired_model = 2;
+  string actual_model = 3;
+  string actual_state = 4;
+  string health_status = 5;
+}
+
+message RuntimeStatusResponse {
+  string host_id = 1;
+  string actual_profile = 2;
+  repeated ServiceState service_states = 3;
+  repeated LaneState lane_states = 4;
+}
+
+service MeshWorkerInference {
+  rpc StreamChat(ChatRequest) returns (stream ChatStreamEvent);
+  rpc RunEmbeddings(EmbeddingsRequest) returns (EmbeddingsResponse);
+  rpc RunImage(ImageRequest) returns (stream ImageStreamEvent);
+  rpc CancelActiveRequest(CancelRequest) returns (CancelResponse);
+  rpc GetRuntimeStatus(RuntimeStatusRequest) returns (RuntimeStatusResponse);
+}
