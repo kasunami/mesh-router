@@ -15,6 +15,18 @@ This repository is a public code sample from a working lab environment. It
 demonstrates production-minded operating patterns, but it is not presented as a
 polished commercial product or a turnkey platform.
 
+## Evaluator quick tour
+
+- Start with this `README.md` for scope, capabilities, and the runnable
+  evaluator path.
+- Read [`ARCHITECTURE.md`](ARCHITECTURE.md) for request flow, state ownership,
+  trust boundaries, and failure behavior.
+- Review [`examples/`](examples/) for sanitized requests and response metadata.
+- Inspect [`tests/`](tests/) for routing, readiness, integration, and failure
+  coverage.
+- Check [`.github/workflows/ci.yml`](.github/workflows/ci.yml) for the automated
+  verification path and [`CHANGELOG.md`](CHANGELOG.md) for the public baseline.
+
 ## What this demonstrates
 
 - **Model-agnostic orchestration:** route work across local, cloud, CPU, GPU,

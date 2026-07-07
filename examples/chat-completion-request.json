@@ -1,0 +1,16 @@
+{
+  "model": "llama-3.1-8b-instruct",
+  "messages": [
+    {
+      "role": "system",
+      "content": "Answer with a concise operational summary."
+    },
+    {
+      "role": "user",
+      "content": "Summarize the deployment check results."
+    }
+  ],
+  "temperature": 0.2,
+  "max_tokens": 256,
+  "stream": false
+}

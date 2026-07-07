@@ -1,0 +1,28 @@
+HTTP/1.1 200 OK
+content-type: application/json
+x-mesh-request-id: req-example-001
+x-mesh-worker-id: worker-gpu-01
+x-mesh-lane-id: lane-gpu-a
+x-mesh-model-name: llama-3.1-8b-instruct
+
+{
+  "id": "chatcmpl-example-001",
+  "object": "chat.completion",
+  "created": 1710000000,
+  "model": "llama-3.1-8b-instruct",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "All deployment checks passed."
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 18,
+    "completion_tokens": 5,
+    "total_tokens": 23
+  }
+}

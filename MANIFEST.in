@@ -1,6 +1,8 @@
 include ARCHITECTURE.md
+include CHANGELOG.md
 include CONTRIBUTING.md
 include SECURITY.md
+recursive-include examples *.json *.md *.txt
 recursive-include proto *.proto
 recursive-include scripts *.py *.sh
 recursive-include sql *.sql
