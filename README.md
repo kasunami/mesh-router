@@ -214,6 +214,16 @@ The example configuration and Kubernetes manifests contain placeholders only.
 Database migrations and shared-cluster changes should be applied through the
 operator's normal review and coordination process.
 
+Inspect the currently configured hosts, lanes, and model artifacts without
+starting the service:
+
+```bash
+python scripts/get_lane_info.py
+```
+
+The script reads `MESH_ROUTER_DATABASE_URL`, writes JSON to standard output,
+and returns a nonzero exit status when the database query fails.
+
 ## Build
 
 Build a container image with an explicit tag:
@@ -221,6 +231,10 @@ Build a container image with an explicit tag:
 ```bash
 scripts/build_image.sh <tag>
 ```
+
+Contributor setup, protobuf regeneration, package builds, and validation are
+documented in `CONTRIBUTING.md`. The system boundaries and failure model are
+documented in `ARCHITECTURE.md`.
 
 ## Safety and public hygiene
 

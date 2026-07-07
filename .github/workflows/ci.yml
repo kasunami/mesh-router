@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v8.3.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install locked dependencies
+        run: uv sync --python 3.11 --locked --dev
+
+      - name: Verify generated protobuf modules
+        run: |
+          uv run --no-sync scripts/generate_proto.sh
+          git diff --exit-code -- mesh_router/generated
+
+      - name: Run tests
+        run: uv run --no-sync python -m pytest
+
+      - name: Run public hygiene gate
+        run: scripts/check_public_hygiene.sh
+
+      - name: Build wheel and source distribution
+        run: uv run --no-sync python -m build
+
+      - name: Test isolated wheel install
+        run: |
+          python -m venv /tmp/mesh-router-wheel
+          /tmp/mesh-router-wheel/bin/python -m pip install --upgrade pip
+          /tmp/mesh-router-wheel/bin/python -m pip install dist/*.whl
+          cd /tmp
+          /tmp/mesh-router-wheel/bin/python -c \
+            "from importlib.metadata import metadata; from mesh_router.db import _migration_directory; from mesh_router.generated import meshworker_pb2, meshworker_pb2_grpc; assert metadata('mesh-router')['License-Expression'] == 'Apache-2.0'; assert meshworker_pb2.DESCRIPTOR.package == 'meshworker.v1'; assert meshworker_pb2_grpc.MeshWorkerInferenceStub; assert list(_migration_directory().glob('*.sql'))"
+
+      - name: Build container image
+        run: docker build --tag mesh-router:ci .

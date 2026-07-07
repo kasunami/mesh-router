@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import sysconfig
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -38,7 +39,7 @@ def init_db() -> None:
 
 
 def _apply_migrations(target_db: Db, label: str) -> None:
-    sql_dir = Path(__file__).resolve().parent.parent / "sql"
+    sql_dir = _migration_directory()
     if not sql_dir.exists() or not sql_dir.is_dir():
         logger.info("SQL directory not found at %s, skipping %s migrations", sql_dir, label)
         return
@@ -56,6 +57,18 @@ def _apply_migrations(target_db: Db, label: str) -> None:
                 logger.error("Failed to execute %s on %s: %s", sql_file.name, label, e)
                 raise
         conn.commit()
+
+
+def _migration_directory() -> Path:
+    """Find migrations in a source checkout or an installed distribution."""
+    candidates = (
+        Path(__file__).resolve().parent.parent / "sql",
+        Path(sysconfig.get_path("data")) / "share" / "mesh-router" / "sql",
+    )
+    for candidate in candidates:
+        if candidate.is_dir():
+            return candidate
+    return candidates[0]
 
 
 def q1(cur: psycopg.Cursor, sql: str, params: tuple[Any, ...] = ()) -> dict[str, Any] | None:

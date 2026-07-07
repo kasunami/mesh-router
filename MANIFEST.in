@@ -1,0 +1,6 @@
+include ARCHITECTURE.md
+include CONTRIBUTING.md
+include SECURITY.md
+recursive-include proto *.proto
+recursive-include scripts *.py *.sh
+recursive-include sql *.sql
