@@ -5,16 +5,13 @@ Versioning for published version identifiers.
 
 ## Unreleased
 
+## 0.1.0 - 2026-07-07
+
 ### Added
 
 - Sanitized evaluator examples for chat completion, exact-lane placement,
   resolved-route metadata, and fail-closed placement behavior.
 - An evaluator quick tour linking the primary public-reference materials.
-
-## 0.1.0 - 2026-07-07
-
-### Added
-
 - OpenAI-compatible chat completion, embedding, and image-generation routing.
 - Worker, lane-type, and fail-closed exact-lane routing controls.
 - MeshWorker Kafka control-plane and gRPC data-plane integration.
