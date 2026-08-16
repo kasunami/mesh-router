@@ -40,12 +40,18 @@ def _probe_lane_health(base_url: str) -> tuple[bool, int | None, float, str | No
         return False, None, latency_ms, str(e)
 
 
-def _probe_cloud_lane(base_url: str, api_key: str) -> tuple[bool, int | None, float, str | None]:
-    """Probe a cloud provider lane: authenticated GET /models.
+def _probe_cloud_lane(base_url: str, api_key: str, probe_path: str | None = None) -> tuple[bool, int | None, float, str | None]:
+    """Probe a cloud provider lane: authenticated GET of the models listing.
+
+    probe_path overrides the default '/models' suffix (proxy_auth_metadata.probe_path),
+    e.g. providers that only serve /v1/models.
 
     Returns (ok, status_code, latency_ms, error_msg)
     """
-    url = f"{base_url.rstrip('/')}/models"
+    path = (probe_path or "/models").strip()
+    if not path.startswith("/"):
+        path = "/" + path
+    url = f"{base_url.rstrip('/')}{path}"
     start = time.perf_counter()
     try:
         with httpx.Client(timeout=8.0) as c:
@@ -184,7 +190,8 @@ def probe_once() -> None:
                     if not api_key:
                         ok, code, latency, err = False, None, 0.0, f"missing env {env_name or '(unset)'}"
                     else:
-                        ok, code, latency, err = _probe_cloud_lane(base_url, api_key)
+                        probe_path = str(pam.get("probe_path") or "").strip() or None
+                        ok, code, latency, err = _probe_cloud_lane(base_url, api_key, probe_path)
                 else:
                     ok, code, latency, err = _probe_lane_health(base_url)
                 

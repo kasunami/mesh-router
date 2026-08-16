@@ -26,19 +26,19 @@ FROM (VALUES
     '{"cloud": true, "api_key_env": "MESH_ROUTER_CLOUD_KEY_DEEPSEEK", "declared_models": ["deepseek-v4-pro"], "declared_model_tags": {"deepseek-v4-pro": ["cloud", "deepseek", "chat"]}}'
   ),
   (
-    'cloud-deepseek', 'cloud-deepseek-flash', 'https://api.deepseek.com/v1',
+    'cloud-deepseek', 'cloud-deepseek-flash', 'https://api.deepseek.com/',
     'deepseek-v4-flash',
     '{"cloud": true, "api_key_env": "MESH_ROUTER_CLOUD_KEY_DEEPSEEK", "declared_models": ["deepseek-v4-flash"], "declared_model_tags": {"deepseek-v4-flash": ["cloud", "deepseek", "chat"]}}'
   ),
   (
-    'cloud-openai', 'cloud-codex', 'https://api.openai.com/v1',
+    'cloud-openai', 'cloud-codex', 'https://api.openai.com/',
     'gpt-5.6-terra',
-    '{"cloud": true, "api_key_env": "MESH_ROUTER_CLOUD_KEY_OPENAI", "declared_models": ["gpt-5.6-terra"], "declared_model_tags": {"gpt-5.6-terra": ["cloud", "openai", "chat", "codex"]}}'
+    '{"cloud": true, "api_key_env": "MESH_ROUTER_CLOUD_KEY_OPENAI", "probe_path": "/v1/models", "declared_models": ["gpt-5.6-terra"], "declared_model_tags": {"gpt-5.6-terra": ["cloud", "openai", "chat", "codex"]}}'
   ),
   (
-    'cloud-anthropic', 'cloud-claude', 'https://api.anthropic.com/v1',
+    'cloud-anthropic', 'cloud-claude', 'https://api.anthropic.com/',
     'claude-sonnet-4-6',
-    '{"cloud": true, "api_key_env": "MESH_ROUTER_CLOUD_KEY_ANTHROPIC", "declared_models": ["claude-opus-4-7", "claude-sonnet-4-6", "claude-haiku-4-5-20251001"], "declared_model_tags": {"claude-opus-4-7": ["cloud", "anthropic", "chat"], "claude-sonnet-4-6": ["cloud", "anthropic", "chat"], "claude-haiku-4-5-20251001": ["cloud", "anthropic", "chat"]}}'
+    '{"cloud": true, "api_key_env": "MESH_ROUTER_CLOUD_KEY_ANTHROPIC", "probe_path": "/v1/models", "declared_models": ["claude-opus-4-7", "claude-sonnet-4-6", "claude-haiku-4-5-20251001"], "declared_model_tags": {"claude-opus-4-7": ["cloud", "anthropic", "chat"], "claude-sonnet-4-6": ["cloud", "anthropic", "chat"], "claude-haiku-4-5-20251001": ["cloud", "anthropic", "chat"]}}'
   ),
   (
     'cloud-google', 'cloud-agy', 'https://generativelanguage.googleapis.com/v1beta/openai',
