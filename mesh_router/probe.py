@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import time
 from typing import Any
 
@@ -34,6 +35,26 @@ def _probe_lane_health(base_url: str) -> tuple[bool, int | None, float, str | No
         if r.status_code == 200:
             return True, r.status_code, latency_ms, None
         return False, r.status_code, latency_ms, f"http_{r.status_code}"
+    except Exception as e:
+        latency_ms = (time.perf_counter() - start) * 1000
+        return False, None, latency_ms, str(e)
+
+
+def _probe_cloud_lane(base_url: str, api_key: str) -> tuple[bool, int | None, float, str | None]:
+    """Probe a cloud provider lane: authenticated GET /models.
+
+    Returns (ok, status_code, latency_ms, error_msg)
+    """
+    url = f"{base_url.rstrip('/')}/models"
+    start = time.perf_counter()
+    try:
+        with httpx.Client(timeout=8.0) as c:
+            r = c.get(url, headers={"Authorization": f"Bearer {api_key}"})
+        latency_ms = (time.perf_counter() - start) * 1000
+        if r.status_code == 200:
+            return True, r.status_code, latency_ms, None
+        suffix = "_auth" if r.status_code in (401, 403) else ""
+        return False, r.status_code, latency_ms, f"http_{r.status_code}{suffix}"
     except Exception as e:
         latency_ms = (time.perf_counter() - start) * 1000
         return False, None, latency_ms, str(e)
@@ -154,8 +175,18 @@ def probe_once() -> None:
                 lane_id = lane["lane_id"]
                 host_id = lane["host_id"]
                 base_url = str(lane["base_url"])
-                
-                ok, code, latency, err = _probe_lane_health(base_url)
+                pam = lane.get("proxy_auth_metadata") or {}
+                is_cloud = isinstance(pam, dict) and pam.get("cloud") is True
+
+                if is_cloud:
+                    env_name = str(pam.get("api_key_env") or "").strip()
+                    api_key = os.environ.get(env_name) or "" if env_name else ""
+                    if not api_key:
+                        ok, code, latency, err = False, None, 0.0, f"missing env {env_name or '(unset)'}"
+                    else:
+                        ok, code, latency, err = _probe_cloud_lane(base_url, api_key)
+                else:
+                    ok, code, latency, err = _probe_lane_health(base_url)
                 
                 # Mapping probe results to lane status:
                 # - If probe is successful (HTTP 200 OK), set lane status to 'ready'.
@@ -227,9 +258,8 @@ def probe_once() -> None:
                     )
                     
                     # Also detect currently loaded model
-                    pam = lane.get("proxy_auth_metadata") or {}
                     is_llama_router = isinstance(pam, dict) and pam.get("llama_router") is True
-                    if not is_llama_router:
+                    if not is_cloud and not is_llama_router:
                         loaded_model = _probe_lane_model(base_url)
                         if loaded_model:
                             cur.execute(

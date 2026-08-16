@@ -362,6 +362,35 @@ def _lane_uses_llama_router(*, lane_id: str) -> bool:
     return isinstance(meta, dict) and meta.get("llama_router") is True
 
 
+def _lane_forward_auth_token(*, lane_id: str, client_token: str) -> str:
+    """Bearer token to present when forwarding to a lane.
+
+    Cloud lanes (lanes.proxy_auth_metadata.cloud == true) authenticate to their
+    provider with a key from the env var named by proxy_auth_metadata.api_key_env
+    instead of the client's own bearer token.
+    """
+    if not lane_id:
+        return client_token
+    meta: dict[str, Any] = {}
+    try:
+        with db.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT proxy_auth_metadata FROM lanes WHERE lane_id=%s", (str(lane_id),))
+                row = cur.fetchone() or {}
+                meta = row.get("proxy_auth_metadata") or {}
+    except Exception:
+        return client_token
+    if not isinstance(meta, dict) or meta.get("cloud") is not True:
+        return client_token
+    env_name = str(meta.get("api_key_env") or "").strip()
+    key = os.environ.get(env_name) or "" if env_name else ""
+    if key:
+        return key
+    raise RuntimeError(
+        f"cloud lane {lane_id} has no API key configured (env {env_name or '(unset)'})"
+    )
+
+
 def _startup_seed_vlm() -> None:
     if not settings.vlm_seed_enabled:
         return
@@ -4662,10 +4691,11 @@ def _execute_router_request(
                                 raise RuntimeError(
                                     f"llama router model load failed http_{load_response.status_code}: {load_body}"
                                 )
+                    fwd_token = _lane_forward_auth_token(lane_id=str(lane_id), client_token=token)
                     downstream_response = client.post(
                         f"{choice.base_url.rstrip('/')}{endpoint}",
                         json=request_payload,
-                        headers={"Authorization": f"Bearer {token}"},
+                        headers={"Authorization": f"Bearer {fwd_token}"},
                     )
                     if did_swap and downstream_response.status_code >= 400:
                         logger.warning(
@@ -4678,7 +4708,7 @@ def _execute_router_request(
                         downstream_response = client.post(
                             f"{choice.base_url.rstrip('/')}{endpoint}",
                             json=request_payload,
-                            headers={"Authorization": f"Bearer {token}"},
+                            headers={"Authorization": f"Bearer {fwd_token}"},
                         )
                 downstream_status_code = downstream_response.status_code
                 try:
@@ -5132,12 +5162,13 @@ def _execute_router_request_streaming(
                             pass
                     endpoint = "/v1/chat/completions"
                     request_timeout = float(max(30, settings.default_lease_ttl_seconds))
+                    fwd_token = _lane_forward_auth_token(lane_id=str(lane_id), client_token=token)
                     async with httpx.AsyncClient(timeout=request_timeout) as client:
                         async with client.stream(
                             "POST",
                             f"{choice.base_url.rstrip('/')}{endpoint}",
                             json=request_payload,
-                            headers={"Authorization": f"Bearer {token}"},
+                            headers={"Authorization": f"Bearer {fwd_token}"},
                         ) as downstream:
                             if downstream.status_code >= 400:
                                 body = await downstream.aread()
