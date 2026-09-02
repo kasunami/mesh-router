@@ -892,14 +892,16 @@ def _pick_lane_for_model_single(
             pam = row.get("proxy_auth_metadata") or {}
             if not isinstance(pam, dict) or pam.get("mw_ignore") is not True:
                 return False
-            # llama.cpp router-style lanes are seeded rather than MW-managed, so
-            # keep them eligible when they explicitly declare text worker models.
-            if pam.get("llama_router") is True:
-                tags_by_model = pam.get("declared_model_tags")
-                if isinstance(tags_by_model, dict):
-                    for tags in tags_by_model.values():
-                        if any(str(tag).lower() in {"text", "chat", "worker"} for tag in (tags or [])):
-                            return False
+            # A direct bridge may still be an intentional text-capable worker
+            # (for example a VLM used for FireCalc PDF extraction).  Keep it
+            # eligible whenever its declared model explicitly advertises a
+            # text/chat/worker capability; `llama_router` only changes the
+            # downstream loading protocol, not placement eligibility.
+            tags_by_model = pam.get("declared_model_tags")
+            if isinstance(tags_by_model, dict):
+                for tags in tags_by_model.values():
+                    if any(str(tag).lower() in {"text", "chat", "worker"} for tag in (tags or [])):
+                        return False
             return True
 
         if not requires_multimodal:
