@@ -331,6 +331,11 @@ class RouteResolveRequest(BaseModel):
 
     # Policy gates
     allow_opportunistic: bool = False
+    # Require a lane that declares multimodal support even though route
+    # resolution itself does not carry an image payload. This is useful for a
+    # scheduler that is reserving a lane before it renders and submits PDF
+    # pages to a VLM.
+    requires_multimodal: bool = False
 
 
 class RouteResolveResponse(BaseModel):

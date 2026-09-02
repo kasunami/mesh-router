@@ -2918,6 +2918,7 @@ def api_routes_resolve(req: RouteResolveRequest) -> RouteResolveResponse:
         host_name=req.host_name,
         lane_id=req.lane_id,
         allow_opportunistic=req.allow_opportunistic,
+        requires_multimodal=req.requires_multimodal,
     )
     if not choice:
         return RouteResolveResponse(ok=False, reason=reason, candidates_considered=candidates_considered)

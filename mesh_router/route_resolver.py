@@ -19,7 +19,21 @@ MODEL_SELECTION_TAGS: dict[str, str] = {
     "falcon3:10b": "falcon3:10B",
     "lfm2.5:350m": "lfm2.5:350M",
     "gemma4:26b": "gemma4:26B",
+    # FireCalc requests capabilities, not a particular worker or model. These
+    # tags are assigned to certified concrete models through /api/models/*/tags.
+    # Keep dots in the canonical form so tags are readable in inventory output.
+    "firecalc.pdf.visual": "firecalc.pdf.visual",
+    "firecalc-pdf-visual": "firecalc.pdf.visual",
+    "firecalc.pdf.tables": "firecalc.pdf.tables",
+    "firecalc-pdf-tables": "firecalc.pdf.tables",
 }
+
+FIRECALC_MULTIMODAL_CAPABILITY_TAGS = frozenset(
+    {
+        "firecalc.pdf.visual",
+        "firecalc.pdf.tables",
+    }
+)
 
 
 def _normalize_host_id(host_name: str) -> str:
@@ -82,6 +96,27 @@ def _tag_model_candidates(tags: list[str], *, modality: str) -> list[str]:
     return list(mapping.get(key) or mapping.get(cap) or ["qwen3.5:9B"])
 
 
+def _requires_multimodal_capability(*, model: str | None, tags: list[str], requested: bool) -> bool:
+    """Infer VLM placement for documented FireCalc PDF capability aliases.
+
+    A route-resolution request has no content blocks to inspect. Without this
+    inference the preflight could certify a text-only lane and the subsequent
+    image request would fail after a lease/model load. Explicit `True` remains
+    supported for other multimodal workloads.
+    """
+    if requested:
+        return True
+    values = [str(model or "")] + [str(tag or "") for tag in tags]
+    for value in values:
+        normalized = value.strip().lower().replace("_", "-")
+        if normalized.startswith("model:"):
+            normalized = normalized.split(":", 1)[1].strip()
+        canonical = MODEL_SELECTION_TAGS.get(normalized, normalized)
+        if canonical.lower() in FIRECALC_MULTIMODAL_CAPABILITY_TAGS:
+            return True
+    return False
+
+
 def resolve_route(
     *,
     model: str | None,
@@ -90,10 +125,16 @@ def resolve_route(
     host_name: str | None,
     lane_id: str | None,
     allow_opportunistic: bool,
+    requires_multimodal: bool = False,
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None, str | None, int | None]:
     """
     Returns: (choice_dict, perf_dict, reason, candidates_considered)
     """
+    requires_multimodal = _requires_multimodal_capability(
+        model=model,
+        tags=tags,
+        requested=requires_multimodal,
+    )
     if host_name and lane_id:
         row: dict[str, Any] | None
         with db.connect() as conn:
@@ -119,6 +160,10 @@ def resolve_route(
         effective_status = str(row.get("effective_status") or row.get("status") or "")
         if effective_status != "ready":
             return None, None, "explicit lane is not ready", 1
+        if requires_multimodal:
+            metadata = row.get("proxy_auth_metadata") or {}
+            if not isinstance(metadata, dict) or metadata.get("supports_multimodal") is not True:
+                return None, None, "explicit lane does not support required multimodal capability", 1
 
         choice = {
             "lane_id": str(row["lane_id"]),
@@ -165,6 +210,7 @@ def resolve_route(
             choice_obj = pick_lane_for_model(
                 model=cand_model,
                 backend_type="sd" if modality == "images" else "llama" if modality == "chat" else None,
+                requires_multimodal=requires_multimodal,
                 pin_worker=host_name,
                 pin_lane_id=lane_id,
                 exclude_lane_ids=excluded_lane_ids,
@@ -178,7 +224,7 @@ def resolve_route(
             "lane_type": choice_obj.lane_type,
             "backend_type": choice_obj.backend_type,
             "current_model_name": choice_obj.current_model_name,
-            "resolved_model": cand_model,
+            "resolved_model": getattr(choice_obj, "resolved_model_name", None) or cand_model,
         }
         perf = _perf_for_choice(choice, model=cand_model, modality=modality)
         key = _rank_key(perf)
