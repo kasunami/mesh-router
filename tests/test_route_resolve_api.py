@@ -46,6 +46,87 @@ class RouteResolveApiTests(unittest.TestCase):
             ["qwen3.5:0.8B"],
         )
 
+    def test_firecalc_visual_capability_resolves_as_vlm_tag(self) -> None:
+        self.assertEqual(
+            resolver_module._tag_model_candidates(["firecalc-pdf-visual"], modality="chat"),
+            ["firecalc.pdf.visual"],
+        )
+
+    def test_firecalc_visual_capability_requires_multimodal_lane(self) -> None:
+        seen: list[dict] = []
+
+        def _pick(**kwargs):  # noqa: ANN001
+            seen.append(kwargs)
+            choice = _Choice()
+            choice.current_model_name = "Qwen3.5-9B-VLM-Q4_K_M.gguf"
+            choice.resolved_model_name = "Qwen3.5-9B-VLM-Q4_K_M.gguf"
+            return choice
+
+        resolver_module.pick_lane_for_model = _pick  # type: ignore[assignment]
+        client = TestClient(app_module.app)
+        resp = client.post(
+            "/api/routes/resolve",
+            json={"tags": ["firecalc.pdf.visual"], "modality": "chat", "allow_opportunistic": True},
+        )
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.json()["ok"])
+        self.assertTrue(seen[0]["requires_multimodal"])
+        self.assertEqual(resp.json()["choice"]["resolved_model"], "Qwen3.5-9B-VLM-Q4_K_M.gguf")
+
+    def test_firecalc_visual_capability_rejects_explicit_text_only_lane(self) -> None:
+        class _Cursor:
+            def execute(self, sql, params):  # noqa: ANN001, ARG002
+                return None
+
+            def fetchone(self):
+                return {
+                    "lane_id": "lane-text",
+                    "lane_name": "gpu",
+                    "base_url": "http://worker-a.example:11434",
+                    "lane_type": "gpu",
+                    "backend_type": "llama",
+                    "current_model_name": "qwen3.5-9b",
+                    "proxy_auth_metadata": {"control_plane": "mw"},
+                    "host_name": "worker-a",
+                    "status": "ready",
+                }
+
+            def __enter__(self):  # noqa: ANN001
+                return self
+
+            def __exit__(self, exc_type, exc, tb):  # noqa: ANN001
+                return False
+
+        class _Conn:
+            def cursor(self):
+                return _Cursor()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        class _Db:
+            def connect(self):
+                return _Conn()
+
+        with mock.patch.object(resolver_module, "db", _Db()), mock.patch.object(
+            resolver_module, "apply_mw_effective_status", lambda *args, **kwargs: None
+        ):
+            choice, _perf, reason, _count = resolver_module.resolve_route(
+                model=None,
+                modality="chat",
+                tags=["firecalc.pdf.visual"],
+                host_name="worker-a",
+                lane_id="lane-text",
+                allow_opportunistic=True,
+            )
+
+        self.assertIsNone(choice)
+        self.assertEqual(reason, "explicit lane does not support required multimodal capability")
+
     def test_route_resolve_prefers_best_perf_candidate(self) -> None:
         # Ensure resolve_route ranks among model candidates deterministically when perf expectations exist.
         def _pick(**kwargs):  # noqa: ANN001

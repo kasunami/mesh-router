@@ -154,6 +154,32 @@ Successful responses include the resolved route in headers:
 - `X-Mesh-Lane-Id`
 - `X-Mesh-Model-Name`
 
+### FireCalc PDF capability routing
+
+FireCalc PDF ingestion should use capability tags rather than a host name. A
+certified visual parser model is tagged through the model-tags API with one or
+both of:
+
+- `firecalc.pdf.visual` for page/image understanding
+- `firecalc.pdf.tables` for table-capable visual extraction
+
+For example, a scheduler can preflight a visual route without knowing whether
+Deskix, Pupix, or Packhub will serve it:
+
+```json
+POST /api/routes/resolve
+{
+  "modality": "chat",
+  "tags": ["firecalc.pdf.visual"],
+  "allow_opportunistic": true
+}
+```
+
+Those aliases imply `requires_multimodal=true`; MeshRouter will fail closed if
+only text lanes are available. The later OpenAI-compatible chat request may use
+`model: "firecalc.pdf.visual"` with image content. Model-as-tag resolution then
+selects a ready certified concrete model and returns its route metadata.
+
 ## MeshWorker integration
 
 MeshRouter can use MeshWorker as a Kafka control plane and gRPC data plane for

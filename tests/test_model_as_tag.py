@@ -45,7 +45,36 @@ class ModelAsTagTests(unittest.TestCase):
             with self.assertRaises(LanePlacementError):
                 router_module.pick_lane_for_model(model="home-assistant-voice", pin_lane_id="lane-123")
 
+    def test_firecalc_capability_tag_passes_multimodal_requirement_to_concrete_model(self) -> None:
+        calls: list[dict] = []
+
+        def _fake_single(**kwargs):  # noqa: ANN001
+            calls.append(kwargs)
+            if kwargs["model"] == "firecalc.pdf.visual":
+                raise RuntimeError("no READY lanes available serving requested model: firecalc.pdf.visual")
+            return LaneChoice(
+                lane_id="lane-vlm",
+                worker_id="Deskix",
+                base_url="http://deskix.example:21500",
+                lane_type="gpu",
+                backend_type="llama",
+                current_model_name="Qwen3.5-9B-VLM-Q4_K_M.gguf",
+                resolved_model_name="Qwen3.5-9B-VLM-Q4_K_M.gguf",
+            )
+
+        with (
+            patch.object(router_module, "_pick_lane_for_model_single", side_effect=_fake_single),
+            patch.object(router_module, "_models_for_tag", return_value=["Qwen3.5-9B-VLM-Q4_K_M.gguf"]),
+        ):
+            choice = router_module.pick_lane_for_model(
+                model="firecalc.pdf.visual",
+                requires_multimodal=True,
+            )
+
+        self.assertEqual(choice.worker_id, "Deskix")
+        self.assertEqual([item["model"] for item in calls], ["firecalc.pdf.visual", "Qwen3.5-9B-VLM-Q4_K_M.gguf"])
+        self.assertTrue(all(item["requires_multimodal"] for item in calls))
+
 
 if __name__ == "__main__":
     unittest.main()
-
