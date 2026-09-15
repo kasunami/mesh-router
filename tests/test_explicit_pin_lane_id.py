@@ -211,6 +211,22 @@ class PinLaneIdPlacementTests(unittest.TestCase):
         self.assertEqual(choice.lane_id, "44444444-4444-4444-4444-444444444444")
         self.assertEqual(choice.worker_id, "Worker-B")
 
+    def test_pin_lane_id_rejects_context_over_limit(self) -> None:
+        row = _pin_lane_row(current_model_max_ctx=10240)
+        with (
+            mock.patch.object(router_module, "db", _Db()),
+            mock.patch.object(router_module, "q", return_value=[row]),
+            mock.patch.object(router_module, "apply_mw_effective_status", lambda *a, **k: None),
+        ):
+            with self.assertRaises(router_module.LanePlacementError) as ctx:
+                router_module.pick_lane_for_model(
+                    model="Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
+                    request_context_tokens=10241,
+                    pin_lane_id=row["lane_id"],
+                )
+        self.assertEqual(getattr(ctx.exception, "status_code", None), 422)
+        self.assertIn("maximum configured context", str(ctx.exception))
+
     def test_pin_lane_id_with_matching_worker_and_base_url_is_accepted(self) -> None:
         row = _pin_lane_row(
             host_name="Worker-A",

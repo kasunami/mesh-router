@@ -562,6 +562,15 @@ def _pick_lane_for_model_single(
         eff = str(r0.get("effective_status") or r0.get("status") or "")
         if eff != "ready":
             raise LanePlacementError("pinned lane is not ready", status_code=409)
+        if not _context_is_sufficient(request_context_tokens, r0.get("current_model_max_ctx")):
+            raise LanePlacementError(
+                _context_limit_message(
+                    model=model,
+                    required_tokens=request_context_tokens,
+                    max_available_ctx=int(r0["current_model_max_ctx"]),
+                ),
+                status_code=422,
+            )
         return LaneChoice(
             lane_id=str(r0["lane_id"]),
             worker_id=str(r0["host_name"]),
