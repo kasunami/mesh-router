@@ -5429,6 +5429,9 @@ def v1_chat_completions(
         raw_payload["mesh_pin_lane_id"] = x_mesh_pin_lane_id
     normalized = _normalize_route_request(route="chat", raw_payload=raw_payload)
     if normalized.get("pin_lane_id"):
+        request_context_tokens = _estimate_request_context_tokens(
+            route="chat", payload=dict(normalized.get("request_payload") or {})
+        )
         choice, _perf, reason, _count = resolve_route(
             model=str(normalized["requested_model_name"]),
             modality="chat",
@@ -5439,6 +5442,25 @@ def v1_chat_completions(
         )
         if not choice:
             raise HTTPException(status_code=409, detail=reason or "pinned lane is not ready")
+        try:
+            # Read-only preflight with the same context estimate used by the
+            # dispatcher. This prevents a strict pin from reaching a backend
+            # that is known to have insufficient context capacity.
+            pick_lane_for_model(
+                model=str(normalized["requested_model_name"]),
+                backend_type="llama",
+                request_context_tokens=request_context_tokens,
+                pin_worker=normalized.get("pin_worker"),
+                pin_base_url=normalized.get("pin_base_url"),
+                pin_lane_type=normalized.get("pin_lane_type"),
+                pin_lane_id=str(normalized["pin_lane_id"]),
+            )
+        except LanePlacementError as exc:
+            raise HTTPException(
+                status_code=int(getattr(exc, "status_code", 422)),
+                detail=str(exc),
+                headers={"X-Mesh-Context-Policy": "rejected"},
+            ) from exc
     request_id = _create_router_request(
         route="chat",
         request_payload=dict(normalized["request_payload"]),

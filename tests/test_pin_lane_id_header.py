@@ -29,6 +29,7 @@ class PinLaneIdHeaderTests(unittest.TestCase):
         with (
             patch.object(app_module, "_normalize_route_request", side_effect=_fake_normalize_route_request),
             patch.object(app_module, "resolve_route", return_value=({"lane_id": "lane-123"}, None, None, 1)) as resolve_route,
+            patch.object(app_module, "pick_lane_for_model", return_value={"lane_id": "lane-123"}),
             patch.object(app_module, "_create_router_request", return_value="req-1") as create_router_request,
             patch.object(app_module, "_execute_router_request", return_value={"ok": True}),
             patch.object(app_module, "_fetch_router_request", return_value=None),
@@ -61,6 +62,7 @@ class PinLaneIdHeaderTests(unittest.TestCase):
                 },
             ),
             patch.object(app_module, "resolve_route", return_value=({"lane_id": "79c17e79-052b-48b5-9781-acbb199f81f7"}, None, None, 1)) as resolve_route,
+            patch.object(app_module, "pick_lane_for_model", return_value={"lane_id": "79c17e79-052b-48b5-9781-acbb199f81f7"}),
             patch.object(app_module, "_create_router_request", return_value="req-1"),
             patch.object(app_module, "_execute_router_request", return_value={"ok": True}),
             patch.object(app_module, "_fetch_router_request", return_value=None),
@@ -116,6 +118,30 @@ class PinLaneIdHeaderTests(unittest.TestCase):
             )
             self.assertEqual(resp.status_code, 409)
             self.assertIn("no eligible route", resp.text)
+
+    def test_chat_rejects_pinned_lane_before_backend_on_context_limit(self) -> None:
+        with (
+            patch.object(
+                app_module,
+                "_normalize_route_request",
+                return_value={
+                    "request_payload": {"stream": False, "messages": [{"role": "user", "content": "x"}], "max_tokens": 1},
+                    "requested_model_name": "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
+                    "pin_worker": "pupix1",
+                    "pin_base_url": None,
+                    "pin_lane_type": None,
+                    "pin_lane_id": "lane-pupix",
+                },
+            ),
+            patch.object(app_module, "resolve_route", return_value=({"lane_id": "lane-pupix"}, None, None, 1)),
+            patch.object(app_module, "pick_lane_for_model", side_effect=app_module.LanePlacementError("requested context exceeds maximum", status_code=422)),
+            patch.object(app_module, "_create_router_request") as create_router_request,
+        ):
+            client = TestClient(app_module.app)
+            resp = client.post("/v1/chat/completions", json={"model": "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf", "messages": [{"role": "user", "content": "x"}]})
+            self.assertEqual(resp.status_code, 422)
+            self.assertIn("requested context", resp.text)
+            create_router_request.assert_not_called()
 
 
 if __name__ == "__main__":
