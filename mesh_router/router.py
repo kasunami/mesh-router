@@ -1049,21 +1049,6 @@ def _pick_lane_for_model_single(
                 current_model_max_ctx=int(r0["current_model_max_ctx"]) if r0.get("current_model_max_ctx") is not None else None,
                 resolved_model_name=model.strip() or None,
             )
-        if context_mismatched:
-            max_available_ctx = max(
-                int(row["current_model_max_ctx"])
-                for row in context_mismatched
-                if row.get("current_model_max_ctx") is not None
-            )
-            raise LanePlacementError(
-                _context_limit_message(
-                    model=model,
-                    required_tokens=request_context_tokens,
-                    max_available_ctx=max_available_ctx,
-                ),
-                status_code=422,
-            )
-
         # Swappable candidate pool: ready lanes + suspended lanes with no suspension_reason.
         # Suspended lanes with a suspension_reason were explicitly disabled (e.g. sibling exclusion)
         # and must not be demand-started.
@@ -1129,15 +1114,17 @@ def _pick_lane_for_model_single(
                 current_model_max_ctx=int(r0["current_model_max_ctx"]) if r0.get("current_model_max_ctx") is not None else None,
                 resolved_model_name=model.strip() or None,
             )
-        if context_limited and request_context_tokens:
+        if (context_limited or context_mismatched) and request_context_tokens:
             max_available_ctx = 0
-            for row in context_limited:
+            for row in [*context_limited, *context_mismatched]:
                 for group in ("local_viable_models", "remote_viable_models"):
                     for item in row.get(group) or []:
                         if _model_item_allowed(item) and _model_matches_request(model, item.get("model_name"), item.get("tags") or []):
                             item_max_ctx = item.get("max_ctx")
                             if item_max_ctx is not None:
                                 max_available_ctx = max(max_available_ctx, int(item_max_ctx))
+                if row.get("current_model_max_ctx") is not None:
+                    max_available_ctx = max(max_available_ctx, int(row["current_model_max_ctx"]))
             raise LanePlacementError(
                 _context_limit_message(
                     model=model,
