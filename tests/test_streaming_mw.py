@@ -382,6 +382,45 @@ class StreamingMwTests(unittest.TestCase):
         result = __import__("asyncio").run(run_case())
         self.assertEqual(result["choices"][0]["message"]["content"], "hello")
 
+    def test_chunk_replay_matrix_covers_text_tool_and_termination_shapes(self) -> None:
+        def event(raw: bytes, finish: str = "", text_delta: str = "") -> SimpleNamespace:
+            return SimpleNamespace(event_type="delta", raw_backend_payload=raw, finish_reason=finish, text_delta=text_delta)
+
+        fixtures = [
+            ([event(b'{"choices":[{"delta":{"content":"hello"}}]}')], "hello", 0),
+            ([event(b'{"choices":[{"delta":{"content":"hel"}}]}'), event(b'{"choices":[{"delta":{"content":"lo"}}]}')], "hello", 0),
+            ([event(b'{"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}]}')], "done", 0),
+            ([event(b'{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":"read","arguments":"{}"}}]}}]}')], "", 1),
+            ([event(b'{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\\"p\\":"}}]}}]}'), event(b'{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\\"x\\"}"}}]}}]}')], "", 1),
+            ([event(b'{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c2"}]},"finish_reason":"tool_calls"}]}')], "", 1),
+            ([event(b'{"choices":[{"delta":{"content":"before"}}]}'), event(b'{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c3","function":{"name":"next","arguments":"{}"}}]}}]}')], "before", 1),
+            ([event(b'{"choices":[{"delta":{}}]}')], "", 0),
+            ([event(b"not-json")], "not-json", 0),
+            ([event(b"[DONE]")], "", 0),
+        ]
+
+        async def run_case(events):
+            async def fake_stream(self, **kwargs):  # noqa: ANN001, ARG001
+                for item in events:
+                    yield item
+
+            with patch.object(app_module.MwGrpcClient, "stream_chat", fake_stream):
+                return await app_module._collect_mw_chat_completion(  # type: ignore[attr-defined]
+                    target=MwGrpcTarget(endpoint="127.0.0.1:1", host_id="h", lane_id="l"),
+                    request_id="req-matrix",
+                    model="qwen3.6",
+                    request_payload={"model": "qwen3.6", "messages": []},
+                )
+
+        async def run_all():
+            return [await run_case(events) for events, _, _ in fixtures]
+
+        results = __import__("asyncio").run(run_all())
+        for result, (_, expected_text, expected_calls) in zip(results, fixtures):
+            message = result["choices"][0]["message"]
+            self.assertEqual(message["content"], expected_text)
+            self.assertEqual(len(message.get("tool_calls") or []), expected_calls)
+
 
 if __name__ == "__main__":
     unittest.main()
