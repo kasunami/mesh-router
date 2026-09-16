@@ -2314,6 +2314,10 @@ def _downstream_payload(req: ChatCompletionRequest) -> dict[str, Any]:
     if isinstance(extra_body, dict):
         for key, value in extra_body.items():
             raw[key] = value
+    # MeshWorker always consumes the gRPC streaming method, but its backend
+    # adapter needs an explicit mode when the OpenAI request omitted `stream`.
+    # Normalize the OpenAI default here so omitted and false are equivalent.
+    raw["stream"] = bool(raw.get("stream"))
     return _strip_nones(raw)
 
 
