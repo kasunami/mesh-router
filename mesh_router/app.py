@@ -4355,6 +4355,10 @@ async def _collect_mw_chat_completion(
             text, chunk_finish_reason, item = _extract_chat_chunk_text(raw)
             if text:
                 content_parts.append(text)
+            elif getattr(event, "text_delta", ""):
+                # Older/alternate workers may populate the normalized field
+                # without carrying the raw backend payload.
+                content_parts.append(str(getattr(event, "text_delta", "")))
             if chunk_finish_reason:
                 finish_reason = chunk_finish_reason
             if item is not None:
@@ -5193,6 +5197,17 @@ def _execute_router_request_streaming(
                                 yield sanitized + b"\n\n"
                             else:
                                 yield b"data: " + sanitized + b"\n\n"
+                        elif getattr(event, "text_delta", ""):
+                            # Preserve normalized text when a worker omits raw
+                            # backend bytes; this is the legacy-compatible path.
+                            fallback = json.dumps(
+                                {"choices": [{"index": 0, "delta": {"content": str(event.text_delta)}, "finish_reason": None}]},
+                                separators=(",", ":"),
+                            ).encode("utf-8")
+                            visible_chunks += 1
+                            if first_token_at is None:
+                                first_token_at = time.time()
+                            yield b"data: " + fallback + b"\n\n"
                         if str(event.event_type or "") in {"completed"}:
                             break
                         if str(event.event_type or "") in {"failed", "cancelled"}:

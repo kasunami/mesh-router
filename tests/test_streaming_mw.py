@@ -365,6 +365,23 @@ class StreamingMwTests(unittest.TestCase):
             "choices": [{"message": {"role": "assistant", "content": ""}, "finish_reason": "stop"}],
         }))
 
+    def test_normalized_text_delta_is_preserved_without_raw_payload(self) -> None:
+        async def fake_normalized_stream(self, **kwargs):  # noqa: ANN001, ARG001
+            yield SimpleNamespace(event_type="delta", raw_backend_payload=b"", text_delta="hello")
+            yield SimpleNamespace(event_type="completed", raw_backend_payload=b"", text_delta="")
+
+        async def run_case():
+            with patch.object(app_module.MwGrpcClient, "stream_chat", fake_normalized_stream):
+                return await app_module._collect_mw_chat_completion(  # type: ignore[attr-defined]
+                    target=MwGrpcTarget(endpoint="127.0.0.1:1", host_id="h", lane_id="l"),
+                    request_id="req-normalized-text",
+                    model="qwen3.6",
+                    request_payload={"model": "qwen3.6", "messages": []},
+                )
+
+        result = __import__("asyncio").run(run_case())
+        self.assertEqual(result["choices"][0]["message"]["content"], "hello")
+
 
 if __name__ == "__main__":
     unittest.main()
