@@ -47,12 +47,12 @@ def fake_db_connect():
     yield FakeConn()
 
 
-async def fake_grpc_stream_chat(self, *, target, request_id, model, messages, temperature, max_tokens, deadline_unix_ms, stream=True):  # noqa: ARG001
+async def fake_grpc_stream_chat(self, *, target, request_id, model, messages, temperature, max_tokens, deadline_unix_ms, stream=True, **kwargs):  # noqa: ARG001
     yield SimpleNamespace(event_type="delta", raw_backend_payload=b'{"choices":[{"delta":{"content":"hi"}}]}')
     yield SimpleNamespace(event_type="completed", raw_backend_payload=b"")
 
 
-async def fake_reasoning_only_stream_chat(self, *, target, request_id, model, messages, temperature, max_tokens, deadline_unix_ms, stream=True):  # noqa: ARG001
+async def fake_reasoning_only_stream_chat(self, *, target, request_id, model, messages, temperature, max_tokens, deadline_unix_ms, stream=True, **kwargs):  # noqa: ARG001
     yield SimpleNamespace(
         event_type="delta",
         raw_backend_payload=b'{"choices":[{"finish_reason":null,"delta":{"reasoning_content":"thinking"}}]}',
@@ -243,6 +243,7 @@ class StreamingMwTests(unittest.TestCase):
         app_module._mw_client.cache_clear()
         sent_commands = []
         grpc_stream_flags = []
+        grpc_payloads = []
         fake_mw_client = SimpleNamespace(send_command=lambda **kwargs: sent_commands.append(kwargs) or {"ok": True})
         choice = LaneChoice(
             lane_id="lane-1",
@@ -255,8 +256,9 @@ class StreamingMwTests(unittest.TestCase):
         target = MwGrpcTarget(endpoint="127.0.0.1:50061", host_id="worker-b", lane_id="qwen")
         fake_db = SimpleNamespace(connect=fake_db_connect)
 
-        async def fake_non_stream_grpc_chat(self, *, target, request_id, model, messages, temperature, max_tokens, deadline_unix_ms, stream=True):  # noqa: ANN001, ARG001
+        async def fake_non_stream_grpc_chat(self, *, target, request_id, model, messages, temperature, max_tokens, deadline_unix_ms, stream=True, **kwargs):  # noqa: ANN001, ARG001
             grpc_stream_flags.append(stream)
+            grpc_payloads.append(kwargs.get("request_payload"))
             yield SimpleNamespace(event_type="delta", raw_backend_payload=b'{"choices":[{"delta":{"content":"hi"}}]}')
             yield SimpleNamespace(event_type="completed", raw_backend_payload=b"")
 
@@ -283,6 +285,8 @@ class StreamingMwTests(unittest.TestCase):
                     "model": "qwen3.5:0.8B",
                     "stream": False,
                     "messages": [{"role": "user", "content": "hi"}],
+                    "tools": [{"type": "function", "function": {"name": "read_file", "parameters": {"type": "object"}}}],
+                    "tool_choice": "required",
                 },
             )
             self.assertEqual(resp.status_code, 200)
@@ -291,6 +295,36 @@ class StreamingMwTests(unittest.TestCase):
             self.assertEqual(body["model"], "Qwen3.5-0.8B-Q4_K_M.gguf")
             self.assertEqual(sent_commands, [])
             self.assertEqual(grpc_stream_flags, [True])
+            self.assertEqual(grpc_payloads[0]["tools"][0]["function"]["name"], "read_file")
+            self.assertEqual(grpc_payloads[0]["tool_choice"], "required")
+
+    def test_mw_grpc_native_tool_call_chunks_are_preserved(self) -> None:
+        async def fake_tool_stream(self, **kwargs):  # noqa: ANN001, ARG001
+            yield SimpleNamespace(
+                event_type="delta",
+                raw_backend_payload=b'{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","type":"function","function":{"name":"read_file","arguments":"{\\"path\\":"}}]}}]}',
+            )
+            yield SimpleNamespace(
+                event_type="delta",
+                raw_backend_payload=b'{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\\"/tmp/x\\"}"}}]},"finish_reason":"tool_calls"}]}',
+            )
+            yield SimpleNamespace(event_type="completed", raw_backend_payload=b"")
+
+        async def run_case():
+            with patch.object(app_module.MwGrpcClient, "stream_chat", fake_tool_stream):
+                return await app_module._collect_mw_chat_completion(  # type: ignore[attr-defined]
+                    target=MwGrpcTarget(endpoint="127.0.0.1:1", host_id="h", lane_id="l"),
+                    request_id="req-tools",
+                    model="qwen3.6",
+                    request_payload={"model": "qwen3.6", "messages": [], "tools": []},
+                )
+
+        result = __import__("asyncio").run(run_case())
+        message = result["choices"][0]["message"]
+        self.assertEqual(result["choices"][0]["finish_reason"], "tool_calls")
+        self.assertEqual(message["tool_calls"][0]["id"], "call-1")
+        self.assertEqual(message["tool_calls"][0]["function"]["name"], "read_file")
+        self.assertEqual(message["tool_calls"][0]["function"]["arguments"], '{"path":"/tmp/x"}')
 
 
 if __name__ == "__main__":

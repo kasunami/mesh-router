@@ -4269,6 +4269,7 @@ async def _collect_mw_chat_completion(
     usage_completion: int | None = None
     usage_total: int | None = None
     finish_reason: str | None = None
+    tool_calls: dict[int, dict[str, Any]] = {}
     backend_payload = _apply_reasoning_token_budget(model_name=model, payload=request_payload)
 
     async for event in MwGrpcClient().stream_chat(
@@ -4280,6 +4281,7 @@ async def _collect_mw_chat_completion(
         max_tokens=backend_payload.get("max_tokens"),
         deadline_unix_ms=None,
         stream=True,
+        request_payload=backend_payload,
     ):
         if str(event.event_type or "") in {"failed", "cancelled"}:
             code = str(event.error_code or "mw_error")
@@ -4307,6 +4309,28 @@ async def _collect_mw_chat_completion(
             if chunk_finish_reason:
                 finish_reason = chunk_finish_reason
             if item is not None:
+                choices = item.get("choices") or []
+                choice = choices[0] if choices and isinstance(choices[0], dict) else {}
+                delta = choice.get("delta") or {}
+                for call in delta.get("tool_calls") or []:
+                    if not isinstance(call, dict):
+                        continue
+                    index = int(call.get("index") or 0)
+                    current = tool_calls.setdefault(index, {
+                        "index": index,
+                        "id": "",
+                        "type": "function",
+                        "function": {"name": "", "arguments": ""},
+                    })
+                    if call.get("id"):
+                        current["id"] = str(call["id"])
+                    if call.get("type"):
+                        current["type"] = str(call["type"])
+                    fn = call.get("function") or {}
+                    if fn.get("name"):
+                        current["function"]["name"] = str(fn["name"])
+                    if fn.get("arguments") is not None:
+                        current["function"]["arguments"] += str(fn.get("arguments") or "")
                 usage = item.get("usage") or {}
                 if usage.get("prompt_tokens") is not None:
                     usage_prompt = int(usage.get("prompt_tokens"))
@@ -4335,7 +4359,11 @@ async def _collect_mw_chat_completion(
         "choices": [
             {
                 "index": 0,
-                "message": {"role": "assistant", "content": "".join(content_parts)},
+                "message": {
+                    "role": "assistant",
+                    "content": "".join(content_parts),
+                    **({"tool_calls": [tool_calls[i] for i in sorted(tool_calls)]} if tool_calls else {}),
+                },
                 "finish_reason": finish_reason or "stop",
             }
         ],

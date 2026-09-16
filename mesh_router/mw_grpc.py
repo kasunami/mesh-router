@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+import json
 from dataclasses import dataclass
 from typing import Any, AsyncIterator
 
@@ -32,6 +33,7 @@ class MwGrpcClient:
         max_tokens: int | None,
         deadline_unix_ms: int | None = None,
         stream: bool = True,
+        request_payload: dict[str, Any] | None = None,
     ) -> AsyncIterator[meshworker_pb2.ChatStreamEvent]:
         issued_at_ms = int(time.time() * 1000)
         deadline_ms = deadline_unix_ms or (issued_at_ms + 30_000)
@@ -46,6 +48,13 @@ class MwGrpcClient:
             deadline_unix_ms=deadline_ms,
             tags={},
         )
+        payload = dict(request_payload or {
+            "model": model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "stream": bool(stream),
+        })
         req = meshworker_pb2.ChatRequest(
             meta=meta,
             model=model,
@@ -57,6 +66,7 @@ class MwGrpcClient:
             max_tokens=int(max_tokens or 0),
             stream=bool(stream),
             options={},
+            request_payload_json=json.dumps(payload, separators=(",", ":")).encode("utf-8"),
         )
 
         async with grpc.aio.insecure_channel(target.endpoint) as channel:

@@ -32,6 +32,9 @@ message ChatRequest {
   int32 max_tokens = 5;
   bool stream = 6;
   map<string, string> options = 7;
+  // Complete OpenAI-compatible request JSON. This preserves tools, tool_choice,
+  // structured messages, and future request fields across the gRPC data plane.
+  bytes request_payload_json = 8;
 }
 
 message ChatStreamEvent {
