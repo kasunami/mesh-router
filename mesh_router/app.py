@@ -313,6 +313,8 @@ def _chat_response_has_assistant_content(resp_data: dict[str, Any] | None) -> bo
         message = choice.get("message")
         if isinstance(message, dict) and str(message.get("content") or "").strip():
             return True
+        if isinstance(message, dict) and isinstance(message.get("tool_calls"), list) and message.get("tool_calls"):
+            return True
         delta = choice.get("delta")
         if isinstance(delta, dict) and str(delta.get("content") or "").strip():
             return True
