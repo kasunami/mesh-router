@@ -326,6 +326,45 @@ class StreamingMwTests(unittest.TestCase):
         self.assertEqual(message["tool_calls"][0]["function"]["name"], "read_file")
         self.assertEqual(message["tool_calls"][0]["function"]["arguments"], '{"path":"/tmp/x"}')
 
+    def test_mw_grpc_full_message_tool_call_is_preserved(self) -> None:
+        async def fake_full_response(self, **kwargs):  # noqa: ANN001, ARG001
+            yield SimpleNamespace(
+                event_type="delta",
+                raw_backend_payload=(
+                    b'{"choices":[{"message":{"role":"assistant","content":null,'
+                    b'"tool_calls":[{"index":0,"id":"call-full","type":"function",'
+                    b'"function":{"name":"read_file","arguments":"{\\"path\\":\\"/tmp/x\\"}"}}]},'
+                    b'"finish_reason":"tool_calls"}]}'
+                ),
+            )
+            yield SimpleNamespace(event_type="completed", raw_backend_payload=b"")
+
+        async def run_case():
+            with patch.object(app_module.MwGrpcClient, "stream_chat", fake_full_response):
+                return await app_module._collect_mw_chat_completion(  # type: ignore[attr-defined]
+                    target=MwGrpcTarget(endpoint="127.0.0.1:1", host_id="h", lane_id="l"),
+                    request_id="req-full-tools",
+                    model="qwen3.6",
+                    request_payload={"model": "qwen3.6", "messages": [], "stream": False},
+                )
+
+        result = __import__("asyncio").run(run_case())
+        message = result["choices"][0]["message"]
+        self.assertEqual(result["choices"][0]["finish_reason"], "tool_calls")
+        self.assertEqual(message["content"], "")
+        self.assertEqual(message["tool_calls"][0]["id"], "call-full")
+        self.assertEqual(message["tool_calls"][0]["function"]["name"], "read_file")
+        self.assertEqual(message["tool_calls"][0]["function"]["arguments"], '{"path":"/tmp/x"}')
+
+    def test_tool_call_stream_chunks_are_not_filtered_as_empty(self) -> None:
+        raw = b'{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1"}]},"finish_reason":null}]}'
+        self.assertIsNotNone(app_module._sanitize_stream_chat_chunk(raw))  # type: ignore[attr-defined]
+
+    def test_empty_text_completion_is_still_rejected(self) -> None:
+        self.assertFalse(app_module._chat_response_has_assistant_content({  # type: ignore[attr-defined]
+            "choices": [{"message": {"role": "assistant", "content": ""}, "finish_reason": "stop"}],
+        }))
+
 
 if __name__ == "__main__":
     unittest.main()

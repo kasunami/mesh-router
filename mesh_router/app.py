@@ -266,6 +266,48 @@ def _extract_chat_chunk_text(raw: bytes) -> tuple[str | None, str | None, dict[s
     return str(text) if text else None, finish_reason, item
 
 
+def _extract_chat_chunk_tool_calls(item: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Return native tool calls from either streamed delta or full message shapes."""
+    if not isinstance(item, dict):
+        return []
+    choices = item.get("choices") or []
+    choice = choices[0] if choices and isinstance(choices[0], dict) else {}
+    delta = choice.get("delta") if isinstance(choice.get("delta"), dict) else {}
+    message = choice.get("message") if isinstance(choice.get("message"), dict) else {}
+    calls = delta.get("tool_calls")
+    if not isinstance(calls, list):
+        calls = message.get("tool_calls")
+    return [call for call in calls or [] if isinstance(call, dict)]
+
+
+def _merge_chat_tool_calls(
+    accumulated: dict[int, dict[str, Any]],
+    calls: list[dict[str, Any]],
+) -> None:
+    """Merge native tool-call deltas without parsing incomplete arguments."""
+    for call in calls:
+        try:
+            index = int(call.get("index") or 0)
+        except (TypeError, ValueError):
+            index = 0
+        current = accumulated.setdefault(index, {
+            "index": index,
+            "id": "",
+            "type": "function",
+            "function": {"name": "", "arguments": ""},
+        })
+        if call.get("id"):
+            current["id"] = str(call["id"])
+        if call.get("type"):
+            current["type"] = str(call["type"])
+        fn = call.get("function") or {}
+        if isinstance(fn, dict):
+            if fn.get("name"):
+                current["function"]["name"] = str(fn["name"])
+            if fn.get("arguments") is not None:
+                current["function"]["arguments"] += str(fn.get("arguments") or "")
+
+
 def _sanitize_stream_chat_chunk(raw: bytes) -> bytes | None:
     if not raw:
         return None
@@ -296,7 +338,12 @@ def _sanitize_stream_chat_chunk(raw: bytes) -> bytes | None:
         item = dict(item)
         item["choices"] = [choice, *choices[1:]]
     content = ((choice.get("delta") or {}).get("content") if isinstance(choice.get("delta"), dict) else None)
-    if content is None and choice.get("finish_reason") is None:
+    message = choice.get("message") if isinstance(choice.get("message"), dict) else {}
+    has_tool_calls = bool(
+        (isinstance(delta, dict) and delta.get("tool_calls"))
+        or (isinstance(message, dict) and message.get("tool_calls"))
+    )
+    if content is None and not has_tool_calls and choice.get("finish_reason") is None:
         return None
     return json.dumps(item, separators=(",", ":")).encode("utf-8")
 
@@ -4311,28 +4358,7 @@ async def _collect_mw_chat_completion(
             if chunk_finish_reason:
                 finish_reason = chunk_finish_reason
             if item is not None:
-                choices = item.get("choices") or []
-                choice = choices[0] if choices and isinstance(choices[0], dict) else {}
-                delta = choice.get("delta") or {}
-                for call in delta.get("tool_calls") or []:
-                    if not isinstance(call, dict):
-                        continue
-                    index = int(call.get("index") or 0)
-                    current = tool_calls.setdefault(index, {
-                        "index": index,
-                        "id": "",
-                        "type": "function",
-                        "function": {"name": "", "arguments": ""},
-                    })
-                    if call.get("id"):
-                        current["id"] = str(call["id"])
-                    if call.get("type"):
-                        current["type"] = str(call["type"])
-                    fn = call.get("function") or {}
-                    if fn.get("name"):
-                        current["function"]["name"] = str(fn["name"])
-                    if fn.get("arguments") is not None:
-                        current["function"]["arguments"] += str(fn.get("arguments") or "")
+                _merge_chat_tool_calls(tool_calls, _extract_chat_chunk_tool_calls(item))
                 usage = item.get("usage") or {}
                 if usage.get("prompt_tokens") is not None:
                     usage_prompt = int(usage.get("prompt_tokens"))
@@ -5136,6 +5162,7 @@ def _execute_router_request_streaming(
                         temperature=request_payload.get("temperature"),
                         max_tokens=request_payload.get("max_tokens"),
                         deadline_unix_ms=None,
+                        request_payload=request_payload,
                     ):
                         if _request_cancel_requested(request_id):
                             break
