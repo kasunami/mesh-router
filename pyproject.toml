@@ -2,6 +2,7 @@
 name = "mesh-router"
 version = "0.1.0"
 description = "Local OpenAI-compatible router for mesh worker lanes"
+license = "Apache-2.0"
 requires-python = ">=3.11"
 dependencies = [
   "fastapi>=0.115",
@@ -21,6 +22,13 @@ dependencies = [
   "opentelemetry-instrumentation-fastapi>=0.45b0",
 ]
 
+[dependency-groups]
+dev = [
+  "build>=1.2",
+  "grpcio-tools==1.80.0",
+  "pytest>=8.0",
+]
+
 [project.scripts]
 mesh-router = "mesh_router.cli:main"
 
@@ -30,6 +38,9 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
 packages = ["mesh_router", "mesh_router.generated"]
+
+[tool.setuptools.data-files]
+"share/mesh-router/sql" = ["sql/*.sql"]
 
 [tool.uv]
 package = true

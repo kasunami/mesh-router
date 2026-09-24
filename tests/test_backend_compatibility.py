@@ -325,6 +325,12 @@ class BackendCompatibilityTests(unittest.TestCase):
                 "runtime_overhead_bytes": 0,
                 "reserved_headroom_bytes": 1073741824,
                 "current_model_max_ctx": 32768,
+                "validated_candidates": [{
+                    "canonical_id": "falcon3-10b",
+                    "backend_types": ["bitnet"],
+                    "tags": ["fim", "completion"],
+                    "max_ctx": 32768,
+                }],
             },
         ), mock.patch.object(
             app_module,
@@ -345,6 +351,26 @@ class BackendCompatibilityTests(unittest.TestCase):
         falcon = next(item for item in payload.local_viable_models if item.model_name == "falcon3-10b")
         self.assertEqual(falcon.artifact_provider, "mw_runtime")
         self.assertEqual(falcon.estimated_swap_ms, 0)
+        self.assertIn("fim", payload.capabilities)
+        self.assertIn("completion", payload.capabilities)
+
+    def test_lane_capabilities_do_not_leak_from_inactive_candidate(self) -> None:
+        active = app_module.LaneModelCandidate(
+            model_name="chat-model",
+            tags=["chat"],
+            locality="local",
+        )
+        inactive = app_module.LaneModelCandidate(
+            model_name="fim-model",
+            tags=["fim", "completion"],
+            locality="local",
+        )
+        advertised = app_module._current_model_advertised_capabilities(
+            candidates_by_model={active.model_name: active, inactive.model_name: inactive},
+            current_model="chat-model",
+        )
+
+        self.assertEqual(advertised, {"chat"})
 
 
 if __name__ == "__main__":

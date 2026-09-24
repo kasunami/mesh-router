@@ -163,8 +163,8 @@ both of:
 - `firecalc.pdf.visual` for page/image understanding
 - `firecalc.pdf.tables` for table-capable visual extraction
 
-For example, a scheduler can preflight a visual route without knowing whether
-Deskix, Pupix, or Packhub will serve it:
+For example, a scheduler can preflight a visual route without knowing which
+worker will serve it:
 
 ```json
 POST /api/routes/resolve

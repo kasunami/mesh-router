@@ -127,10 +127,10 @@ class PinLaneIdHeaderTests(unittest.TestCase):
                 return_value={
                     "request_payload": {"stream": False, "messages": [{"role": "user", "content": "x"}], "max_tokens": 1},
                     "requested_model_name": "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
-                    "pin_worker": "pupix1",
+                    "pin_worker": "worker-stale",
                     "pin_base_url": None,
                     "pin_lane_type": None,
-                    "pin_lane_id": "lane-pupix",
+                    "pin_lane_id": "lane-stale",
                 },
             ),
             patch.object(app_module, "resolve_route", return_value=({"lane_id": "lane-pupix"}, None, None, 1)),

@@ -40,7 +40,7 @@ from .mw_overlay import (
 )
 from .runtime_state import get_default_runtime_state_store
 from .perf_registry import get_expectation, insert_observation
-from .route_resolver import resolve_route
+from .route_resolver import _requires_multimodal_capability, _tag_model_candidates, resolve_route
 from .router import LanePlacementError, normalize_provider_model_name, pick_lane_for_model
 from .request_store import (
     REQUEST_TERMINAL_STATES,
@@ -614,6 +614,24 @@ def _should_include_candidate_for_capabilities(*, mw_authoritative: bool, source
     if not mw_authoritative:
         return True
     return source_locality == "local"
+
+
+def _current_model_advertised_capabilities(
+    *,
+    candidates_by_model: dict[str, LaneModelCandidate],
+    current_model: str | None,
+) -> set[str]:
+    advertised = {
+        "chat", "completion", "embeddings", "fim", "images", "inference", "multimodal", "vision",
+    }
+    current = str(current_model or "").strip()
+    return {
+        tag
+        for candidate in candidates_by_model.values()
+        if current and _model_request_matches_candidate(current, candidate.model_name, candidate.tags)
+        for tag in _normalized_model_tags(candidate.tags)
+        if tag in advertised
+    }
 
 
 def _validated_candidate_applies_to_lane(candidate: dict[str, Any], lane_row: dict[str, Any]) -> bool:
@@ -2172,6 +2190,19 @@ def _build_lane_capability_payload(cur, lane_ref: str) -> tuple[dict[str, Any], 
         if lane_type in ("cpu", "gpu", "mlx"):
             capabilities.append("inference")
 
+    # Model and MeshWorker candidate tags are also capability advertisements,
+    # but lane-level capabilities describe the model that is live right now.
+    # Do not publish capabilities from an alternate/swappable candidate: route
+    # discovery returns the current model identity and must not imply that this
+    # model supports (for example) FIM merely because another candidate does.
+    capabilities.extend(
+        _current_model_advertised_capabilities(
+            candidates_by_model=candidates_by_model,
+            current_model=lane_row.get("current_model_name"),
+        )
+    )
+    capabilities = sorted(set(capabilities))
+
     metadata = {
         "lane_type": lane_type,
         "backend_type": normalized_backend or lane_row.get("backend_type"),
@@ -2964,6 +2995,153 @@ def api_perf_observations(
 
 @app.post("/api/routes/resolve", response_model=RouteResolveResponse)
 def api_routes_resolve(req: RouteResolveRequest) -> RouteResolveResponse:
+    if req.required_capabilities or req.min_context_tokens is not None:
+        inventory = api_inventory().model_dump(mode="json")
+        required = {str(item).strip().lower() for item in req.required_capabilities if str(item).strip()}
+        candidates: list[tuple[int, str, dict[str, Any]]] = []
+        considered = 0
+        opportunistic_hosts = {
+            item.strip().lower()
+            for item in str(settings.opportunistic_hosts or "").split(",")
+            if item.strip()
+        }
+        requested_models: list[str] = []
+        if req.model:
+            requested_models = [req.model]
+        elif req.tags:
+            requested_models = _tag_model_candidates(req.tags, modality=req.modality)
+        requires_multimodal = _requires_multimodal_capability(
+            model=req.model,
+            tags=req.tags,
+            requested=req.requires_multimodal,
+        )
+        for host in inventory.get("items") or []:
+            if not isinstance(host, dict):
+                continue
+            host_name = str(host.get("host_name") or "").strip()
+            if not host_name or (not req.allow_opportunistic and host_name.lower() in opportunistic_hosts):
+                continue
+            for lane in host.get("lanes") or []:
+                if not isinstance(lane, dict):
+                    continue
+                considered += 1
+                if req.lane_id and str(lane.get("lane_id") or "") != str(req.lane_id):
+                    continue
+                if req.host_name and host_name != req.host_name:
+                    continue
+                if str(lane.get("effective_status") or lane.get("status") or "").lower() != "ready":
+                    continue
+                normalized_backend = _normalize_router_backend_type(lane.get("backend_type"))
+                if req.modality == "images":
+                    if normalized_backend != "sd":
+                        continue
+                elif normalized_backend == "sd":
+                    continue
+
+                current_model = str(lane.get("current_model_name") or "").strip()
+                if not current_model:
+                    continue
+                model_items = [
+                    item
+                    for group in ("local_viable_models", "remote_viable_models", "unverified_models")
+                    for item in (lane.get(group) or [])
+                    if isinstance(item, dict)
+                    and _model_request_matches_candidate(
+                        current_model,
+                        str(item.get("model_name") or ""),
+                        item.get("tags") or [],
+                    )
+                ]
+                current_tags = [
+                    str(tag)
+                    for item in model_items
+                    for tag in (item.get("tags") or [])
+                    if str(tag).strip()
+                ]
+                if requested_models and not any(
+                    _model_request_matches_candidate(wanted, current_model, current_tags)
+                    for wanted in requested_models
+                ):
+                    continue
+                if requires_multimodal:
+                    metadata = lane.get("proxy_auth_metadata") or {}
+                    if not isinstance(metadata, dict) or metadata.get("supports_multimodal") is not True:
+                        continue
+                capabilities = {
+                    str(item).strip().lower()
+                    for item in lane.get("capabilities") or []
+                    if str(item).strip()
+                }
+                if not required.issubset(capabilities):
+                    continue
+                context = lane.get("current_model_max_ctx")
+                if context is None:
+                    context = lane.get("max_context_tokens")
+                if context is None:
+                    for item in model_items:
+                        if item.get("max_context_tokens") is not None:
+                            context = item["max_context_tokens"]
+                            break
+                try:
+                    context_tokens = int(context) if context is not None else 0
+                except (TypeError, ValueError):
+                    context_tokens = 0
+                if req.min_context_tokens is not None and context_tokens < req.min_context_tokens:
+                    continue
+                try:
+                    selected = pick_lane_for_model(
+                        model=current_model,
+                        # The inventory filtering above defines the modality
+                        # constraint. Preserve the lane's concrete backend for
+                        # the exact-pin validation so text-capable alternatives
+                        # such as MLX are not incorrectly treated as llama.
+                        backend_type=normalized_backend or (
+                            "sd" if req.modality == "images" else "llama"
+                        ),
+                        request_context_tokens=req.min_context_tokens,
+                        requires_multimodal=requires_multimodal,
+                        pin_worker=host_name,
+                        pin_lane_id=str(lane.get("lane_id") or ""),
+                    )
+                except Exception:
+                    continue
+                selected_model = str(getattr(selected, "current_model_name", None) or "").strip()
+                selected_backend = _normalize_router_backend_type(getattr(selected, "backend_type", None))
+                # Inventory and placement are separate snapshots. Fail closed
+                # if the exact pinned lane changed model or backend between
+                # them rather than returning stale capability/identity data.
+                if not selected_model or not _model_request_matches_candidate(current_model, selected_model):
+                    continue
+                if req.modality == "images":
+                    if selected_backend != "sd":
+                        continue
+                elif selected_backend == "sd":
+                    continue
+                candidates.append((context_tokens, host_name, {
+                    "lane_id": str(selected.lane_id),
+                    "worker_id": str(selected.worker_id),
+                    "base_url": str(selected.base_url),
+                    "lane_type": str(selected.lane_type),
+                    "backend_type": str(selected.backend_type),
+                    # The live inventory advertisement is the source of truth
+                    # for which model this lane currently serves.
+                    "current_model_name": selected_model,
+                    "resolved_model": str(getattr(selected, "resolved_model_name", None) or selected_model),
+                    "capabilities": sorted(capabilities),
+                    "max_context_tokens": context_tokens or None,
+                }))
+        if not candidates:
+            return RouteResolveResponse(
+                ok=False,
+                reason="no healthy lane satisfies required capabilities and minimum context",
+                candidates_considered=considered,
+            )
+        # Router-owned deterministic tie-break: most context headroom first,
+        # then stable host/lane identity. Runtime model choice remains MW-owned.
+        candidates.sort(key=lambda item: (-item[0], item[1].lower(), item[2]["lane_id"]))
+        choice = candidates[0][2]
+        return RouteResolveResponse(ok=True, choice=choice, candidates_considered=considered)
+
     choice, perf, reason, candidates_considered = resolve_route(
         model=req.model,
         modality=req.modality,

@@ -184,6 +184,245 @@ class RouteResolveApiTests(unittest.TestCase):
         self.assertTrue(resp.json()["ok"])
         self.assertEqual(seen[0]["pin_lane_id"], "8a37c3e3-eefc-43b0-90b7-737c57198287")
 
+    def test_capability_route_filters_live_lane_caps_context_and_pins_exact_choice(self) -> None:
+        lanes = [
+            {"lane_id": "11111111-1111-1111-1111-111111111111", "host_name": "small", "effective_status": "ready", "current_model_name": "model-small", "current_model_max_ctx": 8192, "capabilities": ["chat", "inference"]},
+            {"lane_id": "22222222-2222-2222-2222-222222222222", "host_name": "large", "effective_status": "ready", "current_model_name": "model-large", "current_model_max_ctx": 16384, "capabilities": ["chat", "inference"]},
+            {"lane_id": "33333333-3333-3333-3333-333333333333", "host_name": "unhealthy", "effective_status": "suspended", "current_model_name": "model-down", "current_model_max_ctx": 32768, "capabilities": ["chat", "inference"]},
+        ]
+        seen: list[dict] = []
+
+        class _Inventory:
+            def model_dump(self, *, mode=None):  # noqa: ANN001, ARG002
+                return {"items": [{"host_name": lane["host_name"], "lanes": [lane]} for lane in lanes]}
+
+        def _pick(**kwargs):  # noqa: ANN001
+            seen.append(kwargs)
+            choice = _Choice()
+            choice.lane_id = kwargs["pin_lane_id"]
+            choice.worker_id = kwargs["pin_worker"]
+            choice.current_model_name = kwargs["model"]
+            return choice
+
+        with mock.patch.object(app_module, "api_inventory", return_value=_Inventory()), mock.patch.object(
+            app_module, "pick_lane_for_model", side_effect=_pick
+        ):
+            client = TestClient(app_module.app)
+            resp = client.post(
+                "/api/routes/resolve",
+                json={"required_capabilities": ["chat", "inference"], "min_context_tokens": 12000},
+            )
+
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["choice"]["worker_id"], "large")
+        self.assertEqual(body["choice"]["current_model_name"], "model-large")
+        self.assertEqual(body["choice"]["max_context_tokens"], 16384)
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(seen[0]["pin_lane_id"], "22222222-2222-2222-2222-222222222222")
+        self.assertEqual(seen[0]["request_context_tokens"], 12000)
+
+    def test_capability_route_fails_when_no_live_lane_advertises_required_capability(self) -> None:
+        class _Inventory:
+            def model_dump(self, *, mode=None):  # noqa: ANN001, ARG002
+                return {"items": [{"host_name": "chat-only", "lanes": [{
+                    "lane_id": "11111111-1111-1111-1111-111111111111",
+                    "effective_status": "ready",
+                    "current_model_name": "model-chat",
+                    "current_model_max_ctx": 16384,
+                    "capabilities": ["chat", "inference"],
+                }]}]}
+
+        with mock.patch.object(app_module, "api_inventory", return_value=_Inventory()):
+            client = TestClient(app_module.app)
+            resp = client.post(
+                "/api/routes/resolve",
+                json={"required_capabilities": ["fim", "completion"], "min_context_tokens": 4096},
+            )
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertFalse(resp.json()["ok"])
+        self.assertIn("no healthy lane satisfies", resp.json()["reason"])
+
+    def test_fim_capability_route_uses_completion_modality(self) -> None:
+        class _Inventory:
+            def model_dump(self, *, mode=None):  # noqa: ANN001, ARG002
+                return {"items": [{"host_name": "fim-worker", "lanes": [{
+                    "lane_id": "33333333-3333-3333-3333-333333333333",
+                    "effective_status": "ready",
+                    "current_model_name": "fim-model-from-worker",
+                    "current_model_max_ctx": 8192,
+                    "capabilities": ["fim", "completion"],
+                }]}]}
+
+        seen: list[dict] = []
+        def _pick(**kwargs):  # noqa: ANN001
+            seen.append(kwargs)
+            choice = _Choice()
+            choice.current_model_name = kwargs["model"]
+            return choice
+
+        with mock.patch.object(app_module, "api_inventory", return_value=_Inventory()), mock.patch.object(
+            app_module, "pick_lane_for_model", _pick
+        ):
+            client = TestClient(app_module.app)
+            resp = client.post("/api/routes/resolve", json={
+                "modality": "completion",
+                "required_capabilities": ["fim", "completion"],
+                "min_context_tokens": 4096,
+            })
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.json()["ok"])
+        self.assertEqual(resp.json()["choice"]["current_model_name"], "fim-model-from-worker")
+        self.assertEqual(seen[0]["backend_type"], "llama")
+
+    def test_capability_route_preserves_tag_model_and_multimodal_constraints(self) -> None:
+        lane = {
+            "lane_id": "33333333-3333-3333-3333-333333333333",
+            "backend_type": "llama",
+            "effective_status": "ready",
+            "current_model_name": "visual-model",
+            "capabilities": ["chat", "inference"],
+            "proxy_auth_metadata": {"supports_multimodal": True},
+            "local_viable_models": [{
+                "model_name": "visual-model",
+                "tags": ["firecalc.pdf.visual"],
+                "max_context_tokens": 16384,
+            }],
+        }
+
+        class _Inventory:
+            def model_dump(self, *, mode=None):  # noqa: ANN001, ARG002
+                return {"items": [{"host_name": "visual-worker", "lanes": [lane]}]}
+
+        seen: list[dict] = []
+
+        def _pick(**kwargs):  # noqa: ANN001
+            seen.append(kwargs)
+            choice = _Choice()
+            choice.current_model_name = kwargs["model"]
+            return choice
+
+        with mock.patch.object(app_module, "api_inventory", return_value=_Inventory()), mock.patch.object(
+            app_module, "pick_lane_for_model", side_effect=_pick
+        ):
+            response = TestClient(app_module.app).post("/api/routes/resolve", json={
+                "tags": ["firecalc.pdf.visual"],
+                "required_capabilities": ["chat"],
+                "min_context_tokens": 12000,
+            })
+
+        self.assertTrue(response.json()["ok"])
+        self.assertEqual(response.json()["choice"]["max_context_tokens"], 16384)
+        self.assertEqual(seen[0]["model"], "visual-model")
+        self.assertTrue(seen[0]["requires_multimodal"])
+
+    def test_capability_route_rejects_requested_model_not_currently_served(self) -> None:
+        class _Inventory:
+            def model_dump(self, *, mode=None):  # noqa: ANN001, ARG002
+                return {"items": [{"host_name": "worker", "lanes": [{
+                    "lane_id": "33333333-3333-3333-3333-333333333333",
+                    "backend_type": "llama",
+                    "effective_status": "ready",
+                    "current_model_name": "actual-model",
+                    "current_model_max_ctx": 8192,
+                    "capabilities": ["chat"],
+                }]}]}
+
+        with mock.patch.object(app_module, "api_inventory", return_value=_Inventory()), mock.patch.object(
+            app_module, "pick_lane_for_model"
+        ) as pick:
+            response = TestClient(app_module.app).post("/api/routes/resolve", json={
+                "model": "unavailable-model",
+                "required_capabilities": ["chat"],
+            })
+
+        self.assertFalse(response.json()["ok"])
+        pick.assert_not_called()
+
+    def test_capability_route_fails_closed_when_model_changes_after_inventory(self) -> None:
+        class _Inventory:
+            def model_dump(self, *, mode=None):  # noqa: ANN001, ARG002
+                return {"items": [{"host_name": "worker", "lanes": [{
+                    "lane_id": "33333333-3333-3333-3333-333333333333",
+                    "backend_type": "llama",
+                    "effective_status": "ready",
+                    "current_model_name": "advertised-model",
+                    "current_model_max_ctx": 8192,
+                    "capabilities": ["chat"],
+                }]}]}
+
+        changed = _Choice()
+        changed.current_model_name = "newly-loaded-model"
+        with mock.patch.object(app_module, "api_inventory", return_value=_Inventory()), mock.patch.object(
+            app_module, "pick_lane_for_model", return_value=changed
+        ):
+            response = TestClient(app_module.app).post("/api/routes/resolve", json={
+                "required_capabilities": ["chat"],
+            })
+
+        self.assertFalse(response.json()["ok"])
+
+    def test_text_capability_route_rejects_sd_lane(self) -> None:
+        class _Inventory:
+            def model_dump(self, *, mode=None):  # noqa: ANN001, ARG002
+                return {"items": [{"host_name": "image-worker", "lanes": [{
+                    "lane_id": "33333333-3333-3333-3333-333333333333",
+                    "backend_type": "sd",
+                    "effective_status": "ready",
+                    "current_model_name": "flux",
+                    "current_model_max_ctx": 8192,
+                    "capabilities": ["inference"],
+                }]}]}
+
+        with mock.patch.object(app_module, "api_inventory", return_value=_Inventory()), mock.patch.object(
+            app_module, "pick_lane_for_model"
+        ) as pick:
+            response = TestClient(app_module.app).post("/api/routes/resolve", json={
+                "modality": "embeddings",
+                "required_capabilities": ["inference"],
+            })
+
+        self.assertFalse(response.json()["ok"])
+        pick.assert_not_called()
+
+    def test_text_capability_routes_accept_mlx_lane(self) -> None:
+        class _Inventory:
+            def model_dump(self, *, mode=None):  # noqa: ANN001, ARG002
+                return {"items": [{"host_name": "mlx-worker", "lanes": [{
+                    "lane_id": "44444444-4444-4444-4444-444444444444",
+                    "backend_type": "mlx",
+                    "effective_status": "ready",
+                    "current_model_name": "mlx-text-model",
+                    "current_model_max_ctx": 8192,
+                    "capabilities": ["chat", "completion", "embeddings", "inference"],
+                }]}]}
+
+        for modality in ("chat", "completion", "embeddings"):
+            with self.subTest(modality=modality):
+                seen: list[dict] = []
+
+                def _pick(**kwargs):  # noqa: ANN001
+                    seen.append(kwargs)
+                    choice = _Choice()
+                    choice.backend_type = "mlx"
+                    choice.current_model_name = kwargs["model"]
+                    return choice
+
+                with mock.patch.object(app_module, "api_inventory", return_value=_Inventory()), mock.patch.object(
+                    app_module, "pick_lane_for_model", side_effect=_pick
+                ):
+                    response = TestClient(app_module.app).post("/api/routes/resolve", json={
+                        "modality": modality,
+                        "required_capabilities": [modality],
+                    })
+
+                self.assertTrue(response.json()["ok"])
+                self.assertEqual(response.json()["choice"]["backend_type"], "mlx")
+                self.assertEqual(seen[0]["backend_type"], "mlx")
+
     def test_explicit_lane_resolve_rejects_not_ready_overlay(self) -> None:
         class _Cursor:
             def execute(self, sql, params):  # noqa: ANN001, ARG002
