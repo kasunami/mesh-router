@@ -40,7 +40,7 @@ from .mw_overlay import (
 )
 from .runtime_state import get_default_runtime_state_store
 from .perf_registry import get_expectation, insert_observation
-from .route_resolver import resolve_route
+from .route_resolver import _requires_multimodal_capability, _tag_model_candidates, resolve_route
 from .router import LanePlacementError, normalize_provider_model_name, pick_lane_for_model
 from .request_store import (
     REQUEST_TERMINAL_STATES,
@@ -2172,6 +2172,18 @@ def _build_lane_capability_payload(cur, lane_ref: str) -> tuple[dict[str, Any], 
         if lane_type in ("cpu", "gpu", "mlx"):
             capabilities.append("inference")
 
+    # Model and MeshWorker candidate tags are also capability advertisements.
+    # Publish the routing capabilities that workers use for discovery without
+    # leaking behavior/placement tags (for example ``fast``) into this field.
+    advertised_capabilities = {
+        "chat", "completion", "embeddings", "fim", "images", "inference", "multimodal", "vision",
+    }
+    for candidate in candidates_by_model.values():
+        capabilities.extend(
+            tag for tag in _normalized_model_tags(candidate.tags) if tag in advertised_capabilities
+        )
+    capabilities = sorted(set(capabilities))
+
     metadata = {
         "lane_type": lane_type,
         "backend_type": normalized_backend or lane_row.get("backend_type"),
@@ -2974,6 +2986,18 @@ def api_routes_resolve(req: RouteResolveRequest) -> RouteResolveResponse:
             for item in str(settings.opportunistic_hosts or "").split(",")
             if item.strip()
         }
+        requested_models = (
+            [req.model]
+            if req.model
+            else _tag_model_candidates(req.tags, modality=req.modality)
+            if req.tags
+            else []
+        )
+        requires_multimodal = _requires_multimodal_capability(
+            model=req.model,
+            tags=req.tags,
+            requested=req.requires_multimodal,
+        )
         for host in inventory.get("items") or []:
             if not isinstance(host, dict):
                 continue
@@ -2990,6 +3014,38 @@ def api_routes_resolve(req: RouteResolveRequest) -> RouteResolveResponse:
                     continue
                 if str(lane.get("effective_status") or lane.get("status") or "").lower() != "ready":
                     continue
+                normalized_backend = _normalize_router_backend_type(lane.get("backend_type"))
+                if req.modality == "images":
+                    if normalized_backend != "sd":
+                        continue
+                elif normalized_backend == "sd":
+                    continue
+
+                current_model = str(lane.get("current_model_name") or "").strip()
+                if not current_model:
+                    continue
+                model_items = [
+                    item
+                    for group in ("local_viable_models", "remote_viable_models", "unverified_models")
+                    for item in (lane.get(group) or [])
+                    if isinstance(item, dict)
+                    and _model_request_matches_candidate(current_model, str(item.get("model_name") or ""))
+                ]
+                current_tags = [
+                    str(tag)
+                    for item in model_items
+                    for tag in (item.get("tags") or [])
+                    if str(tag).strip()
+                ]
+                if requested_models and not any(
+                    _model_request_matches_candidate(wanted, current_model, current_tags)
+                    for wanted in requested_models
+                ):
+                    continue
+                if requires_multimodal:
+                    metadata = lane.get("proxy_auth_metadata") or {}
+                    if not isinstance(metadata, dict) or metadata.get("supports_multimodal") is not True:
+                        continue
                 capabilities = {
                     str(item).strip().lower()
                     for item in lane.get("capabilities") or []
@@ -3000,21 +3056,23 @@ def api_routes_resolve(req: RouteResolveRequest) -> RouteResolveResponse:
                 context = lane.get("current_model_max_ctx")
                 if context is None:
                     context = lane.get("max_context_tokens")
+                if context is None:
+                    for item in model_items:
+                        if item.get("max_context_tokens") is not None:
+                            context = item["max_context_tokens"]
+                            break
                 try:
                     context_tokens = int(context) if context is not None else 0
                 except (TypeError, ValueError):
                     context_tokens = 0
                 if req.min_context_tokens is not None and context_tokens < req.min_context_tokens:
                     continue
-                model_name = str(req.model or lane.get("current_model_name") or "").strip()
-                if not model_name:
-                    continue
                 try:
                     selected = pick_lane_for_model(
-                        model=model_name,
-                        backend_type="sd" if req.modality == "images" else "llama" if req.modality == "chat" else None,
+                        model=current_model,
+                        backend_type="sd" if req.modality == "images" else "llama",
                         request_context_tokens=req.min_context_tokens,
-                        requires_multimodal=req.requires_multimodal,
+                        requires_multimodal=requires_multimodal,
                         pin_worker=host_name,
                         pin_lane_id=str(lane.get("lane_id") or ""),
                     )
@@ -3028,8 +3086,8 @@ def api_routes_resolve(req: RouteResolveRequest) -> RouteResolveResponse:
                     "backend_type": str(selected.backend_type),
                     # The live inventory advertisement is the source of truth
                     # for which model this lane currently serves.
-                    "current_model_name": model_name,
-                    "resolved_model": str(getattr(selected, "resolved_model_name", None) or model_name),
+                    "current_model_name": current_model,
+                    "resolved_model": str(getattr(selected, "resolved_model_name", None) or current_model),
                     "capabilities": sorted(capabilities),
                     "max_context_tokens": context_tokens or None,
                 }))

@@ -274,7 +274,92 @@ class RouteResolveApiTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertTrue(resp.json()["ok"])
         self.assertEqual(resp.json()["choice"]["current_model_name"], "fim-model-from-worker")
-        self.assertIsNone(seen[0]["backend_type"])
+        self.assertEqual(seen[0]["backend_type"], "llama")
+
+    def test_capability_route_preserves_tag_model_and_multimodal_constraints(self) -> None:
+        lane = {
+            "lane_id": "33333333-3333-3333-3333-333333333333",
+            "backend_type": "llama",
+            "effective_status": "ready",
+            "current_model_name": "visual-model",
+            "capabilities": ["chat", "inference"],
+            "proxy_auth_metadata": {"supports_multimodal": True},
+            "local_viable_models": [{
+                "model_name": "visual-model",
+                "tags": ["firecalc.pdf.visual"],
+                "max_context_tokens": 16384,
+            }],
+        }
+
+        class _Inventory:
+            def model_dump(self, *, mode=None):  # noqa: ANN001, ARG002
+                return {"items": [{"host_name": "visual-worker", "lanes": [lane]}]}
+
+        seen: list[dict] = []
+
+        def _pick(**kwargs):  # noqa: ANN001
+            seen.append(kwargs)
+            return _Choice()
+
+        with mock.patch.object(app_module, "api_inventory", return_value=_Inventory()), mock.patch.object(
+            app_module, "pick_lane_for_model", side_effect=_pick
+        ):
+            response = TestClient(app_module.app).post("/api/routes/resolve", json={
+                "tags": ["firecalc.pdf.visual"],
+                "required_capabilities": ["chat"],
+                "min_context_tokens": 12000,
+            })
+
+        self.assertTrue(response.json()["ok"])
+        self.assertEqual(response.json()["choice"]["max_context_tokens"], 16384)
+        self.assertEqual(seen[0]["model"], "visual-model")
+        self.assertTrue(seen[0]["requires_multimodal"])
+
+    def test_capability_route_rejects_requested_model_not_currently_served(self) -> None:
+        class _Inventory:
+            def model_dump(self, *, mode=None):  # noqa: ANN001, ARG002
+                return {"items": [{"host_name": "worker", "lanes": [{
+                    "lane_id": "33333333-3333-3333-3333-333333333333",
+                    "backend_type": "llama",
+                    "effective_status": "ready",
+                    "current_model_name": "actual-model",
+                    "current_model_max_ctx": 8192,
+                    "capabilities": ["chat"],
+                }]}]}
+
+        with mock.patch.object(app_module, "api_inventory", return_value=_Inventory()), mock.patch.object(
+            app_module, "pick_lane_for_model"
+        ) as pick:
+            response = TestClient(app_module.app).post("/api/routes/resolve", json={
+                "model": "unavailable-model",
+                "required_capabilities": ["chat"],
+            })
+
+        self.assertFalse(response.json()["ok"])
+        pick.assert_not_called()
+
+    def test_text_capability_route_rejects_sd_lane(self) -> None:
+        class _Inventory:
+            def model_dump(self, *, mode=None):  # noqa: ANN001, ARG002
+                return {"items": [{"host_name": "image-worker", "lanes": [{
+                    "lane_id": "33333333-3333-3333-3333-333333333333",
+                    "backend_type": "sd",
+                    "effective_status": "ready",
+                    "current_model_name": "flux",
+                    "current_model_max_ctx": 8192,
+                    "capabilities": ["inference"],
+                }]}]}
+
+        with mock.patch.object(app_module, "api_inventory", return_value=_Inventory()), mock.patch.object(
+            app_module, "pick_lane_for_model"
+        ) as pick:
+            response = TestClient(app_module.app).post("/api/routes/resolve", json={
+                "modality": "embeddings",
+                "required_capabilities": ["inference"],
+            })
+
+        self.assertFalse(response.json()["ok"])
+        pick.assert_not_called()
 
     def test_explicit_lane_resolve_rejects_not_ready_overlay(self) -> None:
         class _Cursor:
