@@ -54,6 +54,20 @@ spec:
           envFrom:
             - secretRef:
                 name: mesh-router-secret
+          # Migrations use a dedicated owner-capable credential. Explicit env
+          # entries override the runtime URLs inherited through envFrom without
+          # exposing the owner credentials to the long-running router container.
+          env:
+            - name: MESH_ROUTER_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: mesh-router-migration-secret
+                  key: MESH_ROUTER_DATABASE_URL
+            - name: MESH_ROUTER_MW_STATE_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: mesh-router-migration-secret
+                  key: MESH_ROUTER_MW_STATE_DATABASE_URL
           command:
             - python
             - -c
@@ -73,6 +87,10 @@ spec:
           env:
             - name: MESH_ROUTER_DEPLOYMENT_REVISION
               value: "__SET_BY_DEPLOY__"
+            # The dedicated init container above owns schema migration. Keep
+            # DDL out of the long-running restricted runtime principal.
+            - name: MESH_ROUTER_AUTO_MIGRATE_ON_STARTUP
+              value: "false"
           ports:
             - containerPort: 4010
           readinessProbe:
