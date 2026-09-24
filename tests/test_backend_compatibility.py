@@ -354,6 +354,24 @@ class BackendCompatibilityTests(unittest.TestCase):
         self.assertIn("fim", payload.capabilities)
         self.assertIn("completion", payload.capabilities)
 
+    def test_lane_capabilities_do_not_leak_from_inactive_candidate(self) -> None:
+        active = app_module.LaneModelCandidate(
+            model_name="chat-model",
+            tags=["chat"],
+            locality="local",
+        )
+        inactive = app_module.LaneModelCandidate(
+            model_name="fim-model",
+            tags=["fim", "completion"],
+            locality="local",
+        )
+        advertised = app_module._current_model_advertised_capabilities(
+            candidates_by_model={active.model_name: active, inactive.model_name: inactive},
+            current_model="chat-model",
+        )
+
+        self.assertEqual(advertised, {"chat"})
+
 
 if __name__ == "__main__":
     unittest.main()

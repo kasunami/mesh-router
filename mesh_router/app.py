@@ -616,6 +616,24 @@ def _should_include_candidate_for_capabilities(*, mw_authoritative: bool, source
     return source_locality == "local"
 
 
+def _current_model_advertised_capabilities(
+    *,
+    candidates_by_model: dict[str, LaneModelCandidate],
+    current_model: str | None,
+) -> set[str]:
+    advertised = {
+        "chat", "completion", "embeddings", "fim", "images", "inference", "multimodal", "vision",
+    }
+    current = str(current_model or "").strip()
+    return {
+        tag
+        for candidate in candidates_by_model.values()
+        if current and _model_request_matches_candidate(current, candidate.model_name, candidate.tags)
+        for tag in _normalized_model_tags(candidate.tags)
+        if tag in advertised
+    }
+
+
 def _validated_candidate_applies_to_lane(candidate: dict[str, Any], lane_row: dict[str, Any]) -> bool:
     lane_ids = candidate.get("lane_ids") or []
     if not isinstance(lane_ids, list) or not lane_ids:
@@ -2172,16 +2190,17 @@ def _build_lane_capability_payload(cur, lane_ref: str) -> tuple[dict[str, Any], 
         if lane_type in ("cpu", "gpu", "mlx"):
             capabilities.append("inference")
 
-    # Model and MeshWorker candidate tags are also capability advertisements.
-    # Publish the routing capabilities that workers use for discovery without
-    # leaking behavior/placement tags (for example ``fast``) into this field.
-    advertised_capabilities = {
-        "chat", "completion", "embeddings", "fim", "images", "inference", "multimodal", "vision",
-    }
-    for candidate in candidates_by_model.values():
-        capabilities.extend(
-            tag for tag in _normalized_model_tags(candidate.tags) if tag in advertised_capabilities
+    # Model and MeshWorker candidate tags are also capability advertisements,
+    # but lane-level capabilities describe the model that is live right now.
+    # Do not publish capabilities from an alternate/swappable candidate: route
+    # discovery returns the current model identity and must not imply that this
+    # model supports (for example) FIM merely because another candidate does.
+    capabilities.extend(
+        _current_model_advertised_capabilities(
+            candidates_by_model=candidates_by_model,
+            current_model=lane_row.get("current_model_name"),
         )
+    )
     capabilities = sorted(set(capabilities))
 
     metadata = {
@@ -2986,13 +3005,11 @@ def api_routes_resolve(req: RouteResolveRequest) -> RouteResolveResponse:
             for item in str(settings.opportunistic_hosts or "").split(",")
             if item.strip()
         }
-        requested_models = (
-            [req.model]
-            if req.model
-            else _tag_model_candidates(req.tags, modality=req.modality)
-            if req.tags
-            else []
-        )
+        requested_models: list[str] = []
+        if req.model:
+            requested_models = [req.model]
+        elif req.tags:
+            requested_models = _tag_model_candidates(req.tags, modality=req.modality)
         requires_multimodal = _requires_multimodal_capability(
             model=req.model,
             tags=req.tags,
