@@ -259,7 +259,9 @@ class RouteResolveApiTests(unittest.TestCase):
         seen: list[dict] = []
         def _pick(**kwargs):  # noqa: ANN001
             seen.append(kwargs)
-            return _Choice()
+            choice = _Choice()
+            choice.current_model_name = kwargs["model"]
+            return choice
 
         with mock.patch.object(app_module, "api_inventory", return_value=_Inventory()), mock.patch.object(
             app_module, "pick_lane_for_model", _pick
@@ -299,7 +301,9 @@ class RouteResolveApiTests(unittest.TestCase):
 
         def _pick(**kwargs):  # noqa: ANN001
             seen.append(kwargs)
-            return _Choice()
+            choice = _Choice()
+            choice.current_model_name = kwargs["model"]
+            return choice
 
         with mock.patch.object(app_module, "api_inventory", return_value=_Inventory()), mock.patch.object(
             app_module, "pick_lane_for_model", side_effect=_pick
@@ -337,6 +341,29 @@ class RouteResolveApiTests(unittest.TestCase):
 
         self.assertFalse(response.json()["ok"])
         pick.assert_not_called()
+
+    def test_capability_route_fails_closed_when_model_changes_after_inventory(self) -> None:
+        class _Inventory:
+            def model_dump(self, *, mode=None):  # noqa: ANN001, ARG002
+                return {"items": [{"host_name": "worker", "lanes": [{
+                    "lane_id": "33333333-3333-3333-3333-333333333333",
+                    "backend_type": "llama",
+                    "effective_status": "ready",
+                    "current_model_name": "advertised-model",
+                    "current_model_max_ctx": 8192,
+                    "capabilities": ["chat"],
+                }]}]}
+
+        changed = _Choice()
+        changed.current_model_name = "newly-loaded-model"
+        with mock.patch.object(app_module, "api_inventory", return_value=_Inventory()), mock.patch.object(
+            app_module, "pick_lane_for_model", return_value=changed
+        ):
+            response = TestClient(app_module.app).post("/api/routes/resolve", json={
+                "required_capabilities": ["chat"],
+            })
+
+        self.assertFalse(response.json()["ok"])
 
     def test_text_capability_route_rejects_sd_lane(self) -> None:
         class _Inventory:

@@ -3046,7 +3046,11 @@ def api_routes_resolve(req: RouteResolveRequest) -> RouteResolveResponse:
                     for group in ("local_viable_models", "remote_viable_models", "unverified_models")
                     for item in (lane.get(group) or [])
                     if isinstance(item, dict)
-                    and _model_request_matches_candidate(current_model, str(item.get("model_name") or ""))
+                    and _model_request_matches_candidate(
+                        current_model,
+                        str(item.get("model_name") or ""),
+                        item.get("tags") or [],
+                    )
                 ]
                 current_tags = [
                     str(tag)
@@ -3095,6 +3099,18 @@ def api_routes_resolve(req: RouteResolveRequest) -> RouteResolveResponse:
                     )
                 except Exception:
                     continue
+                selected_model = str(getattr(selected, "current_model_name", None) or "").strip()
+                selected_backend = _normalize_router_backend_type(getattr(selected, "backend_type", None))
+                # Inventory and placement are separate snapshots. Fail closed
+                # if the exact pinned lane changed model or backend between
+                # them rather than returning stale capability/identity data.
+                if not selected_model or not _model_request_matches_candidate(current_model, selected_model):
+                    continue
+                if req.modality == "images":
+                    if selected_backend != "sd":
+                        continue
+                elif selected_backend == "sd":
+                    continue
                 candidates.append((context_tokens, host_name, {
                     "lane_id": str(selected.lane_id),
                     "worker_id": str(selected.worker_id),
@@ -3103,8 +3119,8 @@ def api_routes_resolve(req: RouteResolveRequest) -> RouteResolveResponse:
                     "backend_type": str(selected.backend_type),
                     # The live inventory advertisement is the source of truth
                     # for which model this lane currently serves.
-                    "current_model_name": current_model,
-                    "resolved_model": str(getattr(selected, "resolved_model_name", None) or current_model),
+                    "current_model_name": selected_model,
+                    "resolved_model": str(getattr(selected, "resolved_model_name", None) or selected_model),
                     "capabilities": sorted(capabilities),
                     "max_context_tokens": context_tokens or None,
                 }))
