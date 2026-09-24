@@ -1,9 +1,23 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import sys
 import threading
 
+from .logging_config import setup_logging
+
+
+logger = logging.getLogger(__name__)
+
+
+def _run_startup_migrations(settings_obj, migrate_fn) -> bool:
+    """Run migrations for the serve path unless the runtime explicitly opts out."""
+    if not settings_obj.auto_migrate_on_startup:
+        logger.info("Automatic database migrations are disabled for this runtime")
+        return False
+    migrate_fn()
+    return True
 
 
 def main() -> int:
@@ -56,10 +70,15 @@ def main() -> int:
     from .config import settings, validate_runtime_settings
     from .db import init_db
 
+    # Configure logging before the startup-migration decision so an explicit
+    # runtime opt-out is visible to operators.
+    setup_logging(service_name="mesh-router")
     validate_runtime_settings(settings)
 
-    # Run database migrations on startup
-    init_db()
+    # Only the long-running runtime serve path honors the startup opt-out.
+    # Dedicated migration entry points that call init_db() directly must continue
+    # to run DDL under a migration-capable database principal.
+    _run_startup_migrations(settings, init_db)
 
     import uvicorn
     from .app import app

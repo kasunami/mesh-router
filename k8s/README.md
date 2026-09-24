@@ -38,3 +38,36 @@ The systemd example expects the deploy script to be installed at:
 - `/usr/local/bin/mesh-router-autodeploy.sh`
 
 For example, install `scripts/autodeploy.sh` to that path on the deployment host.
+
+
+## Database credentials and migrations
+
+The long-running router should use a restricted runtime database principal from
+`mesh-router-secret`. Schema migrations are intentionally run by the
+`migrate-db` init container using a separate owner-capable credential from
+`mesh-router-migration-secret`.
+
+The Deployment template explicitly overrides both
+`MESH_ROUTER_DATABASE_URL` and `MESH_ROUTER_MW_STATE_DATABASE_URL` in the
+init container only. The runtime container never receives the migration secret
+and sets `MESH_ROUTER_AUTO_MIGRATE_ON_STARTUP=false`.
+
+Create the runtime secret from `mesh-router-secret.example.yaml` and a
+separate migration secret with the same two URL keys, for example:
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: mesh-router-migration-secret
+  namespace: ai-tools
+type: Opaque
+stringData:
+  MESH_ROUTER_DATABASE_URL: postgresql://migration_owner:password@meshbrain-db:5432/mesh_router
+  MESH_ROUTER_MW_STATE_DATABASE_URL: postgresql://migration_owner:password@meshbrain-db:5432/mesh_router
+```
+
+Use your normal secret-management mechanism (for example SealedSecrets) and
+never commit real database credentials. Development environments may use the
+same principal for both roles, but production should keep runtime DML and
+migration DDL credentials separate.
