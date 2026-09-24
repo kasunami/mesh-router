@@ -5,6 +5,8 @@ import logging
 import sys
 import threading
 
+from .logging_config import setup_logging
+
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +70,9 @@ def main() -> int:
     from .config import settings, validate_runtime_settings
     from .db import init_db
 
+    # Configure logging before the startup-migration decision so an explicit
+    # runtime opt-out is visible to operators.
+    setup_logging(service_name="mesh-router")
     validate_runtime_settings(settings)
 
     # Only the long-running runtime serve path honors the startup opt-out.
