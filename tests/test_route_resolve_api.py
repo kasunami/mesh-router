@@ -388,6 +388,41 @@ class RouteResolveApiTests(unittest.TestCase):
         self.assertFalse(response.json()["ok"])
         pick.assert_not_called()
 
+    def test_text_capability_routes_accept_mlx_lane(self) -> None:
+        class _Inventory:
+            def model_dump(self, *, mode=None):  # noqa: ANN001, ARG002
+                return {"items": [{"host_name": "mlx-worker", "lanes": [{
+                    "lane_id": "44444444-4444-4444-4444-444444444444",
+                    "backend_type": "mlx",
+                    "effective_status": "ready",
+                    "current_model_name": "mlx-text-model",
+                    "current_model_max_ctx": 8192,
+                    "capabilities": ["chat", "completion", "embeddings", "inference"],
+                }]}]}
+
+        for modality in ("chat", "completion", "embeddings"):
+            with self.subTest(modality=modality):
+                seen: list[dict] = []
+
+                def _pick(**kwargs):  # noqa: ANN001
+                    seen.append(kwargs)
+                    choice = _Choice()
+                    choice.backend_type = "mlx"
+                    choice.current_model_name = kwargs["model"]
+                    return choice
+
+                with mock.patch.object(app_module, "api_inventory", return_value=_Inventory()), mock.patch.object(
+                    app_module, "pick_lane_for_model", side_effect=_pick
+                ):
+                    response = TestClient(app_module.app).post("/api/routes/resolve", json={
+                        "modality": modality,
+                        "required_capabilities": [modality],
+                    })
+
+                self.assertTrue(response.json()["ok"])
+                self.assertEqual(response.json()["choice"]["backend_type"], "mlx")
+                self.assertEqual(seen[0]["backend_type"], "mlx")
+
     def test_explicit_lane_resolve_rejects_not_ready_overlay(self) -> None:
         class _Cursor:
             def execute(self, sql, params):  # noqa: ANN001, ARG002

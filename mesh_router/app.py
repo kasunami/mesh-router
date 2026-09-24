@@ -3091,7 +3091,13 @@ def api_routes_resolve(req: RouteResolveRequest) -> RouteResolveResponse:
                 try:
                     selected = pick_lane_for_model(
                         model=current_model,
-                        backend_type="sd" if req.modality == "images" else "llama",
+                        # The inventory filtering above defines the modality
+                        # constraint. Preserve the lane's concrete backend for
+                        # the exact-pin validation so text-capable alternatives
+                        # such as MLX are not incorrectly treated as llama.
+                        backend_type=normalized_backend or (
+                            "sd" if req.modality == "images" else "llama"
+                        ),
                         request_context_tokens=req.min_context_tokens,
                         requires_multimodal=requires_multimodal,
                         pin_worker=host_name,
