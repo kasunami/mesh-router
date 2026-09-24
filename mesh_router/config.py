@@ -15,8 +15,8 @@ class Settings(BaseSettings):
 
     # Postgres (dedicated DB)
     database_url: str = "postgresql://username:password@localhost:5432/mesh_router"
-    # Migrations are opt-out for runtime principals that deliberately lack DDL
-    # ownership. Production schema changes should run under a migration owner.
+    # Controls migrations only in the long-running `mesh-router serve` path.
+    # Dedicated migration entry points call init_db() directly and always run.
     auto_migrate_on_startup: bool = True
 
     # MeshBench lease gate + proxy
