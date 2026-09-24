@@ -2964,6 +2964,87 @@ def api_perf_observations(
 
 @app.post("/api/routes/resolve", response_model=RouteResolveResponse)
 def api_routes_resolve(req: RouteResolveRequest) -> RouteResolveResponse:
+    if req.required_capabilities or req.min_context_tokens is not None:
+        inventory = api_inventory().model_dump(mode="json")
+        required = {str(item).strip().lower() for item in req.required_capabilities if str(item).strip()}
+        candidates: list[tuple[int, str, dict[str, Any]]] = []
+        considered = 0
+        opportunistic_hosts = {
+            item.strip().lower()
+            for item in str(settings.opportunistic_hosts or "").split(",")
+            if item.strip()
+        }
+        for host in inventory.get("items") or []:
+            if not isinstance(host, dict):
+                continue
+            host_name = str(host.get("host_name") or "").strip()
+            if not host_name or (not req.allow_opportunistic and host_name.lower() in opportunistic_hosts):
+                continue
+            for lane in host.get("lanes") or []:
+                if not isinstance(lane, dict):
+                    continue
+                considered += 1
+                if req.lane_id and str(lane.get("lane_id") or "") != str(req.lane_id):
+                    continue
+                if req.host_name and host_name != req.host_name:
+                    continue
+                if str(lane.get("effective_status") or lane.get("status") or "").lower() != "ready":
+                    continue
+                capabilities = {
+                    str(item).strip().lower()
+                    for item in lane.get("capabilities") or []
+                    if str(item).strip()
+                }
+                if not required.issubset(capabilities):
+                    continue
+                context = lane.get("current_model_max_ctx")
+                if context is None:
+                    context = lane.get("max_context_tokens")
+                try:
+                    context_tokens = int(context) if context is not None else 0
+                except (TypeError, ValueError):
+                    context_tokens = 0
+                if req.min_context_tokens is not None and context_tokens < req.min_context_tokens:
+                    continue
+                model_name = str(req.model or lane.get("current_model_name") or "").strip()
+                if not model_name:
+                    continue
+                try:
+                    selected = pick_lane_for_model(
+                        model=model_name,
+                        backend_type="sd" if req.modality == "images" else "llama" if req.modality == "chat" else None,
+                        request_context_tokens=req.min_context_tokens,
+                        requires_multimodal=req.requires_multimodal,
+                        pin_worker=host_name,
+                        pin_lane_id=str(lane.get("lane_id") or ""),
+                    )
+                except Exception:
+                    continue
+                candidates.append((context_tokens, host_name, {
+                    "lane_id": str(selected.lane_id),
+                    "worker_id": str(selected.worker_id),
+                    "base_url": str(selected.base_url),
+                    "lane_type": str(selected.lane_type),
+                    "backend_type": str(selected.backend_type),
+                    # The live inventory advertisement is the source of truth
+                    # for which model this lane currently serves.
+                    "current_model_name": model_name,
+                    "resolved_model": str(getattr(selected, "resolved_model_name", None) or model_name),
+                    "capabilities": sorted(capabilities),
+                    "max_context_tokens": context_tokens or None,
+                }))
+        if not candidates:
+            return RouteResolveResponse(
+                ok=False,
+                reason="no healthy lane satisfies required capabilities and minimum context",
+                candidates_considered=considered,
+            )
+        # Router-owned deterministic tie-break: most context headroom first,
+        # then stable host/lane identity. Runtime model choice remains MW-owned.
+        candidates.sort(key=lambda item: (-item[0], item[1].lower(), item[2]["lane_id"]))
+        choice = candidates[0][2]
+        return RouteResolveResponse(ok=True, choice=choice, candidates_considered=considered)
+
     choice, perf, reason, candidates_considered = resolve_route(
         model=req.model,
         modality=req.modality,

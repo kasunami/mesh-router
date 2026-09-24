@@ -321,9 +321,13 @@ class PerfExpectationResponse(BaseModel):
 
 
 class RouteResolveRequest(BaseModel):
-    modality: Literal["chat", "embeddings", "images"] = "chat"
+    modality: Literal["chat", "embeddings", "images", "completion"] = "chat"
     model: str | None = None
     tags: list[str] = Field(default_factory=list)
+    # Capability-first callers let MeshRouter choose from live worker/lane
+    # advertisements instead of pinning a model name in the caller.
+    required_capabilities: list[str] = Field(default_factory=list)
+    min_context_tokens: int | None = Field(default=None, ge=1)
 
     # Explicit targeting mode (optional)
     host_name: str | None = None
