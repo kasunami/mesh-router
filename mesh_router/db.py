@@ -33,6 +33,9 @@ mw_state_db = Db(settings.mw_state_database_url or settings.database_url)
 
 
 def init_db() -> None:
+    if not settings.auto_migrate_on_startup:
+        logger.info("Automatic database migrations are disabled for this runtime")
+        return
     _apply_migrations(db, label="primary")
     if settings.mw_state_database_url and settings.mw_state_database_url != settings.database_url:
         _apply_migrations(mw_state_db, label="mw_state")
