@@ -85,6 +85,7 @@ from .schemas import (
 from .tokens import sign_token, verify_token
 from .viability import SwapEstimation, ViabilityLaneInfo, ViabilityModelInfo, check_viability, estimate_swap_time
 from .logging_config import setup_logging
+from .model_names import canonical_model_name
 from .mw_control import MWControlError, MeshWorkerCommandClient
 from .mw_commands import send_mw_command_require_ready
 from .mw_grpc import MwGrpcClient, MwGrpcClientError, MwGrpcTarget
@@ -1283,6 +1284,9 @@ def _model_lookup_keys(model_name: str | None) -> set[str]:
         _add_variant(keys, stripped)
 
     out = {key for key in keys if key}
+    canonical = canonical_model_name(raw)
+    if canonical:
+        out.add(canonical)
     out |= _family_size_tags_from_keys(out)
     return out
 
@@ -3409,12 +3413,17 @@ def v1_models() -> dict[str, Any]:
             model_name = str(candidate.get("model_name") or "").strip()
             if not model_name or not _is_public_model_name(model_name):
                 continue
-            by_name.setdefault(model_name, [])
-            by_name[model_name] = _normalized_model_tags(by_name[model_name] + list(candidate.get("tags") or []))
+            catalog_name = canonical_model_name(model_name)
+            if not catalog_name:
+                continue
+            by_name.setdefault(catalog_name, [])
+            by_name[catalog_name] = _normalized_model_tags(by_name[catalog_name] + list(candidate.get("tags") or []))
 
         current_model = str(row.get("current_model_name") or "").strip()
         if current_model and _is_public_model_name(current_model):
-            by_name.setdefault(current_model, [])
+            catalog_name = canonical_model_name(current_model)
+            if catalog_name:
+                by_name.setdefault(catalog_name, [])
 
     for model_name in sorted(by_name.keys(), key=str.lower):
         if model_name in seen:

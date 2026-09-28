@@ -8,6 +8,7 @@ from typing import Any
 
 from .db import db, mw_state_db, q
 from .config import settings
+from .model_names import canonical_model_name
 from .mw_overlay import apply_mw_effective_status, is_explicit_mw_managed
 
 _RECENT_PROXY_ERROR_COOLDOWN_S = 900
@@ -213,6 +214,9 @@ def _model_lookup_keys(model_name: str | None) -> set[str]:
         keys.add(re.sub(r"[-_.](?:\d+bit|fp8)$", "", dequantized))
 
     out = {key for key in keys if key}
+    canonical = canonical_model_name(raw)
+    if canonical:
+        out.add(canonical)
     out |= _family_size_tags_from_keys(out)
     return out
 
