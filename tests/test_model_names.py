@@ -15,6 +15,7 @@ from mesh_router.model_names import canonical_model_name
         ("Qwen3.6-35B-A3B-UD-Q4_K_M.gguf", "qwen3.6-35b-a3b"),
         ("qwen3.6-35b-a3b", "qwen3.6-35b-a3b"),
         ("gpt-oss-20b-q4km", "gpt-oss-20b"),
+        ("FIM-7B.Q4_K_M.gguf", "fim-7b"),
         ("gemma-4-26b-a4b-qat", "gemma-4-26b-a4b"),
         ("/models/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf", "qwen3.6-35b-a3b"),
     ],

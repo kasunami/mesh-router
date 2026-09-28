@@ -36,6 +36,14 @@ def canonical_model_name(model_name: str | None) -> str:
             break
 
     normalized = stem.strip().lower().replace("_", "-").replace(":", "-")
+    # Some inventories separate the architecture size from quantization with a
+    # dot (for example, "fim-7b.Q4_K_M"). Preserve version dots such as 3.5,
+    # while treating only a dot directly before a quant marker as a separator.
+    normalized = re.sub(
+        r"\.(?=(?:iq|q)[234568]|(?:f16|fp16|fp8|bf16|int[248]|mxfp4|nvfp4|qat|ptq\d+))",
+        "-",
+        normalized,
+    )
     parts = [part for part in normalized.split("-") if part]
     for index, part in enumerate(parts):
         if _QUANT_MARKER.fullmatch(part) or part in _QUANT_VARIANT_MARKERS:
