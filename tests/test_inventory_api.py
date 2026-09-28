@@ -43,11 +43,16 @@ class _FakeCursor:
 
 
 class _FakeConn:
-    def __init__(self, cursor: _FakeCursor) -> None:
+    def __init__(self, cursor: _FakeCursor, on_commit=None) -> None:  # noqa: ANN001
         self._cursor = cursor
+        self._on_commit = on_commit
 
     def cursor(self):  # noqa: ANN001
         return self._cursor
+
+    def commit(self) -> None:
+        if self._on_commit:
+            self._on_commit()
 
     def __enter__(self):  # noqa: ANN001
         return self
@@ -59,9 +64,13 @@ class _FakeConn:
 class _FakeDb:
     def __init__(self, cursor: _FakeCursor) -> None:
         self._cursor = cursor
+        self.commit_count = 0
+
+    def _did_commit(self) -> None:
+        self.commit_count += 1
 
     def connect(self):  # noqa: ANN001
-        return _FakeConn(self._cursor)
+        return _FakeConn(self._cursor, self._did_commit)
 
 
 class InventoryApiTests(unittest.TestCase):
@@ -137,6 +146,7 @@ class InventoryApiTests(unittest.TestCase):
         self.assertEqual(lane["supported_models"], ["qwen3.5-9b"])
         self.assertEqual(len(lane["local_viable_models"]), 1)
         self.assertEqual(len(lane["remote_viable_models"]), 0)
+        self.assertEqual(app_module.db.commit_count, 1)
 
     def test_api_inventory_filters_backend_incompatible_viable_models(self) -> None:
         base_rows = [

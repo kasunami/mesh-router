@@ -21,6 +21,8 @@ def test_public_model_name_filter_rejects_support_files() -> None:
 def test_public_model_name_filter_allows_runnable_names() -> None:
     accepted = [
         "Qwen3.5-9B-Q4_K_M.gguf",
+        "qwen3.5-9b",
+        "qwen3.6-35b-a3b",
         "falcon3-10b",
         "gemma-4-26B-A4B-it-Q4_K_M",
         "flux1-schnell-Q4_K_S",
@@ -43,6 +45,7 @@ def test_v1_models_lists_ready_inventory_without_live_placement(monkeypatch) -> 
                     "current_model_name": "loaded-model",
                     "viable_models": [
                         {"model_name": "ready-model", "tags": ["chat"]},
+                        {"model_name": "qwen3.6-35b-a3b", "tags": ["chat"]},
                         {"model_name": "tokenizer.json", "tags": []},
                     ],
                 },
@@ -82,4 +85,8 @@ def test_v1_models_lists_ready_inventory_without_live_placement(monkeypatch) -> 
     )
     result = app_module.v1_models()
 
-    assert [item["id"] for item in result["data"]] == ["loaded-model", "ready-model"]
+    assert [item["id"] for item in result["data"]] == [
+        "loaded-model",
+        "qwen3.6-35b-a3b",
+        "ready-model",
+    ]

@@ -1121,6 +1121,23 @@ _PUBLIC_MODEL_SUPPORT_TOKENS = (
     "tokenizer",
     "vae",
 )
+_PUBLIC_MODEL_SUPPORT_SUFFIXES = {
+    ".bin",
+    ".json",
+    ".jinja",
+    ".lock",
+    ".md",
+    ".metadata",
+    ".model",
+    ".onnx",
+    ".incomplete",
+    ".py",
+    ".safetensors",
+    ".sh",
+    ".txt",
+    ".yaml",
+    ".yml",
+}
 
 
 def _is_public_model_name(model: str) -> bool:
@@ -1143,10 +1160,69 @@ def _is_public_model_name(model: str) -> bool:
         return False
     if any(token in lowered for token in _PUBLIC_MODEL_SUPPORT_TOKENS):
         return False
+    # Canonical model IDs commonly contain version dots (for example,
+    # "qwen3.6-35b-a3b"). Reject known support-file extensions instead of
+    # treating every final dotted segment as a filesystem extension.
     suffix = Path(m).suffix.lower()
-    if suffix and suffix != ".gguf":
+    if suffix in _PUBLIC_MODEL_SUPPORT_SUFFIXES:
         return False
     return True
+
+
+def _persist_mw_validated_viability(
+    cur: Any,
+    *,
+    lane_id: str,
+    candidates_by_model: dict[str, LaneModelCandidate],
+    artifact_rows: list[dict[str, Any]],
+    host_id: str,
+    local_model_root: str | None,
+) -> None:
+    """Persist fresh MW validation for local artifacts as authoritative viability.
+
+    MW's validated-candidate list is the loadability source of truth for managed
+    lanes. The public catalog reads persisted viability, so retain that validated
+    result there rather than losing it behind stale static memory estimates.
+    """
+    artifacts_by_name = {
+        str(row.get("model_name") or "").strip(): row
+        for row in artifact_rows
+        if str(row.get("host_id") or "") == host_id
+        and str(row.get("model_name") or "").strip()
+        and _path_matches_local_model_root(
+            artifact_path=row.get("local_path"),
+            local_model_root=local_model_root,
+        )
+    }
+    for model_name, candidate in candidates_by_model.items():
+        if "mw-validated" not in set(candidate.tags or []):
+            continue
+        artifact = artifacts_by_name.get(model_name)
+        if not artifact or not artifact.get("artifact_id") or not artifact.get("model_id"):
+            # The already-loaded model is advertised separately from the lane's
+            # current_model_name. Don't create a viability row without an artifact.
+            continue
+        cur.execute(
+            """
+            INSERT INTO lane_model_viability (
+              lane_id, model_id, artifact_id, source_locality,
+              fits_memory, projected_free_bytes, required_memory_bytes,
+              tps_estimate, tps_source, is_viable, reason, last_checked_at
+            )
+            VALUES (%s, %s, %s, 'local', true, NULL, NULL, NULL, 'mw_validated', true, NULL, now())
+            ON CONFLICT (lane_id, model_id, source_locality) DO UPDATE
+            SET artifact_id = EXCLUDED.artifact_id,
+                fits_memory = true,
+                projected_free_bytes = NULL,
+                required_memory_bytes = NULL,
+                tps_estimate = NULL,
+                tps_source = 'mw_validated',
+                is_viable = true,
+                reason = NULL,
+                last_checked_at = now()
+            """,
+            (lane_id, artifact["model_id"], artifact["artifact_id"]),
+        )
 
 
 def _bytes_from_gib(value: Any) -> int | None:
@@ -2120,6 +2196,14 @@ def _build_lane_capability_payload(cur, lane_ref: str) -> tuple[dict[str, Any], 
             artifact_rows=[dict(row) for row in artifact_rows],
             local_model_root=local_model_root,
         )
+        _persist_mw_validated_viability(
+            cur,
+            lane_id=resolved_lane_id,
+            candidates_by_model=candidates_by_model,
+            artifact_rows=[dict(row) for row in artifact_rows],
+            host_id=resolved_host_id,
+            local_model_root=local_model_root,
+        )
 
     supported_models = sorted(candidates_by_model.keys())
 
@@ -2893,6 +2977,9 @@ def api_inventory() -> InventoryResponse:
             with db.connect() as conn:
                 with conn.cursor() as cur:
                     _, capability_payload = _build_lane_capability_payload(cur, lane_id)
+                # Capability building refreshes persisted lane viability; keep the
+                # refreshed catalog state so /v1/models observes the same result.
+                conn.commit()
             local = [candidate.model_dump() for candidate in capability_payload.local_viable_models]
             remote = [candidate.model_dump() for candidate in capability_payload.remote_viable_models]
             lane_out = {

@@ -9,6 +9,44 @@ from mesh_router.viability import ViabilityLaneInfo
 
 
 class MwValidatedCapabilitiesTests(unittest.TestCase):
+    def test_mw_validated_local_candidate_is_persisted_for_catalog(self) -> None:
+        class _Cursor:
+            def __init__(self) -> None:
+                self.calls: list[tuple[str, tuple[object, ...] | None]] = []
+
+            def execute(self, sql, params=None):  # noqa: ANN001
+                self.calls.append((sql, params))
+
+        cur = _Cursor()
+        candidate = LaneModelCandidate(
+            model_name="qwen3.6-35b-a3b",
+            tags=["mw-validated", "chat"],
+            locality="local",
+            artifact_path="/models/qwen3.6-35b-a3b.gguf",
+        )
+        app_module._persist_mw_validated_viability(
+            cur,
+            lane_id="lane-1",
+            candidates_by_model={candidate.model_name: candidate},
+            artifact_rows=[
+                {
+                    "artifact_id": "artifact-1",
+                    "host_id": "host-1",
+                    "model_id": "model-1",
+                    "model_name": candidate.model_name,
+                    "local_path": "/models/qwen3.6-35b-a3b.gguf",
+                }
+            ],
+            host_id="host-1",
+            local_model_root="/models",
+        )
+
+        self.assertEqual(len(cur.calls), 1)
+        sql, params = cur.calls[0]
+        self.assertIn("is_viable = true", sql)
+        self.assertIn("tps_source = 'mw_validated'", sql)
+        self.assertEqual(params, ("lane-1", "model-1", "artifact-1"))
+
     def test_mw_validated_candidate_overrides_stale_zero_tps_viability_gap(self) -> None:
         candidates: dict[str, LaneModelCandidate] = {}
         lane_row = {
