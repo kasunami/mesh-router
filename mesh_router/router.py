@@ -164,6 +164,40 @@ def _suspension_blocks_demand_start(row: dict[str, Any], backend_type: str | Non
     return True
 
 
+def _augment_declared_models(row: dict[str, Any]) -> None:
+    """Add explicitly declared models without treating generic MW validation as inventory.
+
+    MW validated candidates describe model/backend/lane compatibility. Their lane IDs
+    are lane types (for example ``gpu``), not proof that an artifact exists on this
+    host. Host-specific swappable inventory comes from lane_model_viability and
+    host_model_artifacts; otherwise a GPU host with no Qwen weights could be chosen
+    for a Qwen request just because Qwen is generally valid on GPU lanes.
+    """
+    meta = row.get("proxy_auth_metadata") or {}
+    if not isinstance(meta, dict):
+        meta = {}
+    declared = meta.get("declared_models") or meta.get("supported_models") or []
+    if not isinstance(declared, list):
+        declared = []
+    tags_by_model = meta.get("declared_model_tags") if isinstance(meta.get("declared_model_tags"), dict) else {}
+    max_ctx_by_model = meta.get("declared_max_ctx") if isinstance(meta.get("declared_max_ctx"), dict) else {}
+    mw_authoritative = is_explicit_mw_managed(row) and row.get("validated_candidates") is not None
+    out: list[dict[str, Any]] = [] if mw_authoritative else list(row.get("local_viable_models") or [])
+    for name in declared:
+        model_name = str(name or "").strip()
+        if not model_name:
+            continue
+        out.append(
+            {
+                "model_name": model_name,
+                "tags": list(tags_by_model.get(model_name) or []),
+                "max_ctx": max_ctx_by_model.get(model_name),
+                "allowed": True,
+            }
+        )
+    row["local_viable_models"] = out
+
+
 
 def _pick_viable_model_name(*, requested_model: str, lane_row: dict[str, Any], request_context_tokens: int | None) -> str | None:
     """Choose a concrete model artifact for a generic request tag.
@@ -471,46 +505,6 @@ def _pick_lane_for_model_single(
     load times, TPS, and error rates.
     """
     excluded = {lane_id for lane_id in (exclude_lane_ids or set()) if lane_id}
-
-    def _augment_declared_models(row: dict[str, Any]) -> None:
-        meta = row.get("proxy_auth_metadata") or {}
-        if not isinstance(meta, dict):
-            meta = {}
-        declared = meta.get("declared_models") or meta.get("supported_models") or []
-        if not isinstance(declared, list):
-            declared = []
-        tags_by_model = meta.get("declared_model_tags") if isinstance(meta.get("declared_model_tags"), dict) else {}
-        max_ctx_by_model = meta.get("declared_max_ctx") if isinstance(meta.get("declared_max_ctx"), dict) else {}
-        validated_candidates = row.get("validated_candidates")
-        mw_authoritative = is_explicit_mw_managed(row) and validated_candidates is not None
-        out: list[dict[str, Any]] = [] if mw_authoritative else list(row.get("local_viable_models") or [])
-        for name in declared:
-            model_name = str(name or "").strip()
-            if not model_name:
-                continue
-            out.append(
-                {
-                    "model_name": model_name,
-                    "tags": list(tags_by_model.get(model_name) or []),
-                    "max_ctx": max_ctx_by_model.get(model_name),
-                    "allowed": True,
-                }
-            )
-        for item in validated_candidates or []:
-            if not isinstance(item, dict):
-                continue
-            model_name = str(item.get("canonical_id") or item.get("model_name") or "").strip()
-            if not model_name:
-                continue
-            out.append(
-                {
-                    "model_name": model_name,
-                    "tags": list(item.get("tags") or []),
-                    "max_ctx": item.get("max_ctx"),
-                    "allowed": True,
-                }
-            )
-        row["local_viable_models"] = out
 
     if pin_lane_id:
         try:

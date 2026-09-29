@@ -522,6 +522,39 @@ class PreferMwLanePlacementTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "no READY lanes"):
                 router_module.pick_lane_for_model(model="Qwen3.5-2B-Q4_K_M.gguf")
 
+    def test_generic_mw_validated_candidate_does_not_claim_host_artifact(self) -> None:
+        rows = [
+            {
+                "lane_id": "worker-no-qwen-gpu",
+                "host_name": "worker-no-qwen",
+                "base_url": "http://worker-no-qwen.example:21434",
+                "lane_type": "gpu",
+                "backend_type": "llama",
+                "status": "ready",
+                "proxy_auth_metadata": {"control_plane": "mw", "mw_host_id": "worker-no-qwen", "mw_lane_id": "gpu"},
+                "current_model_name": "FIM-7B.Q4_K_M.gguf",
+                "current_model_tags": [],
+                "current_model_max_ctx": 16384,
+                "local_viable_models": [],
+                "validated_candidates": [
+                    {
+                        "canonical_id": "Qwen3.5-9B-Q4_K_M.gguf",
+                        "lane_ids": ["gpu"],
+                        "backend_types": ["llama.cpp"],
+                    }
+                ],
+                "remote_viable_models": [],
+            }
+        ]
+
+        with (
+            mock.patch.object(router_module, "db", _Db()),
+            mock.patch.object(router_module, "q", return_value=rows),
+            mock.patch.object(router_module, "apply_mw_effective_status", lambda *args, **kwargs: None),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "no READY lanes available serving requested model"):
+                router_module.pick_lane_for_model(model="qwen3.5-9b", backend_type="llama")
+
     def test_qwen_selection_tag_matches_quantized_viable_model(self) -> None:
         rows = [
             {
