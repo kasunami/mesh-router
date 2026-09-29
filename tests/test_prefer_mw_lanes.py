@@ -491,7 +491,7 @@ class PreferMwLanePlacementTests(unittest.TestCase):
         self.assertIn("p.allowed IS DISTINCT FROM false", query_text)
         self.assertIn("jsonb_array_length(COALESCE(h.model_store_paths", query_text)
 
-    def test_mw_validated_candidates_replace_stale_db_viability(self) -> None:
+    def test_host_local_artifact_viability_survives_generic_mw_candidates(self) -> None:
         rows = [
             {
                 "lane_id": "mw-gpu",
@@ -519,8 +519,10 @@ class PreferMwLanePlacementTests(unittest.TestCase):
             mock.patch.object(router_module, "q", return_value=rows),
             mock.patch.object(router_module, "apply_mw_effective_status", lambda *args, **kwargs: None),
         ):
-            with self.assertRaisesRegex(RuntimeError, "no READY lanes"):
-                router_module.pick_lane_for_model(model="Qwen3.5-2B-Q4_K_M.gguf")
+            choice = router_module.pick_lane_for_model(model="Qwen3.5-2B-Q4_K_M.gguf")
+
+        self.assertEqual(choice.lane_id, "mw-gpu")
+        self.assertEqual(choice.worker_id, "worker")
 
     def test_generic_mw_validated_candidate_does_not_claim_host_artifact(self) -> None:
         rows = [

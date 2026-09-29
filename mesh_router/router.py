@@ -9,7 +9,7 @@ from typing import Any
 from .db import db, mw_state_db, q
 from .config import settings
 from .model_names import canonical_model_name
-from .mw_overlay import apply_mw_effective_status, is_explicit_mw_managed
+from .mw_overlay import apply_mw_effective_status
 
 _RECENT_PROXY_ERROR_COOLDOWN_S = 900
 _PROVIDER_MODEL_PREFIXES = ("openai/",)
@@ -171,7 +171,8 @@ def _augment_declared_models(row: dict[str, Any]) -> None:
     are lane types (for example ``gpu``), not proof that an artifact exists on this
     host. Host-specific swappable inventory comes from lane_model_viability and
     host_model_artifacts; otherwise a GPU host with no Qwen weights could be chosen
-    for a Qwen request just because Qwen is generally valid on GPU lanes.
+    for a Qwen request just because Qwen is generally valid on GPU lanes. Keep those
+    artifact-backed records even when MW also supplies generic validated candidates.
     """
     meta = row.get("proxy_auth_metadata") or {}
     if not isinstance(meta, dict):
@@ -181,8 +182,7 @@ def _augment_declared_models(row: dict[str, Any]) -> None:
         declared = []
     tags_by_model = meta.get("declared_model_tags") if isinstance(meta.get("declared_model_tags"), dict) else {}
     max_ctx_by_model = meta.get("declared_max_ctx") if isinstance(meta.get("declared_max_ctx"), dict) else {}
-    mw_authoritative = is_explicit_mw_managed(row) and row.get("validated_candidates") is not None
-    out: list[dict[str, Any]] = [] if mw_authoritative else list(row.get("local_viable_models") or [])
+    out: list[dict[str, Any]] = list(row.get("local_viable_models") or [])
     for name in declared:
         model_name = str(name or "").strip()
         if not model_name:
