@@ -3404,26 +3404,26 @@ def v1_models() -> dict[str, Any]:
     for row in rows:
         if str(row.get("effective_status") or row.get("status") or "").strip().lower() != "ready":
             continue
-        viable_models = row.get("viable_models") or []
-        if not isinstance(viable_models, list):
-            viable_models = []
-        for candidate in viable_models:
-            if not isinstance(candidate, dict):
-                continue
-            model_name = str(candidate.get("model_name") or "").strip()
-            if not model_name or not _is_public_model_name(model_name):
-                continue
-            catalog_name = canonical_model_name(model_name)
-            if not catalog_name:
-                continue
-            by_name.setdefault(catalog_name, [])
-            by_name[catalog_name] = _normalized_model_tags(by_name[catalog_name] + list(candidate.get("tags") or []))
-
         current_model = str(row.get("current_model_name") or "").strip()
-        if current_model and _is_public_model_name(current_model):
-            catalog_name = canonical_model_name(current_model)
-            if catalog_name:
-                by_name.setdefault(catalog_name, [])
+        if not current_model or not _is_public_model_name(current_model):
+            continue
+        catalog_name = canonical_model_name(current_model)
+        if not catalog_name:
+            continue
+
+        # Advertise only models currently loaded on ready lanes. Candidate
+        # models are useful for placement, but listing them here makes clients
+        # offer models that would require an implicit swap before use.
+        tags = list(row.get("current_model_tags") or [])
+        viable_models = row.get("viable_models") or []
+        if isinstance(viable_models, list):
+            for candidate in viable_models:
+                if not isinstance(candidate, dict):
+                    continue
+                candidate_name = str(candidate.get("model_name") or "").strip()
+                if candidate_name and canonical_model_name(candidate_name) == catalog_name:
+                    tags.extend(candidate.get("tags") or [])
+        by_name[catalog_name] = _normalized_model_tags(by_name.get(catalog_name, []) + tags)
 
     for model_name in sorted(by_name.keys(), key=str.lower):
         if model_name in seen:

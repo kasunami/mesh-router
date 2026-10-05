@@ -85,8 +85,4 @@ def test_v1_models_lists_ready_inventory_without_live_placement(monkeypatch) -> 
     )
     result = app_module.v1_models()
 
-    assert [item["id"] for item in result["data"]] == [
-        "loaded-model",
-        "qwen3.6-35b-a3b",
-        "ready-model",
-    ]
+    assert [item["id"] for item in result["data"]] == ["loaded-model"]
