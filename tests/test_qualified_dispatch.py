@@ -53,6 +53,7 @@ def test_ready_instance_is_reused_without_load_and_total_budget_is_preserved(har
     assert calls.index("reserve") < calls.index("lease")
     infer = next(c[1] for c in calls if isinstance(c,tuple) and c[0]=="inference")
     assert infer["request_payload"]["max_tokens"] == 4096
+    assert infer["apply_reasoning_budget"] is False
     assert calls[-1] == ("close", True)
 
 

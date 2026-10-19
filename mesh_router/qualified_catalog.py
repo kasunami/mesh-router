@@ -45,6 +45,8 @@ def read_profiles() -> list[dict[str, Any]]:
                   l.current_model_name,l.proxy_auth_metadata,h.host_name,
                   m.model_id,m.model_name,hma.local_path,hma.size_bytes,
                   hma.present,hma.eligible,p.max_ctx AS policy_max_ctx,
+                  EXISTS(SELECT 1 FROM router_leases rl JOIN lanes sibling USING(lane_id)
+                    WHERE sibling.host_id=l.host_id AND rl.state='active' AND rl.expires_at>now()) AS reserved,
                   t.settings->'qualified_dispatch' AS policy
                 FROM model_tuning_profiles t
                 JOIN lanes l ON l.lane_id=t.lane_id AND l.host_id=t.host_id
@@ -82,7 +84,7 @@ def read_profiles() -> list[dict[str, Any]]:
         row["operational"] = (state == "ready" and not row["suspended"] and not row["excluded"]
                               and not row.get("active_job") and not row.get("in_use"))
         row["loadable"] = bool(row.get("present") and row.get("eligible") and row["operational"])
-        row["dispatch_ready"] = row["loadable"] and row["loaded"]
+        row["dispatch_ready"] = row["loadable"] and row["loaded"] and not row.get("reserved")
         result.append(row)
     return result
 
@@ -122,6 +124,10 @@ def bound_payload(payload: dict[str, Any], policy: dict[str, Any]) -> dict[str, 
     if type(requested) is not int or requested <= 0 or requested > policy["output_limit"]:
         raise ValueError("completion budget exceeds the model's total output limit")
     out["max_tokens"] = requested
+    stream_options = out.get("stream_options") or {}
+    if not isinstance(stream_options, dict):
+        raise ValueError("stream_options must be an object")
+    out["stream_options"] = {**stream_options, "include_usage": True}
     # This is a TOTAL generation cap. Do not run the legacy Qwen expansion.
     for key in ("reasoning_budget", "reasoning_budget_tokens", "thinking_tokens", "thinking_budget_tokens"):
         if key in out and (type(out[key]) is not int or not 0 <= out[key] <= policy["reasoning_limit"]):

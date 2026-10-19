@@ -4681,6 +4681,7 @@ async def _collect_mw_chat_completion(
     request_id: str,
     model: str,
     request_payload: dict[str, Any],
+    apply_reasoning_budget: bool = True,
 ) -> dict[str, Any]:
     content_parts: list[str] = []
     usage_prompt: int | None = None
@@ -4688,7 +4689,8 @@ async def _collect_mw_chat_completion(
     usage_total: int | None = None
     finish_reason: str | None = None
     tool_calls: dict[int, dict[str, Any]] = {}
-    backend_payload = _apply_reasoning_token_budget(model_name=model, payload=request_payload)
+    backend_payload = (_apply_reasoning_token_budget(model_name=model, payload=request_payload)
+                       if apply_reasoning_budget else dict(request_payload))
 
     async for event in MwGrpcClient().stream_chat(
         target=target,
@@ -4706,11 +4708,11 @@ async def _collect_mw_chat_completion(
             message = str(event.error_message or "MW chat request failed")
             raise RuntimeError(f"{code}: {message}")
         try:
-            if event.usage and getattr(event.usage, "prompt_tokens", None) is not None:
+            if event.usage and int(getattr(event.usage, "prompt_tokens", 0) or 0) > 0:
                 usage_prompt = int(event.usage.prompt_tokens)
-            if event.usage and getattr(event.usage, "completion_tokens", None) is not None:
+            if event.usage and int(getattr(event.usage, "completion_tokens", 0) or 0) > 0:
                 usage_completion = int(event.usage.completion_tokens)
-            if event.usage and getattr(event.usage, "total_tokens", None) is not None:
+            if event.usage and int(getattr(event.usage, "total_tokens", 0) or 0) > 0:
                 usage_total = int(event.usage.total_tokens)
         except Exception:
             pass

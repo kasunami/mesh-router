@@ -80,6 +80,7 @@ def test_q27_uses_native_explicit_thinking_budget():
     p = policy(); p["runtime"] = "q27"
     request = q.bound_payload({"max_tokens": 4096}, p)
     assert request["thinking"] == {"type": "enabled", "budget_tokens": 1024}
+    assert request["stream_options"]["include_usage"] is True
 
 
 def test_read_profiles_never_qualifies_stale_suspended_or_excluded_hosts(monkeypatch):
