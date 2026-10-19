@@ -4691,6 +4691,12 @@ async def _collect_mw_chat_completion(
     tool_calls: dict[int, dict[str, Any]] = {}
     backend_payload = (_apply_reasoning_token_budget(model_name=model, payload=request_payload)
                        if apply_reasoning_budget else dict(request_payload))
+    if not apply_reasoning_budget:
+        # MW's transport is a stream even for a non-streaming public response.
+        # Keep the backend in SSE mode for older worker adapters, then collect
+        # content/tool calls and trailing usage into the public JSON response.
+        backend_payload["stream"] = True
+        backend_payload["stream_options"] = {**(backend_payload.get("stream_options") or {}), "include_usage": True}
 
     async for event in MwGrpcClient().stream_chat(
         target=target,

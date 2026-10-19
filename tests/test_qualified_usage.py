@@ -27,4 +27,6 @@ def test_qualified_collection_preserves_total_budget_and_final_usage(monkeypatch
         apply_reasoning_budget=False))
     assert seen[0]["max_tokens"]==4096
     assert seen[0]["request_payload"]["max_tokens"]==4096
+    assert seen[0]["request_payload"]["stream"] is True
+    assert seen[0]["request_payload"]["stream_options"]["include_usage"] is True
     assert result["usage"]==dict(prompt_tokens=123,completion_tokens=2,total_tokens=125)
