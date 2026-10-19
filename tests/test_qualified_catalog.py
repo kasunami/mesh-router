@@ -107,3 +107,19 @@ def test_read_profiles_never_qualifies_stale_suspended_or_excluded_hosts(monkeyp
     assert [r["dispatch_ready"] for r in result] == [True, False, False]
     monkeypatch.setattr(q.settings, "route_denied_hosts", "worker-a")
     assert not any(r["loadable"] for r in q.read_profiles())
+
+
+def test_native_count_conversion_preserves_tools_calls_and_results():
+    payload={"messages":[{"role":"system","content":"rules"},
+        {"role":"assistant","content":"","tool_calls":[{"id":"a","function":{"name":"lookup","arguments":"{\"key\":\"value\"}"}}]},
+        {"role":"tool","tool_call_id":"a","content":"answer"}],
+        "tools":[{"type":"function","function":{"name":"lookup","description":"find","parameters":{"type":"object"}}}]}
+    counted=q.q27_count_body(payload)
+    assert counted["messages"][1]["content"][0]["input"]=={"key":"value"}
+    assert counted["messages"][2]["content"][0]["type"]=="tool_result"
+    assert counted["tools"][0]["input_schema"]=={"type":"object"}
+
+
+def test_native_count_conversion_fails_closed_for_unsupported_blocks():
+    with pytest.raises(ValueError):
+        q.q27_count_body({"messages":[{"role":"user","content":[{"type":"image_url"}]}]})

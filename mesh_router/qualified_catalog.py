@@ -143,3 +143,57 @@ def conservative_prompt_bound(payload: dict[str, Any]) -> int:
 
 def fits(payload: dict[str, Any], policy: dict[str, Any], prompt_tokens: int) -> bool:
     return prompt_tokens + payload["max_tokens"] + policy["safety_tokens"] <= policy["context_limit"]
+
+
+def q27_count_body(payload: dict[str, Any]) -> dict[str, Any]:
+    """Equivalent text/tool history for q27's CPU-only native count endpoint.
+
+    Its Anthropic and OpenAI bridges share chatml_prompt, tool schemas and
+    tool-call/result rendering. Unsupported blocks fall back to the byte bound.
+    Native Anthropic tool-choice accounting can overcount extra instructions;
+    dispatch also retains the profile's template/runtime safety reserve.
+    """
+    out = {k: payload[k] for k in ("model", "thinking", "reasoning_effort", "chat_template_kwargs") if k in payload}
+    if payload.get("response_format"):
+        raise ValueError("structured-response counting uses the conservative fallback")
+    messages = []
+    for message in payload.get("messages", []):
+        role = message.get("role")
+        content = message.get("content") or ""
+        if isinstance(content, list):
+            if any(not isinstance(p, dict) or p.get("type") != "text" for p in content):
+                raise ValueError("unsupported content block")
+            content = "".join(p.get("text", "") for p in content)
+        if not isinstance(content, str):
+            raise ValueError("unsupported content")
+        if role == "tool":
+            messages.append({"role": "user", "content": [{"type": "tool_result",
+                             "tool_use_id": message.get("tool_call_id", ""), "content": content}]})
+            continue
+        blocks = []
+        if message.get("reasoning_content"):
+            blocks.append({"type": "thinking", "thinking": message["reasoning_content"]})
+        if content:
+            blocks.append({"type": "text", "text": content})
+        for call in message.get("tool_calls", []):
+            function = call["function"]
+            args = function.get("arguments", "{}")
+            if isinstance(args, str):
+                args = json.loads(args)
+            blocks.append({"type": "tool_use", "id": call.get("id", ""),
+                           "name": function["name"], "input": args})
+        messages.append({"role": role, "content": blocks or content})
+    out["messages"] = messages
+    out["tools"] = []
+    for tool in payload.get("tools", []):
+        if tool.get("type") != "function":
+            raise ValueError("unsupported tool type")
+        f = tool["function"]
+        out["tools"].append({"name": f["name"], "description": f.get("description", ""),
+                             "input_schema": f.get("parameters", {})})
+    choice = payload.get("tool_choice", "auto")
+    if isinstance(choice, str):
+        out["tool_choice"] = {"type": {"required": "any"}.get(choice, choice)}
+    else:
+        out["tool_choice"] = {"type": "tool", "name": choice["function"]["name"]}
+    return out
