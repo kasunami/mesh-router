@@ -365,6 +365,99 @@ class InventoryApiTests(unittest.TestCase):
         self.assertEqual(lane["current_model"], "Qwen3.5-27B-Q4_K_M")
         self.assertEqual(lane["mw_state_source"], "mw_response_snapshot")
 
+    def test_mesh_inventory_probe_does_not_refresh_or_promote_heartbeat_state(self) -> None:
+        now = datetime.now(tz=timezone.utc)
+        stale_event = now - timedelta(minutes=10)
+        fresh_event = now - timedelta(seconds=5)
+        lane_specs = [
+            ("fresh", "offline", None, fresh_event),
+            ("stale", "offline", None, stale_event),
+            ("absent", "offline", None, None),
+            ("suspended", "suspended", "operator_hold", stale_event),
+        ]
+        lanes = [
+            {
+                "host_name": f"worker-{name}",
+                "host_status": "ready",
+                "lane_id": f"lane-{name}",
+                "lane_name": "gpu",
+                "lane_type": "gpu",
+                "backend_type": "llama",
+                "base_url": f"http://{name}.example:11434",
+                "lane_status": status,
+                "suspension_reason": suspension,
+                "current_model_name": None,
+                "proxy_auth_metadata": {
+                    "control_plane": "mw",
+                    "mw_host_id": f"worker-{name}",
+                    "mw_lane_id": "gpu",
+                },
+                "last_ok_at": None,
+                "last_probe_at": None,
+                "updated_at": now - timedelta(minutes=5),
+            }
+            for name, status, suspension, _event in lane_specs
+        ]
+        state_rows = [
+            {
+                "host_id": f"worker-{name}",
+                "lane_id": "gpu",
+                "last_heartbeat_at": event,
+                "actual_state": "running",
+                "health_status": "healthy",
+                "actual_model": f"model-{name}",
+            }
+            for name, _status, _suspension, event in lane_specs
+        ]
+        app_module.db = _FakeDb(_FakeCursor(fetchall_rows=[lanes, [], [], []]))  # type: ignore[assignment]
+        app_module.mw_state_db = _FakeDb(_FakeCursor(fetchall_rows=[state_rows]))  # type: ignore[assignment]
+
+        class EmptyRuntimeStore:
+            def get_lane_facts(self, pairs, *, stale_seconds=None):  # noqa: ANN001
+                return {}
+
+        class ReachableProbeClient:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):  # noqa: ANN001
+                return False
+
+            def get(self, url, *, headers):  # noqa: ANN001
+                return mock.Mock(status_code=200)
+
+        with (
+            mock.patch.object(app_module, "get_default_runtime_state_store", return_value=EmptyRuntimeStore()),
+            mock.patch.object(app_module.httpx, "Client", return_value=ReachableProbeClient()) as probe_client,
+        ):
+            inventory = app_module.mesh_inventory()
+
+        by_id = {lane["lane_id"]: lane for lane in inventory["lanes"]}
+
+        fresh = by_id["lane-fresh"]
+        self.assertEqual(fresh["effective_status"], "ready")
+        self.assertEqual(fresh["mw_last_heartbeat_at"], fresh_event.isoformat())
+        self.assertIsNone(fresh.get("health_probe_status"))
+
+        stale = by_id["lane-stale"]
+        self.assertEqual(stale["effective_status"], "offline")
+        self.assertEqual(stale["readiness_reason"], "stale_heartbeat")
+        self.assertEqual(stale["mw_last_heartbeat_at"], stale_event.isoformat())
+        self.assertEqual(stale["health_probe_status"], "reachable")
+
+        absent = by_id["lane-absent"]
+        self.assertEqual(absent["effective_status"], "offline")
+        self.assertEqual(absent["readiness_reason"], "stale_heartbeat")
+        self.assertIsNone(absent["mw_last_heartbeat_at"])
+        self.assertEqual(absent["health_probe_status"], "reachable")
+
+        suspended = by_id["lane-suspended"]
+        self.assertEqual(suspended["lane_status"], "suspended")
+        self.assertEqual(suspended["effective_status"], "suspended")
+        self.assertEqual(suspended["mw_last_heartbeat_at"], stale_event.isoformat())
+        self.assertIsNone(suspended.get("health_probe_status"))
+        self.assertEqual(probe_client.call_count, 2)
+
     def test_api_lane_lease_status_uses_mw_effective_lane_truth(self) -> None:
         now = datetime.now(tz=timezone.utc)
         cursor = _FakeCursor(
