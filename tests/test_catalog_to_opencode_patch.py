@@ -38,11 +38,11 @@ def test_patch_uses_exact_logical_ids_and_has_no_host_routing():
                 "models": {
                     "qwen3.6-35b-a3b": {
                         "name": "Qwen3.6-35B-A3B",
-                        "limit": {"context": 32768, "output": 4096},
+                        "limit": {"context": 32768, "output": 4096, "input": 26624},
                     },
                     "small-model": {
                         "name": "Small Model",
-                        "limit": {"context": 8192, "output": 1024},
+                        "limit": {"context": 8192, "output": 1024, "input": 5120},
                     },
                 }
             }
@@ -129,4 +129,11 @@ def test_patch_refuses_empty_catalog_to_prevent_empty_provider_overwrite():
     doc = _catalog()
     doc["models"] = []
     with pytest.raises(CatalogError):
+        build_patch(doc)
+
+
+def test_patch_rejects_missing_input_safety_headroom():
+    doc = _catalog()
+    doc["models"][0]["context_limit"] = 5000
+    with pytest.raises(CatalogError, match="no input"):
         build_patch(doc)

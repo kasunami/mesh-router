@@ -78,7 +78,12 @@ fields; validation failure leaves existing files untouched. Merge the reviewed
 model map into each client without adding placement hints. Keep default and
 small-model references within that map. OpenCode versions that require paired
 limits must not receive a partial limit or legacy `context_window` substitute.
-Compaction must reserve output plus the configured safety allowance.
+The adapter derives `limit.input = context - output - 2048`, reserving the full
+completion budget and a conservative safety band before compaction. For clients
+using this input ceiling, set `compaction.reserved` to zero to avoid subtracting
+the reservation twice. Validate the installed client loader before applying.
+MR remains the authority for admission; this client threshold is a proposal
+for early compaction, not a full-context benchmark certification.
 
 ## Recovery and rollback
 
