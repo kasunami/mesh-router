@@ -89,6 +89,8 @@ class Settings(BaseSettings):
     # chat placement. Deny wins over allow.
     route_allowed_hosts: str = ""
     route_denied_hosts: str = ""
+    # Explicitly qualified artifact catalog/dispatcher; opt-in rollout.
+    qualified_catalog_enabled: bool = False
 
     # Perf observation ingestion guard. When set, POST /api/perf/observations requires
     # X-Mesh-Internal-Token to match this value.

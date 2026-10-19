@@ -64,15 +64,26 @@ def acquire_router_lease(
     expires_at = now + timedelta(seconds=max(30, int(ttl_seconds)))
     with db.connect() as conn:
         with conn.cursor() as cur:
+            # Serialize reservation across siblings and qualified dispatch.
+            # A qualified request holds the matching session lock for its
+            # entire load/inference lifetime; legacy callers fail closed.
+            cur.execute("SELECT host_id FROM lanes WHERE lane_id=%s", (lane_id,))
+            host = cur.fetchone()
+            if not host:
+                raise RuntimeError("lane missing")
+            cur.execute("SELECT pg_try_advisory_xact_lock(hashtextextended(%s,0)) AS locked",
+                        ("mr-host:" + str(host["host_id"]),))
+            if not cur.fetchone()["locked"]:
+                raise RuntimeError("lane busy: host reserved")
             cleanup_expired_router_leases(cur)
             cur.execute(
                 """
                 SELECT 1
-                FROM router_leases
-                WHERE lane_id=%s AND state='active' AND expires_at > now()
+                FROM router_leases rl JOIN lanes l USING(lane_id)
+                WHERE l.host_id=%s AND rl.state='active' AND rl.expires_at > now()
                 LIMIT 1
                 """,
-                (lane_id,),
+                (str(host["host_id"]),),
             )
             if cur.fetchone():
                 raise RuntimeError("lane busy")

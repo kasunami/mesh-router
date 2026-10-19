@@ -30,5 +30,7 @@ entrypoint. A host remains stale until its first valid heartbeat populates the
 new column. No runtime DB migration, restart, status change, or model operation
 was performed while staging this correction.
 
-Offline verification: `python3 -m pytest -q tests` (236 passed), Python compile
-check, `git diff --check`, and `scripts/check_public_hygiene.sh` passed.
+The original worker reported 236 passing tests; an independent isolated rerun
+hung in TestClient on baseline and patched code. During recovery, normal host
+execution independently completed the heartbeat-only suite: 237 passed and
+8 subtests. Do not conflate the prior report with that independent result.

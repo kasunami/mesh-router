@@ -1953,7 +1953,12 @@ def _upsert_usage(cur, *, lane_id: str, model_id: str, used_at: datetime, swap_a
     )
 
 
-def _build_lane_capability_payload(cur, lane_ref: str) -> tuple[dict[str, Any], LaneCapabilityResponse]:
+def _build_lane_capability_payload(
+    cur,
+    lane_ref: str,
+    *,
+    persist_viability: bool = True,
+) -> tuple[dict[str, Any], LaneCapabilityResponse]:
     lane_row = _resolve_lane(cur, lane_ref)
     resolved_lane_id = str(lane_row["lane_id"])
     resolved_host_id = str(lane_row["host_id"])
@@ -1963,7 +1968,7 @@ def _build_lane_capability_payload(cur, lane_ref: str) -> tuple[dict[str, Any], 
     lane_row = _mw_effective_lane_row_for_capabilities(lane_row=lane_row, host_row=host_row)
     lane_type = str(lane_row["lane_type"])
     local_model_root = _local_model_root(host_row, lane_row)
-    if mw_authoritative:
+    if mw_authoritative and persist_viability:
         _prune_lane_model_viability_outside_local_root(
             cur,
             lane_id=resolved_lane_id,
@@ -2040,33 +2045,34 @@ def _build_lane_capability_payload(cur, lane_ref: str) -> tuple[dict[str, Any], 
         ):
             continue
         if compatibility_reason:
-            cur.execute(
-                """
-                INSERT INTO lane_model_viability (
-                  lane_id, model_id, artifact_id, source_locality,
-                  fits_memory, projected_free_bytes, required_memory_bytes,
-                  tps_estimate, tps_source, is_viable, reason, last_checked_at
+            if persist_viability:
+                cur.execute(
+                    """
+                    INSERT INTO lane_model_viability (
+                      lane_id, model_id, artifact_id, source_locality,
+                      fits_memory, projected_free_bytes, required_memory_bytes,
+                      tps_estimate, tps_source, is_viable, reason, last_checked_at
+                    )
+                    VALUES (%s, %s, %s, %s, false, NULL, NULL, NULL, 'unknown', false, %s, now())
+                    ON CONFLICT (lane_id, model_id, source_locality) DO UPDATE
+                    SET artifact_id = EXCLUDED.artifact_id,
+                        fits_memory = EXCLUDED.fits_memory,
+                        projected_free_bytes = EXCLUDED.projected_free_bytes,
+                        required_memory_bytes = EXCLUDED.required_memory_bytes,
+                        tps_estimate = EXCLUDED.tps_estimate,
+                        tps_source = EXCLUDED.tps_source,
+                        is_viable = EXCLUDED.is_viable,
+                        reason = EXCLUDED.reason,
+                        last_checked_at = now()
+                    """,
+                    (
+                        resolved_lane_id,
+                        model_id,
+                        artifact_id,
+                        source_locality,
+                        compatibility_reason,
+                    ),
                 )
-                VALUES (%s, %s, %s, %s, false, NULL, NULL, NULL, 'unknown', false, %s, now())
-                ON CONFLICT (lane_id, model_id, source_locality) DO UPDATE
-                SET artifact_id = EXCLUDED.artifact_id,
-                    fits_memory = EXCLUDED.fits_memory,
-                    projected_free_bytes = EXCLUDED.projected_free_bytes,
-                    required_memory_bytes = EXCLUDED.required_memory_bytes,
-                    tps_estimate = EXCLUDED.tps_estimate,
-                    tps_source = EXCLUDED.tps_source,
-                    is_viable = EXCLUDED.is_viable,
-                    reason = EXCLUDED.reason,
-                    last_checked_at = now()
-                """,
-                (
-                    resolved_lane_id,
-                    model_id,
-                    artifact_id,
-                    source_locality,
-                    compatibility_reason,
-                ),
-            )
             continue
         tuning_profile = _tuning_profile_metrics(
             cur,
@@ -2122,39 +2128,40 @@ def _build_lane_capability_payload(cur, lane_ref: str) -> tuple[dict[str, Any], 
             model_info,
             historical_avg_ms=_historical_swap_ms(cur, resolved_lane_id, model_id, source_mode),
         )
-        cur.execute(
-            """
-            INSERT INTO lane_model_viability (
-              lane_id, model_id, artifact_id, source_locality,
-              fits_memory, projected_free_bytes, required_memory_bytes,
-              tps_estimate, tps_source, is_viable, reason, last_checked_at
+        if persist_viability:
+            cur.execute(
+                """
+                INSERT INTO lane_model_viability (
+                  lane_id, model_id, artifact_id, source_locality,
+                  fits_memory, projected_free_bytes, required_memory_bytes,
+                  tps_estimate, tps_source, is_viable, reason, last_checked_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())
+                ON CONFLICT (lane_id, model_id, source_locality) DO UPDATE
+                SET artifact_id = EXCLUDED.artifact_id,
+                    fits_memory = EXCLUDED.fits_memory,
+                    projected_free_bytes = EXCLUDED.projected_free_bytes,
+                    required_memory_bytes = EXCLUDED.required_memory_bytes,
+                    tps_estimate = EXCLUDED.tps_estimate,
+                    tps_source = EXCLUDED.tps_source,
+                    is_viable = EXCLUDED.is_viable,
+                    reason = EXCLUDED.reason,
+                    last_checked_at = now()
+                """,
+                (
+                    resolved_lane_id,
+                    model_id,
+                    artifact_id,
+                    source_locality,
+                    fits_memory,
+                    projected_free_bytes,
+                    required_memory_bytes,
+                    viability.estimated_tps,
+                    "measured" if viability.estimated_tps is not None else "unknown",
+                    locality in {"local", "remote"},
+                    None if locality in {"local", "remote"} else viability.reason,
+                ),
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())
-            ON CONFLICT (lane_id, model_id, source_locality) DO UPDATE
-            SET artifact_id = EXCLUDED.artifact_id,
-                fits_memory = EXCLUDED.fits_memory,
-                projected_free_bytes = EXCLUDED.projected_free_bytes,
-                required_memory_bytes = EXCLUDED.required_memory_bytes,
-                tps_estimate = EXCLUDED.tps_estimate,
-                tps_source = EXCLUDED.tps_source,
-                is_viable = EXCLUDED.is_viable,
-                reason = EXCLUDED.reason,
-                last_checked_at = now()
-            """,
-            (
-                resolved_lane_id,
-                model_id,
-                artifact_id,
-                source_locality,
-                fits_memory,
-                projected_free_bytes,
-                required_memory_bytes,
-                viability.estimated_tps,
-                "measured" if viability.estimated_tps is not None else "unknown",
-                locality in {"local", "remote"},
-                None if locality in {"local", "remote"} else viability.reason,
-            ),
-        )
         if locality is None:
             continue
         candidate = LaneModelCandidate(
@@ -2200,14 +2207,15 @@ def _build_lane_capability_payload(cur, lane_ref: str) -> tuple[dict[str, Any], 
             artifact_rows=[dict(row) for row in artifact_rows],
             local_model_root=local_model_root,
         )
-        _persist_mw_validated_viability(
-            cur,
-            lane_id=resolved_lane_id,
-            candidates_by_model=candidates_by_model,
-            artifact_rows=[dict(row) for row in artifact_rows],
-            host_id=resolved_host_id,
-            local_model_root=local_model_root,
-        )
+        if persist_viability:
+            _persist_mw_validated_viability(
+                cur,
+                lane_id=resolved_lane_id,
+                candidates_by_model=candidates_by_model,
+                artifact_rows=[dict(row) for row in artifact_rows],
+                host_id=resolved_host_id,
+                local_model_root=local_model_root,
+            )
 
     supported_models = sorted(candidates_by_model.keys())
 
@@ -3395,6 +3403,14 @@ def v1_models() -> dict[str, Any]:
     /v1/models before every run; doing live placement here can block the client
     before it ever submits a completion request.
     """
+    if settings.qualified_catalog_enabled:
+        from .qualified_catalog import catalog, read_profiles
+        return {"object": "list", "data": [
+            {"id": m["id"], "object": "model", "owned_by": "mesh-router",
+             "context_window": m["context_limit"], "max_output_tokens": m["output_limit"],
+             "availability": m["availability"]}
+            for m in catalog(read_profiles())["models"]
+        ]}
     with db.connect() as conn:
         with conn.cursor() as cur:
             rows = fetch_lane_inventory(cur=cur)
@@ -3437,6 +3453,81 @@ def v1_models() -> dict[str, Any]:
         )
     resp = ModelsResponse(data=data)
     return resp.model_dump()
+
+
+@app.get("/api/models/selectable")
+def api_selectable_logical_models() -> dict[str, Any]:
+    """Return MR-owned logical models backed by a verified local viable artifact.
+
+    This is a read-only, host-agnostic catalog for clients that may select a
+    model which is not currently loaded. Placement and any later load remain
+    MR responsibilities.
+    """
+    if settings.qualified_catalog_enabled:
+        from .qualified_catalog import catalog, read_profiles
+        return catalog(read_profiles())
+    catalog: dict[str, dict[str, Any]] = {}
+    with db.connect() as conn:
+        with conn.cursor() as cur:
+            lanes = fetch_lane_inventory(cur=cur)
+            for lane in lanes:
+                lane_id = str(lane.get("lane_id") or "").strip()
+                if not lane_id:
+                    continue
+                _, capabilities = _build_lane_capability_payload(
+                    cur,
+                    lane_id,
+                    persist_viability=False,
+                )
+                for candidate in capabilities.local_viable_models:
+                    # A model merely loaded on a worker is not a selectable catalog
+                    # entry. Require the same backend-compatible, memory-viable
+                    # artifact evidence used by MR's swap preflight.
+                    if (
+                        candidate.locality != "local"
+                        or not str(candidate.artifact_path or "").strip()
+                        or not str(candidate.artifact_host or "").strip()
+                    ):
+                        continue
+                    artifact_name = str(candidate.model_name or "").strip()
+                    if not artifact_name or not _is_public_model_name(artifact_name):
+                        continue
+                    logical_id = canonical_model_name(artifact_name)
+                    if not logical_id:
+                        continue
+                    entry = catalog.setdefault(
+                        logical_id,
+                        {
+                            "id": logical_id,
+                            "name": logical_id,
+                            "tags": set(),
+                            "context_limit": None,
+                        },
+                    )
+                    entry["tags"].update(_normalized_model_tags(candidate.tags))
+                    context_limit = candidate.max_context_tokens
+                    if context_limit is not None:
+                        known_limits = [int(context_limit)]
+                        if entry["context_limit"] is not None:
+                            known_limits.append(int(entry["context_limit"]))
+                        entry["context_limit"] = min(known_limits)
+
+    models = []
+    for logical_id in sorted(catalog, key=str.lower):
+        entry = catalog[logical_id]
+        models.append(
+            {
+                "id": entry["id"],
+                "name": entry["name"],
+                "tags": sorted(entry["tags"]),
+                "context_limit": entry["context_limit"],
+            }
+        )
+    return {
+        "contract": "mesh-router-selectable-logical-catalog",
+        "scope": "selectable_logical_models",
+        "models": models,
+    }
 
 
 @app.post("/api/models/{model_ref}/tags", response_model=ModelTagsResponse)
@@ -5769,6 +5860,19 @@ def v1_chat_completions(
     x_mesh_client_request_id: str | None = Header(default=None),
 ) -> Any:
     raw_payload = req.model_dump(by_alias=True)
+    if settings.qualified_catalog_enabled:
+        from . import qualified_catalog, qualified_dispatch
+        import sys
+        profiles = qualified_catalog.read_profiles()
+        selected = [p for p in profiles if qualified_catalog.matches(p, req.model)]
+        if selected:
+            if any((x_mesh_pin_worker, x_mesh_pin_base_url, x_mesh_pin_lane_type, x_mesh_pin_lane_id)):
+                raise HTTPException(400, "qualified models require host-agnostic requests")
+            nested = raw_payload.pop("extra_body", None)
+            if isinstance(nested, dict):
+                raw_payload.update(nested)
+            return qualified_dispatch.dispatch(selected, _strip_nones(raw_payload), api=sys.modules[__name__])
+        raise HTTPException(404, "model is not in the qualified artifact catalog")
     if x_mesh_pin_worker is not None:
         raw_payload["mesh_pin_worker"] = x_mesh_pin_worker
     if x_mesh_pin_base_url is not None:

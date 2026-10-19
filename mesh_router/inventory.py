@@ -21,6 +21,7 @@ def fetch_lane_inventory(*, cur: Any) -> list[dict[str, Any]]:
           l.backend_type,
           l.base_url,
           l.status,
+          l.suspension_reason,
           l.proxy_auth_metadata,
           l.current_model_name,
           h.host_id,
