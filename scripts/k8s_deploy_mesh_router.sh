@@ -44,16 +44,45 @@ deploy=json.loads(os.environ["DEPLOY_JSON"])
 image=os.environ["IMAGE"]
 revision=os.environ["REVISION"]
 
-patch=[
-  {"op":"add","path":"/spec/template/metadata/annotations","value":{}},
-  {"op":"add","path":"/spec/template/metadata/annotations/mesh-router.openai.com~1deploy-revision","value":revision},
-]
+template=((deploy.get("spec") or {}).get("template") or {})
+pod_metadata=template.get("metadata") or {}
+annotations=pod_metadata.get("annotations")
+patch=[]
+if annotations is None:
+  patch.append({"op":"add","path":"/spec/template/metadata/annotations","value":{}})
+patch.append({
+  "op":"add",
+  "path":"/spec/template/metadata/annotations/mesh-router.openai.com~1deploy-revision",
+  "value":revision,
+})
 
-spec=((deploy.get("spec") or {}).get("template") or {}).get("spec") or {}
+spec=template.get("spec") or {}
+revision_container_found=False
 for i, _c in enumerate(spec.get("containers") or []):
   patch.append({"op":"replace","path":f"/spec/template/spec/containers/{i}/image","value":image})
   # Deploy hygiene: force fresh pulls even if tags are accidentally used elsewhere.
   patch.append({"op":"add","path":f"/spec/template/spec/containers/{i}/imagePullPolicy","value":"Always"})
+  if _c.get("name") == "mesh-router":
+    revision_container_found=True
+    env=_c.get("env") or []
+    for j, entry in enumerate(env):
+      if entry.get("name") == "MESH_ROUTER_DEPLOYMENT_REVISION":
+        if "valueFrom" in entry:
+          raise SystemExit("MESH_ROUTER_DEPLOYMENT_REVISION must use a literal value")
+        patch.append({"op":"add","path":f"/spec/template/spec/containers/{i}/env/{j}/value","value":revision})
+        break
+    else:
+      if "env" not in _c:
+        patch.append({"op":"add","path":f"/spec/template/spec/containers/{i}/env","value":[]})
+      patch.append({
+        "op":"add",
+        "path":f"/spec/template/spec/containers/{i}/env/-",
+        "value":{"name":"MESH_ROUTER_DEPLOYMENT_REVISION","value":revision},
+      })
+
+if not revision_container_found:
+  raise SystemExit("mesh-router container not found")
+
 for i, _c in enumerate(spec.get("initContainers") or []):
   patch.append({"op":"replace","path":f"/spec/template/spec/initContainers/{i}/image","value":image})
   patch.append({"op":"add","path":f"/spec/template/spec/initContainers/{i}/imagePullPolicy","value":"Always"})

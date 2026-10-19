@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import unittest
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from mesh_router.mw_consumer import process_message
 
@@ -58,6 +58,98 @@ def make_db(cursor: CapturingCursor):
 
 
 class MwConsumerProcessingTests(unittest.TestCase):
+    def _capture_heartbeat(
+        self,
+        *,
+        payload_timestamp=None,
+        received_at=None,
+        message_timestamp=None,
+    ):
+        received = received_at or datetime(2026, 10, 19, 10, 0, tzinfo=UTC)
+        payload = {"message_type": "heartbeat", "host_id": "test-host", "payload": {}}
+        if payload_timestamp is not None:
+            payload["timestamp"] = payload_timestamp
+        cursor = CapturingCursor()
+        process_message(
+            payload=payload,
+            observed_at=received,
+            db_connect=make_db(cursor),
+            message_timestamp=message_timestamp,
+        )
+        return cursor
+
+    def test_delayed_heartbeat_uses_source_event_time_not_processing_time(self) -> None:
+        received = datetime(2026, 10, 19, 10, 0, tzinfo=UTC)
+        event = received - timedelta(hours=28)
+        cursor = self._capture_heartbeat(payload_timestamp=event.isoformat(), received_at=received)
+        host_params = next(params for sql, params in cursor.executed if "INSERT INTO mw_hosts" in sql)
+        heartbeat_params = next(params for sql, params in cursor.executed if "INSERT INTO mw_heartbeats" in sql)
+        self.assertEqual(host_params[7], event)
+        self.assertEqual(heartbeat_params[1], event)
+
+    def test_reordered_heartbeats_keep_database_timestamp_monotonic(self) -> None:
+        received = datetime(2026, 10, 19, 10, 0, tzinfo=UTC)
+        newer = received - timedelta(seconds=15)
+        older = received - timedelta(minutes=2)
+        newer_cursor = self._capture_heartbeat(payload_timestamp=newer.isoformat(), received_at=received)
+        older_cursor = self._capture_heartbeat(payload_timestamp=older.isoformat(), received_at=received)
+        self.assertEqual(
+            next(params for sql, params in newer_cursor.executed if "INSERT INTO mw_hosts" in sql)[7],
+            newer,
+        )
+        older_sql = next(sql for sql, _ in older_cursor.executed if "INSERT INTO mw_hosts" in sql)
+        older_params = next(params for sql, params in older_cursor.executed if "INSERT INTO mw_hosts" in sql)
+        self.assertIn("GREATEST(mw_hosts.last_heartbeat_at, EXCLUDED.last_heartbeat_at)", older_sql)
+        self.assertEqual(older_params[7], older)
+
+    def test_missing_event_timestamp_falls_back_to_valid_kafka_timestamp(self) -> None:
+        received = datetime(2026, 10, 19, 10, 0, tzinfo=UTC)
+        broker_time = received - timedelta(seconds=20)
+        cursor = self._capture_heartbeat(received_at=received, message_timestamp=broker_time)
+        params = next(params for sql, params in cursor.executed if "INSERT INTO mw_hosts" in sql)
+        self.assertEqual(params[7], broker_time)
+
+    def test_invalid_or_timezone_naive_event_timestamp_falls_back_to_kafka_timestamp(self) -> None:
+        received = datetime(2026, 10, 19, 10, 0, tzinfo=UTC)
+        broker_time = received - timedelta(seconds=25)
+        for invalid in ("not-an-iso-time", "2026-10-19T09:59:00"):
+            with self.subTest(invalid=invalid):
+                cursor = self._capture_heartbeat(
+                    payload_timestamp=invalid,
+                    received_at=received,
+                    message_timestamp=broker_time,
+                )
+                params = next(params for sql, params in cursor.executed if "INSERT INTO mw_hosts" in sql)
+                self.assertEqual(params[7], broker_time)
+
+    def test_missing_or_invalid_timestamps_without_valid_fallback_do_not_refresh(self) -> None:
+        received = datetime(2026, 10, 19, 10, 0, tzinfo=UTC)
+        for timestamp in (None, "invalid", "2026-10-19T09:59:00"):
+            with self.subTest(timestamp=timestamp):
+                cursor = self._capture_heartbeat(payload_timestamp=timestamp, received_at=received)
+                self.assertEqual(cursor.executed, [])
+
+    def test_small_future_clock_skew_is_clamped_to_receive_time(self) -> None:
+        received = datetime(2026, 10, 19, 10, 0, tzinfo=UTC)
+        future = received + timedelta(seconds=10)
+        cursor = self._capture_heartbeat(payload_timestamp=future.isoformat(), received_at=received)
+        params = next(params for sql, params in cursor.executed if "INSERT INTO mw_hosts" in sql)
+        self.assertEqual(params[7], received)
+
+    def test_excessive_future_timestamp_uses_valid_broker_time_or_is_rejected(self) -> None:
+        received = datetime(2026, 10, 19, 10, 0, tzinfo=UTC)
+        future = received + timedelta(minutes=5)
+        broker_time = received - timedelta(seconds=10)
+        fallback_cursor = self._capture_heartbeat(
+            payload_timestamp=future.isoformat(),
+            received_at=received,
+            message_timestamp=broker_time,
+        )
+        fallback_params = next(params for sql, params in fallback_cursor.executed if "INSERT INTO mw_hosts" in sql)
+        self.assertEqual(fallback_params[7], broker_time)
+        rejected_cursor = self._capture_heartbeat(payload_timestamp=future.isoformat(), received_at=received)
+        self.assertEqual(rejected_cursor.executed, [])
+
     def test_process_state_upserts_services_and_lanes(self) -> None:
         cursor = CapturingCursor()
         runtime_store = CapturingRuntimeStore()

@@ -4,7 +4,7 @@ import json
 import logging
 import time
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Callable, Iterable
 from uuid import UUID
 
@@ -18,6 +18,8 @@ from .runtime_state import RuntimeStateStore, get_default_runtime_state_store
 
 logger = logging.getLogger(__name__)
 
+_MAX_HEARTBEAT_FUTURE_SKEW = timedelta(seconds=30)
+
 
 def _looks_like_uuid(value: str) -> bool:
     try:
@@ -25,6 +27,50 @@ def _looks_like_uuid(value: str) -> bool:
     except (TypeError, ValueError):
         return False
     return True
+
+
+def _parse_aware_timestamp(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        if text.endswith("Z"):
+            text = f"{text[:-1]}+00:00"
+        try:
+            parsed = datetime.fromisoformat(text)
+        except ValueError:
+            return None
+    else:
+        return None
+
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return None
+    return parsed.astimezone(UTC)
+
+
+def _heartbeat_event_time(
+    payload: dict[str, Any],
+    *,
+    received_at: datetime,
+    message_timestamp: datetime | None,
+) -> datetime | None:
+    """Return a trustworthy source time, never the time a backlog was consumed."""
+    received = received_at.astimezone(UTC) if received_at.tzinfo else received_at.replace(tzinfo=UTC)
+    candidates = (
+        ("payload", _parse_aware_timestamp(payload.get("timestamp"))),
+        ("kafka", _parse_aware_timestamp(message_timestamp)),
+    )
+    for source, candidate in candidates:
+        if candidate is None:
+            continue
+        if candidate > received + _MAX_HEARTBEAT_FUTURE_SKEW:
+            logger.warning("MW heartbeat %s timestamp exceeds allowed future skew", source)
+            continue
+        # Small clock skew must not extend freshness into the future.
+        return min(candidate, received)
+    return None
 
 
 @dataclass(frozen=True)
@@ -60,7 +106,7 @@ def _upsert_mw_host(
                 %s, %s, now())
         ON CONFLICT (host_id) DO UPDATE SET
           actual_profile = COALESCE(EXCLUDED.actual_profile, mw_hosts.actual_profile),
-          last_heartbeat_at = COALESCE(EXCLUDED.last_heartbeat_at, mw_hosts.last_heartbeat_at),
+          last_heartbeat_at = GREATEST(mw_hosts.last_heartbeat_at, EXCLUDED.last_heartbeat_at),
           last_state_at = COALESCE(EXCLUDED.last_state_at, mw_hosts.last_state_at),
           status = EXCLUDED.status,
           notes = mw_hosts.notes || EXCLUDED.notes,
@@ -314,11 +360,23 @@ def process_message(
     observed_at: datetime,
     db_connect: Callable[[], Any],
     runtime_store: RuntimeStateStore | None = None,
+    message_timestamp: datetime | None = None,
 ) -> None:
     message_type = str(payload.get("message_type") or "")
     host_id = str(payload.get("host_id") or "")
     if not host_id:
         return
+
+    heartbeat_at = None
+    if message_type == "heartbeat":
+        heartbeat_at = _heartbeat_event_time(
+            payload,
+            received_at=observed_at,
+            message_timestamp=message_timestamp,
+        )
+        if heartbeat_at is None:
+            logger.warning("MW heartbeat has no valid source timestamp; freshness was not updated")
+            return
 
     with db_connect() as conn:
         with conn.cursor() as cur:
@@ -329,11 +387,11 @@ def process_message(
                     cur,
                     host_id=host_id,
                     actual_profile=actual_profile,
-                    last_heartbeat_at=observed_at,
+                    last_heartbeat_at=heartbeat_at,
                     last_state_at=None,
                     notes_patch={"mw": {"last_heartbeat": payload}},
                 )
-                _insert_mw_heartbeat(cur, host_id=host_id, heartbeat_at=observed_at, details={"actual_profile": actual_profile, **details})
+                _insert_mw_heartbeat(cur, host_id=host_id, heartbeat_at=heartbeat_at, details={"actual_profile": actual_profile, **details})
             elif message_type == "state":
                 snapshot = dict(payload.get("payload") or {})
                 actual_profile = str(snapshot.get("actual_profile") or "") or None
@@ -447,11 +505,19 @@ def run_forever() -> None:
 
             should_commit = True
             try:
+                _timestamp_type, timestamp_ms = msg.timestamp()
+                message_timestamp = None
+                if timestamp_ms is not None and timestamp_ms >= 0:
+                    try:
+                        message_timestamp = datetime.fromtimestamp(timestamp_ms / 1000, tz=UTC)
+                    except (OverflowError, OSError, ValueError):
+                        message_timestamp = None
                 process_message(
                     payload=payload,
                     observed_at=datetime.now(UTC),
                     db_connect=_mw_state_db_connect,
                     runtime_store=runtime_store,
+                    message_timestamp=message_timestamp,
                 )
             except psycopg.Error as exc:
                 # Do not acknowledge DB-write failures. MW command polling depends on
