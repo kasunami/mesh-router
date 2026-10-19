@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 CONTRACT = "mesh-router-selectable-logical-catalog"
+INPUT_SAFETY_TOKENS = 2048
 MODEL_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 MODEL_FIELDS = {"id", "name", "tags", "context_limit", "output_limit", "availability"}
 
@@ -67,10 +68,13 @@ def build_patch(document: Any, *, provider_id: str = "homelab-mr") -> dict[str, 
             raise CatalogError(
                 f"model {model_id} has output_limit >= context_limit; refusing an unusable OpenCode token budget"
             )
+        input_limit = context - output - INPUT_SAFETY_TOKENS
+        if input_limit <= 0:
+            raise CatalogError(f"model {model_id} leaves no input after completion and safety reserve")
 
         model = {
             "name": name.strip(),
-            "limit": {"context": context, "output": output},
+            "limit": {"context": context, "output": output, "input": input_limit},
         }
         configured[model_id] = model
 
