@@ -39,6 +39,9 @@ def harness(monkeypatch):
     monkeypatch.setattr(d, "_current", lambda candidate: candidate)
     monkeypatch.setattr(d, "verify_runtime", lambda candidate: 65536)
     monkeypatch.setattr(d, "prompt_tokens", lambda candidate, payload: 100)
+    monkeypatch.setattr(d, "runtime_model", lambda candidate: candidate["model_name"] if candidate["loaded"] else "old-model")
+    old = {**r, "model_name": "old-model"}
+    monkeypatch.setattr(d.qc, "read_profiles", lambda: [r, old])
     return r, calls, api
 
 
@@ -125,3 +128,19 @@ def test_stream_disconnect_releases_host_fence(harness):
         await response.body_iterator.aclose()
     asyncio.run(consume())
     assert calls[-1]==("close",False)
+
+
+def test_stale_loaded_label_reuses_actual_runtime_without_reloading(harness,monkeypatch):
+    r,calls,api=harness;r["loaded"]=False
+    monkeypatch.setattr(d,"runtime_model",lambda _:r["model_name"])
+    d.dispatch([r],{"messages":[],"max_tokens":64},api=api)
+    assert not any(isinstance(c,tuple) and c[0]=="load" for c in calls)
+
+
+def test_unqualified_actual_model_is_never_evicted(harness,monkeypatch):
+    r,calls,api=harness
+    monkeypatch.setattr(d,"runtime_model",lambda _:"unknown-artifact")
+    with pytest.raises(HTTPException) as exc:
+        d.dispatch([r],{"messages":[],"max_tokens":64},api=api)
+    assert exc.value.status_code==409
+    assert not any(isinstance(c,tuple) and c[0]=="load" for c in calls)

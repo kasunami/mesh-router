@@ -116,8 +116,19 @@ def verify_runtime(row: dict[str, Any]) -> int:
 
 def prompt_tokens(row: dict[str, Any], payload: dict[str, Any]) -> int:
     if row["policy"].get("runtime") == "q27":
-        # This q27 build has no template/tokenize endpoint. Bound all input
-        # bytes and reserve template/MTP room instead of guessing chars/4.
+        # q27 shares native ChatML rendering across its two API bridges. Count
+        # on CPU without acquiring a slot; never mistake this for a heartbeat.
+        try:
+            body = qc.q27_count_body(payload)
+            with httpx.Client(timeout=10) as client:
+                response = client.post(str(row["base_url"]).rstrip("/") + "/v1/messages/count_tokens", json=body)
+                response.raise_for_status()
+            count = response.json().get("input_tokens")
+            if type(count) is int and count > 0:
+                return count + 256  # bridge/template conservatism, in addition to profile reserve
+        except (ValueError, KeyError, TypeError, httpx.HTTPError):
+            pass
+        # Older runtimes or unsupported content retain a strict byte bound.
         return qc.conservative_prompt_bound(payload)
     with httpx.Client(timeout=10) as client:
         root = str(row["base_url"]).rstrip("/")
@@ -143,6 +154,15 @@ def _current(row: dict[str, Any]) -> dict[str, Any]:
                 return fresh
             break
     raise RuntimeError("placement lost eligibility or heartbeat freshness")
+
+
+def runtime_model(row: dict[str, Any]) -> str:
+    response = httpx.get(str(row["base_url"]).rstrip("/") + "/v1/models", timeout=8)
+    response.raise_for_status()
+    data = response.json().get("data", [])
+    if len(data) != 1 or not data[0].get("id"):
+        raise RuntimeError("runtime identity is ambiguous")
+    return str(data[0]["id"])
 
 
 def dispatch(rows: list[dict[str, Any]], payload: dict[str, Any], *, api: Any) -> Any:
@@ -182,7 +202,15 @@ def dispatch(rows: list[dict[str, Any]], payload: dict[str, Any], *, api: Any) -
                 target = api._mw_target_for_lane(cur=cur, lane_id=str(row["lane_id"]))
         if target is None:
             raise RuntimeError("qualified host has no supported MW control/inference binding")
-        if not row["loaded"]:
+        actual = runtime_model(row)
+        aliases = {str(x).lower() for x in [row["model_name"], *row["policy"].get("runtime_aliases", [])]}
+        previous_profile = next((p for p in qc.read_profiles()
+            if str(p["host_id"]) == str(row["host_id"]) and actual.lower() in {
+                str(x).lower() for x in [p["model_name"], *p["policy"].get("runtime_aliases", [])]}), None)
+        if actual.lower() not in aliases:
+            if previous_profile is None:
+                raise HTTPException(409, "refusing to evict an unqualified runtime model")
+            previous = actual
             if payload.get("mesh_allow_swap") is False:
                 raise HTTPException(409, "requested model is unloaded and swapping was disabled")
             switched = True
@@ -200,6 +228,7 @@ def dispatch(rows: list[dict[str, Any]], payload: dict[str, Any], *, api: Any) -
         count = prompt_tokens(row, bounded)
         if not qc.fits(bounded, row["policy"], count):
             raise HTTPException(422, "formatted prompt + total completion + safety reserve exceeds model/host context")
+        _current(row)
         if reservation.stop.is_set():
             raise RuntimeError("lease heartbeat failed before dispatch")
         public_id = row["policy"]["public_id"]
@@ -247,6 +276,8 @@ def dispatch(rows: list[dict[str, Any]], payload: dict[str, Any], *, api: Any) -
                 api._send_mw_command_require_ready(host_id=target.host_id, message_type="load_model",
                     payload={"lane_id": target.lane_id, "model_name": previous},
                     timeout_seconds=max(120, settings.swap_proxy_timeout_seconds))
+                if previous_profile is not None:
+                    verify_runtime(previous_profile)
             except Exception:
                 with db.connect() as conn:
                     with conn.cursor() as cur:

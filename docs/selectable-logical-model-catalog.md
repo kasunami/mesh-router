@@ -45,6 +45,8 @@ legacy router lease acquisition uses the same lock key. A final source-event
 freshness/suspension/allowlist check occurs after potentially slow loading.
 Model changes go through the existing MW command client and wait for completion.
 Direct health/model checks separately verify actual identity and engine context;
+a stale loaded-model label cannot force an unnecessary reload, and an unknown
+actual runtime model is never automatically evicted. These checks
 they never refresh worker-heartbeat timestamps. Failed load or pre-dispatch
 validation attempts to restore the prior model while retaining the reservation.
 Failed restoration suspends that lane. A stream disconnect releases its lease
@@ -55,9 +57,12 @@ Output limits count all generated tokens: hidden reasoning, answer and tool
 calls. The qualified path does not apply legacy Qwen token expansion. Admission
 requires formatted prompt + total completion + safety reserve <= profile context.
 For llama.cpp, `/apply-template` and `/tokenize` count the formatted prompt;
-for the q27 build without these endpoints, an intentionally conservative UTF-8
-byte bound includes messages, tools, tool choice and response schema. Runtime
-reserves and templates still need profiling before increasing budgets. A lower
+for q27, the CPU-only native Messages count endpoint receives the equivalent
+text/tool history through its shared ChatML renderer, plus a 256-token bridge
+allowance. Unsupported content or older runtimes fall back to a conservative
+UTF-8 byte bound including messages and tool/schema fields. The profile safety
+reserve applies in either case. Runtime reserves and templates still need
+profiling before increasing budgets. A lower
 request context does not resize the server's existing KV allocation.
 
 ## OpenCode
