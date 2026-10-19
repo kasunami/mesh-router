@@ -97,16 +97,17 @@ def _upsert_mw_host(
         INSERT INTO mw_hosts (
           host_id, host_name, platform, service_manager, config_version,
           desired_profile, actual_profile,
-          last_heartbeat_at, last_state_at,
+          last_heartbeat_at, last_heartbeat_event_at, last_state_at,
           status, notes, updated_at
         )
         VALUES (%s, %s, %s, %s, %s,
                 %s, %s,
-                %s, %s,
+                %s, %s, %s,
                 %s, %s, now())
         ON CONFLICT (host_id) DO UPDATE SET
           actual_profile = COALESCE(EXCLUDED.actual_profile, mw_hosts.actual_profile),
           last_heartbeat_at = GREATEST(mw_hosts.last_heartbeat_at, EXCLUDED.last_heartbeat_at),
+          last_heartbeat_event_at = GREATEST(mw_hosts.last_heartbeat_event_at, EXCLUDED.last_heartbeat_event_at),
           last_state_at = COALESCE(EXCLUDED.last_state_at, mw_hosts.last_state_at),
           status = EXCLUDED.status,
           notes = mw_hosts.notes || EXCLUDED.notes,
@@ -121,11 +122,24 @@ def _upsert_mw_host(
             None,
             actual_profile,
             last_heartbeat_at,
+            last_heartbeat_at,
             last_state_at,
             "online",
             Jsonb(notes_patch or {}),
         ),
     )
+
+
+def _read_last_heartbeat_event_at(cur: Any, *, host_id: str) -> datetime | None:
+    cur.execute(
+        "SELECT last_heartbeat_event_at FROM mw_hosts WHERE host_id=%s",
+        (host_id,),
+    )
+    row = cur.fetchone()
+    if not row:
+        return None
+    value = row.get("last_heartbeat_event_at") if isinstance(row, dict) else row[0]
+    return _parse_aware_timestamp(value)
 
 
 def _insert_mw_heartbeat(cur: Any, *, host_id: str, heartbeat_at: datetime, details: dict[str, Any]) -> None:
@@ -429,10 +443,12 @@ def process_message(
                 _upsert_services(cur, host_id=host_id, service_states=service_states, observed_at=observed_at)
                 _upsert_lanes(cur, host_id=host_id, lane_states=lane_states, observed_at=observed_at)
                 if runtime_store is not None:
+                    heartbeat_event_at = _read_last_heartbeat_event_at(cur, host_id=host_id)
                     runtime_store.write_host_snapshot(
                         host_id=host_id,
                         snapshot={**snapshot, "service_states": service_states, "lane_states": lane_states},
                         observed_at=observed_at,
+                        heartbeat_event_at=heartbeat_event_at,
                         ttl_seconds=settings.runtime_state_ttl_seconds,
                     )
             elif message_type == "response":
@@ -447,10 +463,12 @@ def process_message(
                 snapshot = _response_host_state_snapshot(body)
                 if runtime_store is not None and snapshot is not None:
                     lane_states = _attach_snapshot_candidates_to_lanes(snapshot, list(snapshot.get("lane_states") or []))
+                    heartbeat_event_at = _read_last_heartbeat_event_at(cur, host_id=host_id)
                     runtime_store.write_host_snapshot(
                         host_id=host_id,
                         snapshot={**snapshot, "lane_states": lane_states},
                         observed_at=observed_at,
+                        heartbeat_event_at=heartbeat_event_at,
                         ttl_seconds=settings.runtime_state_ttl_seconds,
                         source="mw_response_snapshot",
                     )

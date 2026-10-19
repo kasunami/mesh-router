@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import unittest
 
 from fastapi.testclient import TestClient
 
 from mesh_router import app as app_module
+from mesh_router.mw_overlay import apply_mw_effective_status
 class _FakeCursor:
     def __init__(self, *, execute_rows: list[list[dict]]) -> None:
         self._execute_rows = execute_rows
@@ -53,6 +54,14 @@ class _FakeDb:
         return _FakeConn(self._cursor)
 
 
+class _CachedLaneFacts:
+    def __init__(self, facts):  # noqa: ANN001
+        self.facts = facts
+
+    def get_lane_facts(self, pairs, *, stale_seconds=None):  # noqa: ANN001
+        return self.facts
+
+
 class MWLaneReadinessOverlayTests(unittest.TestCase):
     def setUp(self) -> None:
         self.original_db = app_module.db
@@ -61,6 +70,43 @@ class MWLaneReadinessOverlayTests(unittest.TestCase):
     def tearDown(self) -> None:
         app_module.db = self.original_db  # type: ignore[assignment]
         app_module.mw_state_db = self.original_mw_state_db  # type: ignore[assignment]
+
+    def test_stale_database_event_time_overrides_legacy_processing_time_cache(self) -> None:
+        now = datetime.now(tz=timezone.utc)
+        stale_event = now - timedelta(minutes=8)
+        row = {
+            "host_id": "host-1",
+            "host_name": "Worker-A",
+            "lane_id": "lane-1",
+            "lane_name": "gpu",
+            "lane_type": "gpu",
+            "backend_type": "llama",
+            "proxy_auth_metadata": {"control_plane": "mw", "mw_host_id": "worker-a", "mw_lane_id": "gpu"},
+            "status": "ready",
+            "suspension_reason": None,
+        }
+        cache = _CachedLaneFacts({("worker-a", "gpu"): {
+            "last_heartbeat_at": now,
+            "actual_state": "running",
+            "health_status": "healthy",
+            "actual_model": "model-a",
+        }})
+        mw_db = _FakeDb(_FakeCursor(execute_rows=[[
+            {
+                "host_id": "worker-a",
+                "lane_id": "gpu",
+                "last_heartbeat_at": stale_event,
+                "actual_state": "running",
+                "health_status": "healthy",
+                "actual_model": "model-a",
+            }
+        ]]))
+
+        apply_mw_effective_status([row], mw_state_db=mw_db, stale_seconds=45, runtime_store=cache)
+
+        self.assertEqual(row["effective_status"], "offline")
+        self.assertEqual(row["readiness_reason"], "stale_heartbeat")
+        self.assertEqual(row["mw_last_heartbeat_at"], stale_event)
 
     def test_api_lanes_overlays_mw_readiness_and_model(self) -> None:
         # Base lanes listing: lane is offline in MR DB but MW control plane should override.

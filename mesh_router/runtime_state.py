@@ -79,11 +79,13 @@ class RuntimeStateStore:
         host_id: str,
         snapshot: dict[str, Any],
         observed_at: datetime,
+        heartbeat_event_at: datetime | None = None,
         ttl_seconds: int,
         source: str = "mw_state_snapshot",
     ) -> None:
         ttl = max(1, int(ttl_seconds))
         observed_iso = observed_at.astimezone(UTC).isoformat()
+        heartbeat_event_iso = heartbeat_event_at.astimezone(UTC).isoformat() if heartbeat_event_at else None
         service_states = [dict(s) for s in (snapshot.get("service_states") or []) if isinstance(s, dict)]
         lane_states = [dict(l) for l in (snapshot.get("lane_states") or []) if isinstance(l, dict)]
         service_by_id = {str(s.get("service_id") or ""): s for s in service_states if str(s.get("service_id") or "")}
@@ -131,7 +133,8 @@ class RuntimeStateStore:
             payload = {
                 "host_id": host_id,
                 "lane_id": lane_id,
-                "last_heartbeat_at": observed_iso,
+                "last_heartbeat_at": heartbeat_event_iso,
+                "heartbeat_timestamp_source": "validated_event" if heartbeat_event_iso else None,
                 "actual_state": lane.get("actual_state"),
                 "health_status": lane.get("health_status"),
                 "desired_model": lane.get("desired_model"),
@@ -194,12 +197,18 @@ class RuntimeStateStore:
         """
         ttl = max(1, int(ttl_seconds))
         observed_iso = observed_at.astimezone(UTC).isoformat()
+        safe_fact = _json_safe(dict(fact))
+        if isinstance(safe_fact, dict):
+            # A successful probe says the endpoint answered; it is not a worker
+            # heartbeat and must never extend heartbeat freshness.
+            safe_fact.pop("last_heartbeat_at", None)
+            safe_fact.pop("heartbeat_timestamp_source", None)
         payload = {
             "host_id": str(host_id),
             "lane_id": str(lane_id),
-            "last_heartbeat_at": observed_iso,
+            "probe_observed_at": observed_iso,
             "source": source,
-            **_json_safe(dict(fact)),
+            **safe_fact,
         }
         # Ensure critical keys exist with safe defaults for the overlay.
         payload.setdefault("actual_state", "ready")

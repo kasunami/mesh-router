@@ -8,11 +8,15 @@ from mesh_router.mw_consumer import process_message
 
 
 class CapturingCursor:
-    def __init__(self) -> None:
+    def __init__(self, *, heartbeat_event_at=None) -> None:
         self.executed: list[tuple[str, tuple]] = []
+        self.heartbeat_event_at = heartbeat_event_at
 
     def execute(self, sql: str, params: tuple) -> None:
         self.executed.append((sql, params))
+
+    def fetchone(self):
+        return {"last_heartbeat_event_at": self.heartbeat_event_at}
 
     def __enter__(self) -> "CapturingCursor":
         return self
@@ -101,6 +105,8 @@ class MwConsumerProcessingTests(unittest.TestCase):
         older_params = next(params for sql, params in older_cursor.executed if "INSERT INTO mw_hosts" in sql)
         self.assertIn("GREATEST(mw_hosts.last_heartbeat_at, EXCLUDED.last_heartbeat_at)", older_sql)
         self.assertEqual(older_params[7], older)
+        self.assertIn("last_heartbeat_event_at", older_sql)
+        self.assertEqual(older_params[8], older)
 
     def test_missing_event_timestamp_falls_back_to_valid_kafka_timestamp(self) -> None:
         received = datetime(2026, 10, 19, 10, 0, tzinfo=UTC)
@@ -209,6 +215,36 @@ class MwConsumerProcessingTests(unittest.TestCase):
             runtime_store.snapshots[0]["snapshot"]["lane_states"][0]["validated_candidates"],
             [{"canonical_id": "qwen3.5-4b", "lane_ids": ["gpu"]}],
         )
+        self.assertIn("SELECT last_heartbeat_event_at FROM mw_hosts", sql)
+        self.assertIsNone(runtime_store.snapshots[0]["heartbeat_event_at"])
+
+    def test_state_snapshot_cache_receives_event_time_from_dedicated_db_column(self) -> None:
+        event = datetime(2026, 10, 19, 9, 59, tzinfo=UTC)
+        cursor = CapturingCursor(heartbeat_event_at=event)
+        runtime_store = CapturingRuntimeStore()
+        process_message(
+            payload={"message_type": "state", "host_id": "worker-a", "payload": {"lane_states": []}},
+            observed_at=datetime(2026, 10, 19, 10, 0, tzinfo=UTC),
+            db_connect=make_db(cursor),
+            runtime_store=runtime_store,
+        )
+        self.assertEqual(runtime_store.snapshots[0]["heartbeat_event_at"], event)
+
+    def test_response_snapshot_cache_receives_event_time_from_dedicated_db_column(self) -> None:
+        event = datetime(2026, 10, 19, 9, 59, tzinfo=UTC)
+        cursor = CapturingCursor(heartbeat_event_at=event)
+        runtime_store = CapturingRuntimeStore()
+        process_message(
+            payload={
+                "message_type": "response",
+                "host_id": "worker-a",
+                "payload": {"result": {"host_state": {"lane_states": [{"lane_id": "gpu"}]}}},
+            },
+            observed_at=datetime(2026, 10, 19, 10, 0, tzinfo=UTC),
+            db_connect=make_db(cursor),
+            runtime_store=runtime_store,
+        )
+        self.assertEqual(runtime_store.snapshots[0]["heartbeat_event_at"], event)
 
 
     def test_process_response_refreshes_runtime_cache_from_host_state(self) -> None:

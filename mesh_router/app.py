@@ -6814,9 +6814,8 @@ def mesh_inventory() -> dict[str, Any]:
         runtime_store=runtime_store,
     )
 
-    # If MW cache is cold, attempt a bounded direct probe per request and write a short-lived
-    # runtime fact so subsequent inventory reads reflect the host's real state.
-    # This prevents false "offline" when Kafka/MW state ingestion lags but the worker is alive.
+    # If MW cache is cold or heartbeat data is stale, attempt a bounded direct
+    # probe for diagnostics. A probe cannot substitute for a validated heartbeat.
     if runtime_store is not None:
         probe_reasons = {"mw_cache_miss", "mw_state_missing", "mw_state_unavailable", "stale_heartbeat"}
         candidates: list[dict[str, Any]] = []
@@ -6859,37 +6858,10 @@ def mesh_inventory() -> dict[str, Any]:
             base_url = str(row.get("base_url") or "").strip()
             if not _probe_lane_alive(base_url):
                 continue
-            binding = _candidate_mw_binding(
-                {
-                    "host_name": row.get("host_name") or row.get("host") or row.get("host"),
-                    "lane_name": row.get("lane_name"),
-                    "lane_type": row.get("lane_type"),
-                    "proxy_auth_metadata": row.get("proxy_auth_metadata"),
-                }
-            )
-            if binding is None:
-                continue
-            host_id, lane_id, _inferred = binding
-            try:
-                runtime_store.write_lane_fact(
-                    host_id=host_id,
-                    lane_id=lane_id,
-                    observed_at=now,
-                    ttl_seconds=20,
-                    source="inventory_probe",
-                    fact={
-                        "actual_state": "ready",
-                        "health_status": "healthy",
-                        "actual_model": row.get("current_model_name") or row.get("current_model") or None,
-                        "backend_type": row.get("backend_type") or None,
-                        "metadata": {"current_backend_type": row.get("backend_type") or None, "source": "inventory_probe"},
-                    },
-                )
-            except Exception:
-                pass
-            row["effective_status"] = "ready"
-            row["readiness_reason"] = None
-            row["mw_last_heartbeat_at"] = now
+            # Endpoint reachability is useful diagnostic evidence, but it is not
+            # a validated worker heartbeat and cannot clear the freshness gate.
+            row["health_probe_status"] = "reachable"
+            row["health_probe_observed_at"] = now
 
     models_by_lane: dict[str, set[str]] = {}
     model_context_by_lane: dict[str, dict[str, int | None]] = {}
@@ -6953,6 +6925,8 @@ def mesh_inventory() -> dict[str, Any]:
                 "current_model": cm or None,
                 "proxy_auth_metadata": r.get("proxy_auth_metadata") if isinstance(r.get("proxy_auth_metadata"), dict) else None,
                 "mw_last_heartbeat_at": r.get("mw_last_heartbeat_at").isoformat() if isinstance(r.get("mw_last_heartbeat_at"), datetime) else r.get("mw_last_heartbeat_at"),
+                "health_probe_status": r.get("health_probe_status"),
+                "health_probe_observed_at": r.get("health_probe_observed_at").isoformat() if isinstance(r.get("health_probe_observed_at"), datetime) else r.get("health_probe_observed_at"),
                 "mw_state_source": r.get("mw_state_source"),
                 "validated_candidates": r.get("validated_candidates"),
                 "active_job": r.get("active_job"),

@@ -186,9 +186,19 @@ def apply_mw_effective_status(
         except Exception as exc:  # pragma: no cover - defensive guard around cache plugins/fakes
             logger.warning("MW runtime-state cache read failed: %s", exc)
 
-    # When cache is cold, fall back to mw_state_db for both explicit and inferred lanes.
-    # If MW is fully unavailable (no cache + no DB), we mark lanes offline with a reason.
-    missing_pairs = [pair for pair in mw_pairs if pair not in facts]
+    # Cached lane state can come from state/response snapshots or direct probes.
+    # Those observations are not heartbeat events. Only a cache entry explicitly
+    # marked as sourced from a validated heartbeat event may supply freshness.
+    for fact in facts.values():
+        if fact.get("heartbeat_timestamp_source") != "validated_event":
+            fact["last_heartbeat_at"] = None
+
+    # Use the dedicated event-time column for cache misses and legacy cache
+    # entries. The old last_heartbeat_at column may contain consume-time values.
+    missing_pairs = [
+        pair for pair in mw_pairs
+        if pair not in facts or facts[pair].get("heartbeat_timestamp_source") != "validated_event"
+    ]
     db_unavailable = False
     if missing_pairs:
         try:
@@ -204,7 +214,7 @@ def apply_mw_effective_status(
                         SELECT
                           w.host_id,
                           w.lane_id,
-                          mh.last_heartbeat_at,
+                          mh.last_heartbeat_event_at AS last_heartbeat_at,
                           ml.actual_state,
                           ml.health_status,
                           ml.desired_model,
@@ -222,7 +232,13 @@ def apply_mw_effective_status(
                     )
                     for r in cur.fetchall():
                         key = (str(r["host_id"]), str(r["lane_id"]))
-                        facts[key] = dict(r)
+                        merged = dict(r)
+                        merged.update(facts.get(key) or {})
+                        # The source-of-truth event timestamp must win over any
+                        # legacy processing-time value from Redis or Postgres.
+                        merged["last_heartbeat_at"] = r.get("last_heartbeat_at")
+                        merged["heartbeat_timestamp_source"] = "validated_event" if r.get("last_heartbeat_at") else None
+                        facts[key] = merged
         except Exception:
             db_unavailable = True
 
@@ -267,8 +283,7 @@ def apply_mw_effective_status(
             f,
             stale_cutoff=stale_cutoff,
         )
-        if f.get("last_heartbeat_at") is not None:
-            row["mw_last_heartbeat_at"] = f.get("last_heartbeat_at")
+        row["mw_last_heartbeat_at"] = f.get("last_heartbeat_at")
         metadata = f.get("metadata") or {}
         row_backend = _normalize_router_backend_type(str(row.get("backend_type") or ""))
         fact_backend = _normalize_router_backend_type(str(f.get("backend_type") or ""))
