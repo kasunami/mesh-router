@@ -235,7 +235,7 @@ def dispatch(rows: list[dict[str, Any]], payload: dict[str, Any], *, api: Any) -
         if not payload.get("stream"):
             bounded["stream"] = False
             result = asyncio.run(api._collect_mw_chat_completion(target=target, request_id=request_id,
-                                model=row["model_name"], request_payload=bounded))
+                                model=row["model_name"], request_payload=bounded, apply_reasoning_budget=False))
             result["model"] = public_id
             reservation.close(True)
             return result
@@ -260,6 +260,12 @@ def dispatch(rows: list[dict[str, Any]], payload: dict[str, Any], *, api: Any) -
                     if raw:
                         item = json.loads(raw)
                         item["model"] = public_id
+                        yield b"data: " + json.dumps(item).encode() + b"\n\n"
+                    elif int(getattr(event.usage, "total_tokens", 0) or 0) > 0:
+                        usage = {k: int(getattr(event.usage, k, 0) or 0)
+                                 for k in ("prompt_tokens", "completion_tokens", "total_tokens")}
+                        item = {"object": "chat.completion.chunk", "model": public_id,
+                                "choices": [], "usage": usage}
                         yield b"data: " + json.dumps(item).encode() + b"\n\n"
                 ok = True
                 yield b"data: [DONE]\n\n"

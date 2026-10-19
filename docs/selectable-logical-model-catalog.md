@@ -47,11 +47,15 @@ Model changes go through the existing MW command client and wait for completion.
 Direct health/model checks separately verify actual identity and engine context;
 a stale loaded-model label cannot force an unnecessary reload, and an unknown
 actual runtime model is never automatically evicted. These checks
-they never refresh worker-heartbeat timestamps. Failed load or pre-dispatch
+never refresh worker-heartbeat timestamps. Failed load or pre-dispatch
 validation attempts to restore the prior model while retaining the reservation.
 Failed restoration suspends that lane. A stream disconnect releases its lease
 and reservation. This dispatch path does not use unauthenticated operator
 lane-status routes or introduce new access grants.
+
+Usage chunks are requested for compaction. Empty protobuf usage defaults cannot
+overwrite a measured backend count, and both streaming and non-streaming
+qualified calls bypass legacy Qwen expansion.
 
 Output limits count all generated tokens: hidden reasoning, answer and tool
 calls. The qualified path does not apply legacy Qwen token expansion. Admission
