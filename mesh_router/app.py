@@ -2751,6 +2751,15 @@ def api_mw_command(req: MWCommandRequest) -> MWCommandResponse:
             raise HTTPException(status_code=400, detail="load_model requires payload.model_name (or model_id alias)")
     if req.message_type == "run_allowlisted_command" and not str(payload.get("command_id") or "").strip():
         raise HTTPException(status_code=400, detail="run_allowlisted_command requires payload.command_id")
+    if req.message_type in {
+        "activate_profile", "load_model", "start_service", "stop_service",
+        "restart_service", "unload_service", "unload_lane", "run_allowlisted_command",
+    }:
+        from .lease_store import require_idle_control_host
+        try:
+            require_idle_control_host(mw_host_id)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
     try:
         result = _mw_client().send_command(
             host_id=mw_host_id,

@@ -71,6 +71,17 @@ class HostReservation:
                          settings.default_lease_ttl_seconds, Jsonb({"request_id": request_id,
                          "public_model": row["policy"]["public_id"], "host_exclusive": True})))
             self.lease_id = str(cur.fetchone()["lease_id"])
+            # The control plane must see the same request ID as the worker.
+            # Otherwise orphan recovery sees a 404 and cancels live inference.
+            cur.execute("""INSERT INTO router_requests
+                (request_id,route,state,owner,job_type,requested_model_name,
+                 downstream_model_name,model_id,lane_id,lease_id,worker_id,base_url,
+                 acquired_at,started_at,last_heartbeat_at,expires_at)
+                SELECT %s,'chat','running',owner,job_type,%s,%s,model_id,lane_id,
+                       lease_id,%s,%s,acquired_at,acquired_at,last_heartbeat_at,expires_at
+                FROM router_leases WHERE lease_id=%s""",
+                (request_id, row["policy"]["public_id"], row["model_name"],
+                 row["host_name"], row["base_url"], self.lease_id))
         self.conn.commit()
 
         def beat():

@@ -48,6 +48,9 @@ class FakeMWClient:
 
 class MWControlApiTests(unittest.TestCase):
     def setUp(self) -> None:
+        self.idle_guard = patch("mesh_router.lease_store.require_idle_control_host")
+        self.guard_mock = self.idle_guard.start()
+        self.addCleanup(self.idle_guard.stop)
         self.original_getter = app_module._mw_client
         self.fake = FakeMWClient()
         app_module._mw_client.cache_clear()
@@ -57,6 +60,14 @@ class MWControlApiTests(unittest.TestCase):
     def tearDown(self) -> None:
         app_module._mw_client = self.original_getter
         app_module._mw_client.cache_clear()
+
+    def test_restart_rejected_before_delivery_when_router_host_busy(self) -> None:
+        self.guard_mock.side_effect = RuntimeError("host busy: active router lease protects inference")
+        response = self.client.post("/api/mw/commands", json={
+            "host_id": "worker-a", "message_type": "restart_service",
+            "payload": {"lane_id": "gpu"}})
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(self.fake.calls, [])
 
     def test_mw_command_status_not_found(self) -> None:
         original_mw_state_db = app_module.mw_state_db

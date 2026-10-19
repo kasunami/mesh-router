@@ -106,3 +106,16 @@ Unit regressions cover source-time isolation, qualification, artifact IDs,
 paired limits, total-token budgeting, exclusions, loaded reuse, reservation
 before load, rollback, post-load context validation and stream cleanup.
 Operational qualification is distinct from a full-context performance benchmark.
+
+### Recovery monitor visibility
+
+Qualified dispatch registers its worker request ID in `router_requests` in the
+same transaction as its lease, before loading or inference. Lease heartbeats
+refresh that record even during prompt prefill; release marks both records
+terminal, preserving cancellation. The existing request status, health and
+active-list APIs therefore expose live qualified work to orphan recovery.
+A missing request row must not be inferred from an empty output stream.
+The public MW command route rejects disruptive lifecycle commands while a
+physical host has an active router lease, including sibling lanes. This admission
+check supplements the existing dispatch reservation; it is not a guarantee
+against independently issued broker commands or operator systemctl calls.

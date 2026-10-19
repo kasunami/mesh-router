@@ -113,6 +113,14 @@ def heartbeat_router_lease(*, lease_id: str) -> None:
                 """,
                 (now, expires_at, lease_id),
             )
+            cur.execute(
+                """UPDATE router_requests rr
+                   SET last_heartbeat_at=rl.last_heartbeat_at,
+                       expires_at=rl.expires_at, updated_at=now()
+                   FROM router_leases rl
+                   WHERE rr.lease_id=rl.lease_id AND rl.lease_id=%s
+                     AND rl.job_type='qualified_chat' AND rl.state='active'
+                     AND rr.state IN ('acquired','running')""", (lease_id,))
         conn.commit()
 
 
@@ -127,4 +135,31 @@ def release_router_lease(*, lease_id: str, ok: bool) -> None:
                 """,
                 ("released" if ok else "failed", lease_id),
             )
+            cur.execute(
+                """UPDATE router_requests rr
+                   SET state=CASE WHEN rr.cancel_requested THEN 'canceled'::request_state
+                                  ELSE rl.state::text::request_state END,
+                       released_at=rl.released_at, updated_at=now()
+                   FROM router_leases rl
+                   WHERE rr.lease_id=rl.lease_id AND rl.lease_id=%s
+                     AND rl.job_type='qualified_chat'
+                     AND rl.state IN ('released','failed')
+                     AND rr.state IN ('acquired','running')""", (lease_id,))
         conn.commit()
+
+
+def require_idle_control_host(mw_host_id: str) -> None:
+    """Reject disruptive control commands while any sibling has a live lease.
+
+    This is an admission check, not a replacement for the worker's own lifecycle
+    serialization. Internal qualified loading already owns its host reservation.
+    """
+    with db.connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""SELECT 1 FROM router_leases rl
+                JOIN lanes l USING(lane_id) JOIN hosts h USING(host_id)
+                WHERE lower(h.host_name::text)=lower(%s)
+                  AND rl.state='active' AND rl.expires_at>now() LIMIT 1""",
+                (mw_host_id,))
+            if cur.fetchone():
+                raise RuntimeError("host busy: active router lease protects inference")
